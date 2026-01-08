@@ -2,30 +2,46 @@ package com.example.stocksignal
 
 import android.app.Application
 import android.util.Log
-import com.example.stocksignal.data.stooq.di.stooqModule
-import org.koin.android.ext.koin.androidContext
-import org.koin.android.ext.koin.androidLogger
-import org.koin.core.context.startKoin
-import org.koin.core.logger.Level
+import androidx.hilt.work.HiltWorkerFactory
+import androidx.work.Configuration
+import com.example.stocksignal.data.settings.SettingsRepository
+import com.example.stocksignal.notifications.NotificationScheduler
+import dagger.hilt.android.HiltAndroidApp
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
+import javax.inject.Inject
 
 /**
  * Application class for StockSignal app.
- * Initializes Koin dependency injection framework.
+ * Initializes Hilt dependency injection framework.
  */
-class StockSignalApplication : Application() {
+@HiltAndroidApp
+class StockSignalApplication : Application(), Configuration.Provider {
+
+    @Inject lateinit var workerFactory: HiltWorkerFactory
+    @Inject lateinit var settingsRepository: SettingsRepository
+    @Inject lateinit var notificationScheduler: NotificationScheduler
+
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     override fun onCreate() {
         super.onCreate()
+        Log.d(TAG, "onCreate: Hilt ready")
 
-        // Initialize Koin
-        startKoin {
-            androidLogger(Level.ERROR)
-            androidContext(this@StockSignalApplication)
-            modules(stooqModule)
+        appScope.launch {
+            settingsRepository.settingsFlow.collectLatest { settings ->
+                notificationScheduler.schedule(settings)
+            }
         }
-
-        Log.d(TAG, "onCreate: Koin started")
     }
+
+    override val workManagerConfiguration: Configuration
+        get() = Configuration.Builder()
+            .setWorkerFactory(workerFactory)
+            .build()
 
     companion object {
         private const val TAG = "StockSignalApplication"

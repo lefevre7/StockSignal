@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 *.iml
 .gradle
 /local.properties
@@ -14,7 +13,6 @@
 .externalNativeBuild
 .cxx
 local.properties
-=======
 # Compiled class file
 *.class
 
@@ -42,4 +40,3 @@ replay_pid*
 
 # Kotlin Gradle plugin data, see https://kotlinlang.org/docs/whatsnew20.html#new-directory-for-kotlin-data-in-gradle-projects
 .kotlin/
->>>>>>> bdc8f5af973f62164993da180f72983c61cf5ecc

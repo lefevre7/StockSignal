@@ -9,9 +9,10 @@ import com.example.stocksignal.MainActivity
 import com.example.stocksignal.data.stooq.model.Result
 import com.example.stocksignal.data.stooq.repository.StooqRepository
 import com.example.stocksignal.databinding.ActivityStooqExampleBinding
+import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
-import org.koin.android.ext.android.inject
 import java.time.LocalDate
+import javax.inject.Inject
 
 /**
  * Example Activity demonstrating how to use the StooqRepository.
@@ -19,12 +20,13 @@ import java.time.LocalDate
  * This is a real working example that you can use as a template.
  * Make sure to inject StooqRepository using Koin (already configured in StockSignalApplication).
  */
+@AndroidEntryPoint
 class StooqExampleActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityStooqExampleBinding
 
-    // Inject the repository using Koin
-    private val stooqRepository: StooqRepository by inject()
+    // Inject the repository using Hilt
+    @Inject lateinit var stooqRepository: StooqRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

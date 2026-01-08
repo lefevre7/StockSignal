@@ -2,24 +2,33 @@ package com.example.stocksignal.data.stooq.di
 
 import com.example.stocksignal.data.stooq.network.StooqApi
 import com.example.stocksignal.data.stooq.repository.StooqRepository
+import dagger.Module
+import dagger.Provides
+import dagger.hilt.InstallIn
+import dagger.hilt.components.SingletonComponent
+import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
-import org.koin.dsl.module
 import retrofit2.Retrofit
 import retrofit2.converter.scalars.ScalarsConverterFactory
 import java.util.concurrent.TimeUnit
+import javax.inject.Singleton
 
 /**
- * Koin dependency injection module for Stooq data layer.
+ * Hilt dependency injection module for Stooq data layer.
  * Provides instances of API, Repository, and network components.
  */
-val stooqModule = module {
+@Module
+@InstallIn(SingletonComponent::class)
+object StooqModule {
 
     /**
      * Singleton interceptor that ensures realistic browser headers on all requests.
      */
-    single {
-        okhttp3.Interceptor { chain ->
+    @Provides
+    @Singleton
+    fun provideHeaderInterceptor(): Interceptor {
+        return Interceptor { chain ->
             val originalRequest = chain.request()
             val requestWithHeaders = originalRequest.newBuilder()
                 .header("User-Agent", StooqApi.DEFAULT_USER_AGENT)
@@ -40,49 +49,62 @@ val stooqModule = module {
     }
 
     /**
-     * Singleton HTTP logging interceptor for debugging network calls
+     * Singleton HTTP logging interceptor for debugging network calls.
      */
-    single {
-        HttpLoggingInterceptor().apply {
+    @Provides
+    @Singleton
+    fun provideHttpLoggingInterceptor(): HttpLoggingInterceptor {
+        return HttpLoggingInterceptor().apply {
             level = HttpLoggingInterceptor.Level.BASIC
         }
     }
 
     /**
-     * Singleton OkHttpClient with timeouts and logging
+     * Singleton OkHttpClient with timeouts and logging.
      */
-    single {
-        OkHttpClient.Builder()
+    @Provides
+    @Singleton
+    fun provideOkHttpClient(
+        headerInterceptor: Interceptor,
+        loggingInterceptor: HttpLoggingInterceptor
+    ): OkHttpClient {
+        return OkHttpClient.Builder()
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
-            .addInterceptor(get<okhttp3.Interceptor>())
-            .addInterceptor(get<HttpLoggingInterceptor>())
+            .addInterceptor(headerInterceptor)
+            .addInterceptor(loggingInterceptor)
             .build()
     }
 
     /**
-     * Singleton Retrofit instance configured for Stooq API
+     * Singleton Retrofit instance configured for Stooq API.
      */
-    single {
-        Retrofit.Builder()
+    @Provides
+    @Singleton
+    fun provideRetrofit(okHttpClient: OkHttpClient): Retrofit {
+        return Retrofit.Builder()
             .baseUrl(StooqApi.BASE_URL)
-            .client(get())
+            .client(okHttpClient)
             .addConverterFactory(ScalarsConverterFactory.create())
             .build()
     }
 
     /**
-     * Singleton StooqApi interface implementation
+     * Singleton StooqApi interface implementation.
      */
-    single {
-        get<Retrofit>().create(StooqApi::class.java)
+    @Provides
+    @Singleton
+    fun provideStooqApi(retrofit: Retrofit): StooqApi {
+        return retrofit.create(StooqApi::class.java)
     }
 
     /**
-     * Singleton StooqRepository
+     * Singleton StooqRepository.
      */
-    single {
-        StooqRepository(get())
+    @Provides
+    @Singleton
+    fun provideStooqRepository(api: StooqApi): StooqRepository {
+        return StooqRepository(api)
     }
 }

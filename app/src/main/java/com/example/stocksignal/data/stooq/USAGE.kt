@@ -24,15 +24,17 @@ package com.example.stocksignal.data.stooq
  * import com.example.stocksignal.data.stooq.repository.StooqRepository
  * import com.example.stocksignal.data.stooq.model.Result
  * import com.example.stocksignal.data.stooq.model.IntradayStockData
- * import org.koin.android.ext.android.inject
+ * import dagger.hilt.android.AndroidEntryPoint
+ * import javax.inject.Inject
  * import kotlinx.coroutines.launch
  * import java.time.LocalDate
  * import java.time.LocalDateTime
  * 
+ * @AndroidEntryPoint
  * class MyActivity : AppCompatActivity() {
  *     
- *     // Inject repository using Koin
- *     private val stooqRepository: StooqRepository by inject()
+ *     // Inject repository using Hilt
+ *     @Inject lateinit var stooqRepository: StooqRepository
  *     
  *     fun fetchStockData() {
  *         lifecycleScope.launch {
