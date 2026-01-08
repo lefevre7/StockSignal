@@ -38,6 +38,7 @@ import com.example.stocksignal.data.local.model.MarketMoverItem
 import com.example.stocksignal.data.stooq.model.MarketMoverDirection
 import com.example.stocksignal.data.stooq.model.MarketMoverRange
 import com.example.stocksignal.domain.model.SignalTier
+import com.example.stocksignal.ui.components.CompanyExchangeText
 import com.example.stocksignal.ui.components.SignalChip
 import com.example.stocksignal.ui.components.StockCard
 import com.example.stocksignal.ui.components.TagChip
@@ -245,8 +246,9 @@ private fun MarketMoverCard(
         ) {
             Column {
                 Text(text = item.ticker, style = MaterialTheme.typography.headlineMedium)
-                Text(
-                    text = listOfNotNull(item.companyName, item.exchange).joinToString(" • "),
+                CompanyExchangeText(
+                    companyName = item.companyName,
+                    exchange = item.exchange,
                     style = MaterialTheme.typography.bodySmall
                 )
             }

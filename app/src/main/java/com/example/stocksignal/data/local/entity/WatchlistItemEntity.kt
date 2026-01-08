@@ -23,5 +23,6 @@ data class WatchlistItemEntity(
     val sortOrder: Int?,
     val tags: List<String> = emptyList(),
     val muteMarketMovers: Boolean,
-    val lastNotifiedAt: LocalDateTime?
+    val lastNotifiedAt: LocalDateTime?,
+    val indicatorAlertsJson: String? = null
 )

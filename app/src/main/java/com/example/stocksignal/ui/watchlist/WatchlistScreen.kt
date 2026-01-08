@@ -45,6 +45,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -56,6 +57,7 @@ import com.example.stocksignal.ui.components.SignalChip
 import com.example.stocksignal.ui.components.SignalScoreRow
 import com.example.stocksignal.ui.components.StockCard
 import com.example.stocksignal.ui.components.TagChip
+import com.example.stocksignal.ui.components.CompanyExchangeText
 import com.example.stocksignal.ui.theme.StockSignalDimens
 import java.time.Duration
 import java.time.LocalDateTime
@@ -290,16 +292,18 @@ fun WatchlistScreen(
 private fun WatchlistTopBar(onSearchClick: () -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Column {
+        Column(modifier = Modifier.weight(1f)) {
             Text(text = "Your Signals", style = MaterialTheme.typography.headlineLarge)
             Text(
                 text = "Buy/sell signals and explanations — quick, clear, and private.",
-                style = MaterialTheme.typography.bodySmall
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
             )
         }
+        Spacer(modifier = Modifier.width(12.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onSearchClick) {
                 Icon(Icons.Filled.Search, contentDescription = "Search")
@@ -362,8 +366,9 @@ private fun WatchlistCard(
         ) {
             Column {
                 Text(text = item.symbol, style = MaterialTheme.typography.headlineMedium)
-                Text(
-                    text = "${item.companyName} ${item.exchange?.let { "• $it" } ?: ""}",
+                CompanyExchangeText(
+                    companyName = item.companyName,
+                    exchange = item.exchange,
                     style = MaterialTheme.typography.bodySmall
                 )
             }

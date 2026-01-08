@@ -28,6 +28,11 @@ Build:
 Run:
 - Open the project in Android Studio and run the `app` configuration.
 
+Clear Cache:
+```sh
+adb shell pm clear com.example.stocksignal
+```
+
 ## Permissions
 - `INTERNET` for data fetches.
 - `POST_NOTIFICATIONS` for local alerts.
@@ -46,7 +51,7 @@ stocksignal://stock/{TICKER}?eventId={EVENT_ID}
 - Signals are informational only and not investment advice. The app does not execute trades.
 - Powered by Stooq.com data. Not affiliated with Stooq.
 
-## Tests
+## Tests - probably also ./gradlew clean build test --stacktrace
 Unit tests:
 ```sh
 ./gradlew testDebugUnitTest

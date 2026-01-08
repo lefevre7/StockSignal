@@ -17,6 +17,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -36,8 +37,17 @@ fun OnboardingRoute(
 ) {
     val context = LocalContext.current
     var stepIndex by rememberSaveable { mutableIntStateOf(0) }
-    val steps = remember { onboardingSteps() }
-    val isLastStep = stepIndex == steps.lastIndex
+    val highlights = remember { onboardingHighlights() }
+    val totalSteps = 2
+    val maxStepIndex = totalSteps - 1
+    val currentStep = stepIndex.coerceIn(0, maxStepIndex)
+    val isLastStep = currentStep == maxStepIndex
+
+    LaunchedEffect(stepIndex, maxStepIndex) {
+        if (stepIndex > maxStepIndex) {
+            stepIndex = maxStepIndex
+        }
+    }
 
     val permissionRequired = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
     var permissionGranted by remember {
@@ -68,33 +78,36 @@ fun OnboardingRoute(
                 style = MaterialTheme.typography.headlineLarge
             )
             Spacer(modifier = Modifier.height(12.dp))
-            Text(
-                text = steps[stepIndex].title,
-                style = MaterialTheme.typography.headlineMedium
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = steps[stepIndex].body,
-                style = MaterialTheme.typography.bodyMedium
-            )
-
-            Spacer(modifier = Modifier.height(24.dp))
-            Text(
-                text = "Disclaimers",
-                style = MaterialTheme.typography.headlineMedium
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = "Signals are informational, not investment advice. We do not execute trades.",
-                style = MaterialTheme.typography.bodySmall
-            )
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = "Powered by Stooq.com data. Not affiliated with Stooq.",
-                style = MaterialTheme.typography.bodySmall
-            )
-
-            if (permissionRequired) {
+            if (currentStep == 0) {
+                highlights.forEachIndexed { index, item ->
+                    Text(
+                        text = item.title,
+                        style = MaterialTheme.typography.headlineMedium
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = item.body,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    if (index != highlights.lastIndex) {
+                        Spacer(modifier = Modifier.height(24.dp))
+                    }
+                }
+            } else {
+                Text(
+                    text = "Disclaimers",
+                    style = MaterialTheme.typography.headlineMedium
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Signals are informational, not investment advice. We do not execute trades.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "Powered by Stooq.com data. Not affiliated with Stooq.",
+                    style = MaterialTheme.typography.bodySmall
+                )
                 Spacer(modifier = Modifier.height(24.dp))
                 Text(
                     text = "Notifications",
@@ -102,15 +115,15 @@ fun OnboardingRoute(
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = if (permissionGranted) {
-                        "Notifications are enabled."
-                    } else {
+                    text = if (permissionRequired && !permissionGranted) {
                         "Enable notifications to receive scheduled signal updates."
+                    } else {
+                        "Notifications are enabled."
                     },
                     style = MaterialTheme.typography.bodyMedium
                 )
-                Spacer(modifier = Modifier.height(8.dp))
-                if (!permissionGranted) {
+                if (permissionRequired && !permissionGranted) {
+                    Spacer(modifier = Modifier.height(8.dp))
                     Button(onClick = {
                         permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                     }) {
@@ -121,8 +134,8 @@ fun OnboardingRoute(
         }
 
         Row(horizontalArrangement = Arrangement.SpaceBetween) {
-            if (stepIndex > 0) {
-                TextButton(onClick = { stepIndex -= 1 }) {
+            if (currentStep > 0) {
+                TextButton(onClick = { stepIndex = (currentStep - 1).coerceAtLeast(0) }) {
                     Text("Back")
                 }
             } else {
@@ -139,7 +152,7 @@ fun OnboardingRoute(
                     Text("Get started")
                 }
             } else {
-                Button(onClick = { stepIndex += 1 }) {
+                Button(onClick = { stepIndex = (currentStep + 1).coerceAtMost(maxStepIndex) }) {
                     Text("Next")
                 }
             }
@@ -147,22 +160,22 @@ fun OnboardingRoute(
     }
 }
 
-private data class OnboardingStep(
+private data class OnboardingHighlight(
     val title: String,
     val body: String
 )
 
-private fun onboardingSteps(): List<OnboardingStep> {
+private fun onboardingHighlights(): List<OnboardingHighlight> {
     return listOf(
-        OnboardingStep(
+        OnboardingHighlight(
             title = "Clear signals",
             body = "Track buy/sell signals with explanations and confidence scores."
         ),
-        OnboardingStep(
+        OnboardingHighlight(
             title = "Watchlist and movers",
             body = "Follow your watchlist and the biggest market movers in one place."
         ),
-        OnboardingStep(
+        OnboardingHighlight(
             title = "Local and private",
             body = "Signals are generated locally and stored on device only."
         )

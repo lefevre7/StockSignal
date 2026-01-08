@@ -9,6 +9,7 @@ import com.example.stocksignal.data.stooq.repository.StooqRepository
 import com.example.stocksignal.domain.model.ChartRange
 import com.example.stocksignal.domain.model.PriceCandle
 import com.example.stocksignal.domain.model.NotificationEventType
+import java.time.DayOfWeek
 import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -49,19 +50,26 @@ class StockRepository @Inject constructor(
         eventType: NotificationEventType?
     ): Result<List<PriceCandle>> {
         val end = LocalDateTime.now()
-        val start = when (range) {
-            ChartRange.ONE_DAY -> end.toLocalDate().atStartOfDay()
-            ChartRange.FIVE_DAY -> end.minusDays(5)
-            ChartRange.ONE_MONTH -> end.minusMonths(1)
-            else -> end.minusDays(1)
-        }
+        val start = intradayStartForRange(range, end)
 
         return when (val result = stooqRepository.getIntradayData(listOf(symbol), start = start, end = end)) {
-            is Result.Error -> result
+            is Result.Error -> {
+                if (range == ChartRange.ONE_DAY) {
+                    result
+                } else {
+                    fetchDailySeries(symbol, range, eventType)
+                }
+            }
             is Result.Success -> {
                 val map = result.data[symbol]
                 if (map.isNullOrEmpty()) {
-                    Result.Error(Exception("No intraday data for $symbol"), "No intraday data for $symbol")
+                    if (range == ChartRange.ONE_DAY) {
+                        Result.Error(Exception("No intraday data for $symbol"), "No intraday data for $symbol")
+                    } else {
+                        fetchDailySeries(symbol, range, eventType)
+                    }
+                } else if (shouldFallbackToDaily(range, map)) {
+                    fetchDailySeries(symbol, range, eventType)
                 } else {
                     val candles = mapIntradayToCandles(map)
                     if (eventType != null) {
@@ -89,12 +97,14 @@ class StockRepository @Inject constructor(
         range: ChartRange,
         eventType: NotificationEventType?
     ): Result<List<PriceCandle>> {
-        val endDate = LocalDate.now()
+        val endDate = normalizeToTradingDay(LocalDate.now())
         val startDate = when (range) {
+            ChartRange.ONE_DAY -> endDate
+            ChartRange.FIVE_DAY -> minusTradingDays(endDate, 4)
+            ChartRange.ONE_MONTH -> endDate.minusMonths(1)
             ChartRange.SIX_MONTH -> endDate.minusMonths(6)
             ChartRange.ONE_YEAR -> endDate.minusYears(1)
             ChartRange.FIVE_YEAR -> endDate.minusYears(5)
-            else -> endDate.minusMonths(6)
         }
 
         return when (val result = stooqRepository.getData(listOf(symbol), startDate, endDate)) {
@@ -123,6 +133,48 @@ class StockRepository @Inject constructor(
                 }
             }
         }
+    }
+
+    private fun intradayStartForRange(range: ChartRange, end: LocalDateTime): LocalDateTime {
+        return when (range) {
+            ChartRange.ONE_DAY -> end.toLocalDate().atStartOfDay()
+            ChartRange.FIVE_DAY -> {
+                val endDate = end.toLocalDate()
+                minusTradingDays(endDate, 4).atStartOfDay()
+            }
+            ChartRange.ONE_MONTH -> end.minusMonths(1)
+            else -> end.minusDays(1)
+        }
+    }
+
+    private fun shouldFallbackToDaily(
+        range: ChartRange,
+        data: Map<LocalDateTime, IntradayStockData>
+    ): Boolean {
+        if (range != ChartRange.FIVE_DAY && range != ChartRange.ONE_MONTH) return false
+        val distinctDays = data.keys.map { it.toLocalDate() }.toSet().size
+        return distinctDays <= 1
+    }
+
+    private fun normalizeToTradingDay(date: LocalDate): LocalDate {
+        var adjusted = date
+        while (adjusted.dayOfWeek == DayOfWeek.SATURDAY || adjusted.dayOfWeek == DayOfWeek.SUNDAY) {
+            adjusted = adjusted.minusDays(1)
+        }
+        return adjusted
+    }
+
+    private fun minusTradingDays(date: LocalDate, days: Int): LocalDate {
+        var remaining = days
+        var current = date
+        while (remaining > 0) {
+            current = current.minusDays(1)
+            val day = current.dayOfWeek
+            if (day != DayOfWeek.SATURDAY && day != DayOfWeek.SUNDAY) {
+                remaining -= 1
+            }
+        }
+        return current
     }
 
     private fun isStale(cache: StockDetailCacheEntity, range: ChartRange): Boolean {

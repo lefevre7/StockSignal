@@ -36,6 +36,10 @@ class SignalsRepository @Inject constructor(
         signalEventsRepository.upsert(event.toEntity())
     }
 
+    suspend fun recordIndicatorEvent(event: NotificationEvent, label: String) {
+        signalEventsRepository.upsert(event.toEntity(label))
+    }
+
     suspend fun eventsByIds(ids: List<String>): List<NotificationEvent> {
         return signalEventsRepository.getByIds(ids).map { it.toDomain() }
     }
@@ -113,6 +117,28 @@ class SignalsRepository @Inject constructor(
             ticker = ticker,
             score = score,
             label = tier.label,
+            confidence = confidence,
+            percentChange = percentChange,
+            price = price,
+            generatedAt = generatedAt,
+            notifiedAt = notifiedAt,
+            source = source,
+            delivered = delivered,
+            deepLink = deepLink,
+            reasons = reasons.map { it.title },
+            avgScore = averageScore,
+            modeScore = modeScore,
+            modelScores = null
+        )
+    }
+
+    private fun NotificationEvent.toEntity(labelOverride: String): GlobalSignalEventEntity {
+        return GlobalSignalEventEntity(
+            id = id,
+            type = type.name.lowercase(),
+            ticker = ticker,
+            score = score,
+            label = labelOverride,
             confidence = confidence,
             percentChange = percentChange,
             price = price,

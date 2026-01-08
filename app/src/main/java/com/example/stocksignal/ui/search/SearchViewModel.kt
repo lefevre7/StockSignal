@@ -89,7 +89,8 @@ class SearchViewModel @Inject constructor(
                 sortOrder = nextOrder,
                 tags = emptyList(),
                 muteMarketMovers = false,
-                lastNotifiedAt = null
+                lastNotifiedAt = null,
+                indicatorAlertsJson = null
             )
             watchlistRepository.upsert(entity)
         }

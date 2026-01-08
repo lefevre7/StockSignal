@@ -42,6 +42,7 @@ import com.example.stocksignal.data.stooq.model.MarketMoverDirection
 import com.example.stocksignal.data.stooq.model.SearchResult
 import com.example.stocksignal.domain.model.RecentSearch
 import com.example.stocksignal.domain.model.SignalTier
+import com.example.stocksignal.ui.components.CompanyExchangeText
 import com.example.stocksignal.ui.components.SignalChip
 import com.example.stocksignal.ui.components.StockCard
 import com.example.stocksignal.ui.components.TagChip
@@ -321,8 +322,9 @@ private fun MarketMoverSuggestion(
         ) {
             Column {
                 Text(text = mover.ticker, style = MaterialTheme.typography.headlineMedium)
-                Text(
-                    text = listOfNotNull(mover.companyName, mover.exchange).joinToString(" • "),
+                CompanyExchangeText(
+                    companyName = mover.companyName,
+                    exchange = mover.exchange,
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -395,8 +397,9 @@ private fun SearchResultRow(
         ) {
             Column {
                 Text(text = result.symbol, style = MaterialTheme.typography.headlineMedium)
-                Text(
-                    text = listOfNotNull(result.companyName, result.exchange).joinToString(" • "),
+                CompanyExchangeText(
+                    companyName = result.companyName,
+                    exchange = result.exchange,
                     style = MaterialTheme.typography.bodySmall
                 )
             }

@@ -9,6 +9,11 @@ import com.example.stocksignal.data.repository.SignalsRepository
 import com.example.stocksignal.data.repository.StockRepository
 import com.example.stocksignal.data.settings.SettingsRepository
 import com.example.stocksignal.data.stooq.model.Result
+import com.example.stocksignal.domain.model.IndicatorAlertDefaults
+import com.example.stocksignal.domain.model.IndicatorAlertJson
+import com.example.stocksignal.domain.model.IndicatorAlertSetting
+import com.example.stocksignal.domain.model.IndicatorMetric
+import com.example.stocksignal.domain.model.AlertDirection
 import com.example.stocksignal.domain.model.ChartRange
 import com.example.stocksignal.domain.model.NotificationEvent
 import com.example.stocksignal.domain.model.PriceCandle
@@ -63,7 +68,8 @@ class StockDetailViewModel @Inject constructor(
                 ticker = ticker,
                 companyName = null,
                 exchange = null,
-                errorMessage = null
+                errorMessage = null,
+                indicatorAlerts = emptyList()
             )
         }
         updateWatchlistMetadata()
@@ -112,9 +118,98 @@ class StockDetailViewModel @Inject constructor(
                     sortOrder = nextOrder,
                     tags = emptyList(),
                     muteMarketMovers = false,
-                    lastNotifiedAt = null
+                    lastNotifiedAt = null,
+                    indicatorAlertsJson = null
                 )
                 watchlistRepository.upsert(entity)
+            }
+        }
+    }
+
+    fun loadIndicatorAlerts() {
+        val ticker = _uiState.value.ticker
+        if (ticker.isBlank()) return
+        viewModelScope.launch {
+            val entry = watchlistRepository.getBySymbol(ticker)
+            val stored = IndicatorAlertJson.fromJson(entry?.indicatorAlertsJson)
+            val resolved = if (stored.isEmpty()) {
+                IndicatorAlertDefaults.defaultAlerts()
+            } else {
+                stored
+            }
+            _uiState.update { it.copy(indicatorAlerts = resolved) }
+        }
+    }
+
+    fun updateIndicatorAlert(
+        metric: IndicatorMetric,
+        enabled: Boolean? = null,
+        threshold: Double? = null,
+        direction: AlertDirection? = null
+    ) {
+        _uiState.update { state ->
+            val base = if (state.indicatorAlerts.isEmpty()) {
+                IndicatorAlertDefaults.defaultAlerts()
+            } else {
+                state.indicatorAlerts
+            }
+            val updated = base.map { alert ->
+                if (alert.metric != metric) {
+                    alert
+                } else {
+                    alert.copy(
+                        enabled = enabled ?: alert.enabled,
+                        threshold = threshold ?: alert.threshold,
+                        direction = direction ?: alert.direction
+                    )
+                }
+            }
+            state.copy(indicatorAlerts = updated)
+        }
+    }
+
+    fun saveIndicatorAlerts() {
+        val state = _uiState.value
+        val ticker = state.ticker
+        if (ticker.isBlank()) return
+        viewModelScope.launch {
+            val alerts = state.indicatorAlerts
+            val enabledAlerts = alerts.any { it.enabled }
+            val encoded = IndicatorAlertJson.toJson(alerts)
+            val existing = watchlistRepository.getBySymbol(ticker)
+            if (existing == null) {
+                val maxSort = watchlistSnapshot.mapNotNull { it.sortOrder }.maxOrNull()
+                val nextOrder = (maxSort ?: (watchlistSnapshot.size - 1)).coerceAtLeast(-1) + 1
+                val entity = WatchlistItemEntity(
+                    symbol = ticker,
+                    companyName = state.companyName ?: ticker,
+                    exchange = state.exchange,
+                    addedAt = LocalDateTime.now(),
+                    alertEnabled = enabledAlerts,
+                    minScoreForNotify = 60,
+                    quietHoursStart = null,
+                    quietHoursEnd = null,
+                    snoozedUntil = null,
+                    lastSignalScore = null,
+                    lastSignalLabel = null,
+                    lastSignalConfidence = null,
+                    lastSignalTime = null,
+                    notes = null,
+                    sortOrder = nextOrder,
+                    tags = emptyList(),
+                    muteMarketMovers = false,
+                    lastNotifiedAt = null,
+                    indicatorAlertsJson = encoded
+                )
+                watchlistRepository.upsert(entity)
+                _uiState.update { it.copy(inWatchlist = true, alertEnabled = enabledAlerts) }
+            } else {
+                val updated = existing.copy(
+                    alertEnabled = existing.alertEnabled || enabledAlerts,
+                    indicatorAlertsJson = encoded
+                )
+                watchlistRepository.upsert(updated)
+                _uiState.update { it.copy(alertEnabled = updated.alertEnabled, inWatchlist = true) }
             }
         }
     }
@@ -236,5 +331,6 @@ data class StockDetailUiState(
     val history: List<NotificationEvent> = emptyList(),
     val isLoading: Boolean = false,
     val errorMessage: String? = null,
-    val highlightEventId: String? = null
+    val highlightEventId: String? = null,
+    val indicatorAlerts: List<IndicatorAlertSetting> = emptyList()
 )

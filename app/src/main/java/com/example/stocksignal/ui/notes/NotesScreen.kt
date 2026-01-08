@@ -34,12 +34,16 @@ import com.example.stocksignal.ui.theme.StockSignalDimens
 import java.time.format.DateTimeFormatter
 
 @Composable
-fun NotesRoute(viewModel: NotesViewModel = hiltViewModel()) {
+fun NotesRoute(
+    initialSymbol: String? = null,
+    viewModel: NotesViewModel = hiltViewModel()
+) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     NotesScreen(
         state = state,
         onSaveNote = viewModel::saveNote,
-        onDeleteNote = viewModel::deleteNote
+        onDeleteNote = viewModel::deleteNote,
+        initialSymbol = initialSymbol
     )
 }
 
@@ -49,10 +53,17 @@ fun NotesScreen(
     state: NotesUiState,
     onSaveNote: (String, String) -> Unit,
     onDeleteNote: (String) -> Unit,
+    initialSymbol: String? = null,
     modifier: Modifier = Modifier
 ) {
     var symbolInput by remember { mutableStateOf("") }
     var contentInput by remember { mutableStateOf("") }
+
+    androidx.compose.runtime.LaunchedEffect(initialSymbol) {
+        if (!initialSymbol.isNullOrBlank()) {
+            symbolInput = initialSymbol
+        }
+    }
 
     Column(
         modifier = modifier

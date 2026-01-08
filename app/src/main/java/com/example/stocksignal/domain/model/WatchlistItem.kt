@@ -13,5 +13,6 @@ data class WatchlistItem(
     val tags: List<String>,
     val sortOrder: Int?,
     val lastNotifiedAt: LocalDateTime?,
-    val notificationActive: Boolean
+    val notificationActive: Boolean,
+    val indicatorAlerts: List<IndicatorAlertSetting>
 )

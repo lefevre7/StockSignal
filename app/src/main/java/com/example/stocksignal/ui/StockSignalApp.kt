@@ -21,6 +21,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -71,6 +72,7 @@ private fun stockDetailRoute(ticker: String, eventId: String? = null): String {
 @Composable
 fun StockSignalApp(launchIntent: Intent? = null) {
     val navController = rememberNavController()
+    val context = LocalContext.current
     val appStateViewModel: AppStateViewModel = hiltViewModel()
     val onboardingCompleted by appStateViewModel.onboardingCompleted.collectAsStateWithLifecycle(initialValue = false)
 
@@ -82,12 +84,13 @@ fun StockSignalApp(launchIntent: Intent? = null) {
             bottomBar = {
                 val navBackStackEntry by navController.currentBackStackEntryAsState()
                 val currentRoute = navBackStackEntry?.destination?.route
+                val currentBaseRoute = currentRoute?.substringBefore("?")
                 val bottomRoutes = remember { bottomNavItems.map { it.route }.toSet() }
-                if (currentRoute in bottomRoutes) {
+                if (currentBaseRoute in bottomRoutes) {
                     NavigationBar {
                         bottomNavItems.forEach { item ->
                             NavigationBarItem(
-                                selected = currentRoute == item.route,
+                                selected = currentBaseRoute == item.route,
                                 onClick = {
                                     navController.navigate(item.route) {
                                         popUpTo(navController.graph.findStartDestination().id) {
@@ -139,8 +142,18 @@ fun StockSignalApp(launchIntent: Intent? = null) {
                         }
                     )
                 }
-                composable(BottomNavScreen.Notes.route) {
-                    NotesRoute()
+                composable(
+                    route = "${BottomNavScreen.Notes.route}?symbol={symbol}",
+                    arguments = listOf(
+                        navArgument("symbol") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        }
+                    )
+                ) { entry ->
+                    val symbol = entry.arguments?.getString("symbol")
+                    NotesRoute(initialSymbol = symbol)
                 }
                 composable(BottomNavScreen.Settings.route) {
                     SettingsRoute()
@@ -167,7 +180,25 @@ fun StockSignalApp(launchIntent: Intent? = null) {
                         navDeepLink { uriPattern = "stocksignal://stock/{ticker}?eventId={eventId}" }
                     )
                 ) {
-                    StockDetailRoute(onBack = { navController.popBackStack() })
+                    StockDetailRoute(
+                        onBack = { navController.popBackStack() },
+                        onAddNote = { ticker ->
+                            navController.navigate("${BottomNavScreen.Notes.route}?symbol=${Uri.encode(ticker)}")
+                        },
+                        onShare = { ticker, eventId ->
+                            val link = if (eventId.isNullOrBlank()) {
+                                "stocksignal://stock/${Uri.encode(ticker)}"
+                            } else {
+                                "stocksignal://stock/${Uri.encode(ticker)}?eventId=${Uri.encode(eventId)}"
+                            }
+                            val text = "$ticker — StockSignal\n$link"
+                            val intent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, text)
+                            }
+                            context.startActivity(Intent.createChooser(intent, "Share"))
+                        }
+                    )
                 }
             }
         }

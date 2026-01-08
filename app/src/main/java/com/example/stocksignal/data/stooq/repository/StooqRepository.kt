@@ -317,6 +317,25 @@ class StooqRepository(private val api: StooqApi) {
             filtered[key] = data.getValue(key)
         }
 
+        if (filtered.isEmpty()) {
+            val startDate = start?.toLocalDate()
+            val endDate = end?.toLocalDate()
+            if (startDate != null || endDate != null) {
+                Log.w(TAG, "filterIntradayByRange: time filter returned 0 records, falling back to date-only filter")
+                val dateFiltered = LinkedHashMap<LocalDateTime, IntradayStockData>()
+                for (key in sortedKeys) {
+                    val date = key.toLocalDate()
+                    if (startDate != null && date.isBefore(startDate)) continue
+                    if (endDate != null && date.isAfter(endDate)) continue
+                    dateFiltered[key] = data.getValue(key)
+                }
+                Log.d(TAG, "filterIntradayByRange: date-only filtered to ${dateFiltered.size} records")
+                if (dateFiltered.isNotEmpty()) {
+                    return dateFiltered
+                }
+            }
+        }
+
         Log.d(TAG, "filterIntradayByRange: filtered to ${filtered.size} records")
         return filtered
     }

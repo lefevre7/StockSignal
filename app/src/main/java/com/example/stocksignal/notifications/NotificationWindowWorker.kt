@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import com.example.stocksignal.data.local.entity.WatchlistItemEntity
 import com.example.stocksignal.data.local.repository.WatchlistRepository
 import com.example.stocksignal.data.repository.SignalsRepository
 import com.example.stocksignal.data.repository.StockRepository
@@ -16,10 +17,15 @@ import com.example.stocksignal.data.stooq.model.MarketMoverRange
 import com.example.stocksignal.data.stooq.model.Result as StooqResult
 import com.example.stocksignal.data.stooq.repository.MarketMoversRepository
 import com.example.stocksignal.domain.model.ChartRange
+import com.example.stocksignal.domain.model.IndicatorAlertDefaults
+import com.example.stocksignal.domain.model.IndicatorAlertJson
+import com.example.stocksignal.domain.model.IndicatorAlertSetting
 import com.example.stocksignal.domain.model.NotificationEvent
 import com.example.stocksignal.domain.model.NotificationEventType
 import com.example.stocksignal.domain.model.PriceCandle
+import com.example.stocksignal.domain.model.SignalReason
 import com.example.stocksignal.domain.model.SignalResult
+import com.example.stocksignal.domain.signal.IndicatorAlertEvaluator
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.flow.first
@@ -90,6 +96,11 @@ class NotificationWindowWorker @AssistedInject constructor(
                     signalsRepository.recordEvent(event)
                     candidates.add(event)
                 }
+                evaluateIndicatorAlerts(
+                    item = item,
+                    now = now,
+                    candidates = candidates
+                )
             }
         }
 
@@ -177,6 +188,114 @@ class NotificationWindowWorker @AssistedInject constructor(
             delivered = false,
             reasons = signal.reasons
         )
+    }
+
+    private suspend fun evaluateIndicatorAlerts(
+        item: WatchlistItemEntity,
+        now: LocalDateTime,
+        candidates: MutableList<NotificationEvent>
+    ) {
+        val alerts = IndicatorAlertJson.fromJson(item.indicatorAlertsJson).filter { it.enabled }
+        if (alerts.isEmpty()) return
+
+        val alertsByRange = alerts.groupBy { it.metric.defaultRange }
+        for ((range, rangeAlerts) in alertsByRange) {
+            val result = stockRepository.getSeries(
+                item.symbol,
+                range,
+                forceRefresh = true,
+                eventType = null
+            )
+            if (result is StooqResult.Success) {
+                val series = result.data
+                if (series.isEmpty()) continue
+                if (!isFresh(series, now)) continue
+                val signal = signalsRepository.computeSignal(series, range)
+                for (alert in rangeAlerts) {
+                    val evaluation = IndicatorAlertEvaluator.evaluate(alert, series) ?: continue
+                    if (!evaluation.crossed) continue
+                    val label = indicatorLabel(alert)
+                    if (signalsRepository.isInCooldown(item.symbol, label, now)) continue
+                    val event = buildIndicatorEvent(
+                        ticker = item.symbol,
+                        company = item.companyName,
+                        series = series,
+                        alert = alert,
+                        evaluation = evaluation,
+                        signal = signal,
+                        generatedAt = now
+                    )
+                    signalsRepository.recordIndicatorEvent(event, label)
+                    candidates.add(event)
+                }
+            }
+        }
+    }
+
+    private fun buildIndicatorEvent(
+        ticker: String,
+        company: String?,
+        series: List<PriceCandle>,
+        alert: IndicatorAlertSetting,
+        evaluation: IndicatorAlertEvaluator.Evaluation,
+        signal: SignalResult?,
+        generatedAt: LocalDateTime
+    ): NotificationEvent {
+        val reason = indicatorReason(alert, evaluation)
+        val reasons = listOf(reason)
+        return NotificationEvent(
+            id = indicatorEventId(ticker, alert, generatedAt),
+            type = NotificationEventType.WATCHLIST_SIGNAL,
+            ticker = ticker,
+            companyName = company,
+            score = signal?.score ?: 0,
+            averageScore = signal?.averageScore,
+            modeScore = signal?.modeScore,
+            confidence = signal?.confidence ?: 0,
+            price = series.lastOrNull()?.close,
+            percentChange = percentChange(series),
+            generatedAt = generatedAt,
+            notifiedAt = null,
+            deepLink = "stocksignal://stock/$ticker",
+            source = "local",
+            delivered = false,
+            reasons = reasons
+        )
+    }
+
+    private fun indicatorReason(
+        alert: IndicatorAlertSetting,
+        evaluation: IndicatorAlertEvaluator.Evaluation
+    ): SignalReason {
+        val direction = if (alert.direction == com.example.stocksignal.domain.model.AlertDirection.ABOVE) {
+            "above"
+        } else {
+            "below"
+        }
+        val threshold = IndicatorAlertDefaults.formatValue(alert.threshold)
+        val current = IndicatorAlertDefaults.formatValue(evaluation.current)
+        val title = "${alert.metric.label} crossed $direction $threshold (now $current)"
+        val explanation = "Alert when ${alert.metric.label} is $direction $threshold. Current value $current."
+        return SignalReason(
+            id = "indicator_${alert.metric.name}",
+            title = title,
+            explanation = explanation,
+            impactScore = 0,
+            model = "indicator"
+        )
+    }
+
+    private fun indicatorLabel(alert: IndicatorAlertSetting): String {
+        val threshold = IndicatorAlertDefaults.formatValue(alert.threshold).replace('.', '_')
+        return "indicator_${alert.metric.name}_${alert.direction.name}_$threshold"
+    }
+
+    private fun indicatorEventId(
+        ticker: String,
+        alert: IndicatorAlertSetting,
+        generatedAt: LocalDateTime
+    ): String {
+        return "ind_${ticker}_${alert.metric.name}_${generatedAt.toString().replace(':', '_')}"
     }
 
     private fun signalEventId(ticker: String, generatedAt: LocalDateTime): String {

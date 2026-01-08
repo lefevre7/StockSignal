@@ -79,7 +79,8 @@ class NotificationActionReceiver : BroadcastReceiver() {
                         sortOrder = nextOrder,
                         tags = emptyList(),
                         muteMarketMovers = false,
-                        lastNotifiedAt = null
+                        lastNotifiedAt = null,
+                        indicatorAlertsJson = null
                     )
                 )
             }

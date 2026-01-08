@@ -3,6 +3,7 @@ package com.example.stocksignal.data.local.di
 import android.content.Context
 import androidx.room.Room
 import com.example.stocksignal.data.local.db.StockSignalDatabase
+import com.example.stocksignal.data.local.db.MIGRATION_1_2
 import com.example.stocksignal.data.local.dao.MarketMoversCacheDao
 import com.example.stocksignal.data.local.dao.NotesDao
 import com.example.stocksignal.data.local.dao.NotificationStateDao
@@ -28,7 +29,8 @@ object LocalDataModule {
             context,
             StockSignalDatabase::class.java,
             "stocksignal.db"
-        ).build()
+        ).addMigrations(MIGRATION_1_2)
+            .build()
     }
 
     @Provides

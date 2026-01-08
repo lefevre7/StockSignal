@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.MoreVert
@@ -28,12 +30,15 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -42,11 +47,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.stocksignal.domain.model.AlertDirection
 import com.example.stocksignal.domain.model.ChartRange
+import com.example.stocksignal.domain.model.IndicatorAlertDefaults
+import com.example.stocksignal.domain.model.IndicatorAlertSetting
+import com.example.stocksignal.domain.model.IndicatorMetric
 import com.example.stocksignal.domain.model.NotificationEvent
 import com.example.stocksignal.domain.model.PriceCandle
 import com.example.stocksignal.domain.model.SignalReason
@@ -59,6 +70,8 @@ import com.example.stocksignal.ui.components.SignalChip
 import com.example.stocksignal.ui.components.SignalScoreRow
 import com.example.stocksignal.ui.components.StockCard
 import com.example.stocksignal.ui.components.TagChip
+import com.example.stocksignal.ui.components.CompanyExchangeText
+import com.example.stocksignal.ui.components.HtmlText
 import com.example.stocksignal.ui.theme.StockSignalDimens
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -67,6 +80,8 @@ import kotlin.math.abs
 @Composable
 fun StockDetailRoute(
     onBack: () -> Unit,
+    onAddNote: (String) -> Unit,
+    onShare: (String, String?) -> Unit,
     viewModel: StockDetailViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -75,7 +90,12 @@ fun StockDetailRoute(
         onBack = onBack,
         onSelectRange = viewModel::selectRange,
         onToggleWatchlist = viewModel::toggleWatchlist,
-        onRefresh = viewModel::refresh
+        onRefresh = viewModel::refresh,
+        onLoadIndicatorAlerts = viewModel::loadIndicatorAlerts,
+        onUpdateIndicatorAlert = viewModel::updateIndicatorAlert,
+        onSaveIndicatorAlerts = viewModel::saveIndicatorAlerts,
+        onAddNote = onAddNote,
+        onShare = onShare
     )
 }
 
@@ -87,6 +107,11 @@ fun StockDetailScreen(
     onSelectRange: (ChartRange) -> Unit,
     onToggleWatchlist: () -> Unit,
     onRefresh: () -> Unit,
+    onLoadIndicatorAlerts: () -> Unit,
+    onUpdateIndicatorAlert: (IndicatorMetric, Boolean?, Double?, AlertDirection?) -> Unit,
+    onSaveIndicatorAlerts: () -> Unit,
+    onAddNote: (String) -> Unit,
+    onShare: (String, String?) -> Unit,
     modifier: Modifier = Modifier
 ) {
     var selectedTab by rememberSaveable(state.highlightEventId) {
@@ -95,6 +120,12 @@ fun StockDetailScreen(
         )
     }
     val scrollState = rememberScrollState()
+    var showAlertSheet by rememberSaveable { mutableStateOf(false) }
+    val alertOptions = if (state.indicatorAlerts.isEmpty()) {
+        IndicatorAlertDefaults.defaultAlerts()
+    } else {
+        state.indicatorAlerts
+    }
 
     Column(modifier = modifier.fillMaxSize()) {
         StockDetailTopBar(
@@ -173,8 +204,39 @@ fun StockDetailScreen(
             }
 
             Spacer(modifier = Modifier.height(16.dp))
-            CTASection()
+            CTASection(
+                onSetAlert = {
+                    if (state.ticker.isNotBlank()) {
+                        onLoadIndicatorAlerts()
+                        showAlertSheet = true
+                    }
+                },
+                onAddNote = {
+                    if (state.ticker.isNotBlank()) {
+                        onAddNote(state.ticker)
+                    }
+                },
+                onShare = {
+                    if (state.ticker.isNotBlank()) {
+                        onShare(state.ticker, state.highlightEventId)
+                    }
+                }
+            )
         }
+    }
+
+    if (showAlertSheet) {
+        IndicatorAlertSheet(
+            alerts = alertOptions,
+            onToggle = { metric, enabled -> onUpdateIndicatorAlert(metric, enabled, null, null) },
+            onThresholdChange = { metric, value -> onUpdateIndicatorAlert(metric, null, value, null) },
+            onDirectionChange = { metric, direction -> onUpdateIndicatorAlert(metric, null, null, direction) },
+            onSave = {
+                onSaveIndicatorAlerts()
+                showAlertSheet = false
+            },
+            onDismiss = { showAlertSheet = false }
+        )
     }
 }
 
@@ -211,11 +273,11 @@ private fun StockDetailTopBar(
                     text = ticker.ifBlank { "Stock" },
                     style = MaterialTheme.typography.headlineLarge
                 )
-                Text(
-                    text = listOfNotNull(companyName, exchange).joinToString(" • "),
+                CompanyExchangeText(
+                    companyName = companyName,
+                    exchange = exchange,
                     style = MaterialTheme.typography.bodySmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    maxLines = 1
                 )
             }
         }
@@ -347,10 +409,17 @@ private fun OverviewTab(state: StockDetailUiState) {
     StockCard {
         Text(text = "Overview", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = state.companyName ?: "Company summary coming soon.",
-            style = MaterialTheme.typography.bodySmall
-        )
+        if (!state.companyName.isNullOrBlank()) {
+            HtmlText(
+                html = state.companyName,
+                style = MaterialTheme.typography.bodySmall
+            )
+        } else {
+            Text(
+                text = "Company summary coming soon.",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
         Spacer(modifier = Modifier.height(12.dp))
         FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             KeyStat(label = "Market Cap", value = "—")
@@ -455,14 +524,105 @@ private fun HistoryTab(
 }
 
 @Composable
-private fun CTASection() {
+private fun CTASection(
+    onSetAlert: () -> Unit,
+    onAddNote: () -> Unit,
+    onShare: () -> Unit
+) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceEvenly
     ) {
-        TextButton(onClick = { /* TODO set alert */ }) { Text("Set Alert") }
-        TextButton(onClick = { /* TODO add note */ }) { Text("Add Note") }
-        TextButton(onClick = { /* TODO share */ }) { Text("Share") }
+        TextButton(onClick = onSetAlert) { Text("Set Alert") }
+        TextButton(onClick = onAddNote) { Text("Add Note") }
+        TextButton(onClick = onShare) { Text("Share") }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun IndicatorAlertSheet(
+    alerts: List<IndicatorAlertSetting>,
+    onToggle: (IndicatorMetric, Boolean) -> Unit,
+    onThresholdChange: (IndicatorMetric, Double) -> Unit,
+    onDirectionChange: (IndicatorMetric, AlertDirection) -> Unit,
+    onSave: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val thresholdInputs = remember(alerts) {
+        mutableStateMapOf<IndicatorMetric, String>().apply {
+            alerts.forEach { alert ->
+                put(alert.metric, IndicatorAlertDefaults.formatValue(alert.threshold))
+            }
+        }
+    }
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = StockSignalDimens.cardPadding, vertical = 12.dp)
+        ) {
+            Text(text = "Indicator alerts", style = MaterialTheme.typography.headlineMedium)
+            Spacer(modifier = Modifier.height(12.dp))
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                items(alerts, key = { it.metric }) { alert ->
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(text = alert.metric.label, style = MaterialTheme.typography.bodyMedium)
+                            FilterChip(
+                                selected = alert.enabled,
+                                onClick = { onToggle(alert.metric, !alert.enabled) },
+                                label = { Text(if (alert.enabled) "On" else "Off") }
+                            )
+                        }
+                        Text(
+                            text = IndicatorAlertDefaults.defaultDescription(alert.metric),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FilterChip(
+                                selected = alert.direction == AlertDirection.ABOVE,
+                                onClick = { onDirectionChange(alert.metric, AlertDirection.ABOVE) },
+                                label = { Text("Above") }
+                            )
+                            FilterChip(
+                                selected = alert.direction == AlertDirection.BELOW,
+                                onClick = { onDirectionChange(alert.metric, AlertDirection.BELOW) },
+                                label = { Text("Below") }
+                            )
+                        }
+                        TextField(
+                            value = thresholdInputs[alert.metric].orEmpty(),
+                            onValueChange = { raw ->
+                                thresholdInputs[alert.metric] = raw
+                                val value = raw.toDoubleOrNull()
+                                if (value != null) {
+                                    onThresholdChange(alert.metric, value)
+                                }
+                            },
+                            label = { Text("Threshold") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                        )
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+                Spacer(modifier = Modifier.width(8.dp))
+                TextButton(onClick = onSave) { Text("Save") }
+            }
+        }
     }
 }
 

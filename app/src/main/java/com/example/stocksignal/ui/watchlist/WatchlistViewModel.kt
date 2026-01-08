@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.stocksignal.data.local.entity.WatchlistItemEntity
 import com.example.stocksignal.data.local.repository.WatchlistRepository
 import com.example.stocksignal.domain.model.AlertSettings
+import com.example.stocksignal.domain.model.IndicatorAlertJson
 import com.example.stocksignal.domain.model.SignalSnapshot
 import com.example.stocksignal.domain.model.WatchlistItem
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -52,6 +53,7 @@ private fun WatchlistItemEntity.toDomain(): WatchlistItem {
     } else {
         null
     }
+    val indicatorAlerts = IndicatorAlertJson.fromJson(indicatorAlertsJson)
     return WatchlistItem(
         symbol = symbol,
         companyName = companyName,
@@ -63,6 +65,7 @@ private fun WatchlistItemEntity.toDomain(): WatchlistItem {
         tags = tags,
         sortOrder = sortOrder,
         lastNotifiedAt = lastNotifiedAt,
-        notificationActive = false
+        notificationActive = false,
+        indicatorAlerts = indicatorAlerts
     )
 }
