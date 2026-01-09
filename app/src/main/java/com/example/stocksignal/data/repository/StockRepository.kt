@@ -44,6 +44,19 @@ class StockRepository @Inject constructor(
         }
     }
 
+    suspend fun getDailySeriesFallback(
+        symbol: String,
+        range: ChartRange,
+        forceRefresh: Boolean = false
+    ): Result<List<PriceCandle>> {
+        val cacheKey = "${range.label}_daily_fallback"
+        val cached = cacheRepository.getCache(symbol, cacheKey)
+        if (!forceRefresh && cached != null && !isFallbackStale(cached)) {
+            return Result.Success(PriceCandleJson.fromJson(cached.seriesJson))
+        }
+        return fetchDailySeries(symbol, range, eventType = null, cacheKey = cacheKey)
+    }
+
     private suspend fun fetchIntradaySeries(
         symbol: String,
         range: ChartRange,
@@ -95,7 +108,8 @@ class StockRepository @Inject constructor(
     private suspend fun fetchDailySeries(
         symbol: String,
         range: ChartRange,
-        eventType: NotificationEventType?
+        eventType: NotificationEventType?,
+        cacheKey: String = range.label
     ): Result<List<PriceCandle>> {
         val endDate = normalizeToTradingDay(LocalDate.now())
         val startDate = when (range) {
@@ -121,7 +135,7 @@ class StockRepository @Inject constructor(
                     cacheRepository.upsert(
                         StockDetailCacheEntity(
                             symbol = symbol,
-                            range = range.label,
+                            range = cacheKey,
                             fetchedAt = LocalDateTime.now(),
                             seriesJson = PriceCandleJson.toJson(candles),
                             latestPrice = candles.lastOrNull()?.close,
@@ -187,6 +201,10 @@ class StockRepository @Inject constructor(
             ChartRange.FIVE_YEAR -> Duration.ofHours(24)
         }
         return Duration.between(cache.fetchedAt, LocalDateTime.now()) > ttl
+    }
+
+    private fun isFallbackStale(cache: StockDetailCacheEntity): Boolean {
+        return Duration.between(cache.fetchedAt, LocalDateTime.now()) > Duration.ofHours(24)
     }
 
     private fun mapDailyToCandles(data: Map<LocalDate, StockData>): List<PriceCandle> {

@@ -54,7 +54,13 @@ class StockDetailViewModel @Inject constructor(
             _uiState.update { it.copy(range = settings.selectedChartRange) }
             val tickerArg = savedStateHandle.get<String>(ARG_TICKER).orEmpty()
             val eventIdArg = savedStateHandle.get<String>(ARG_EVENT_ID)
-            _uiState.update { it.copy(highlightEventId = eventIdArg) }
+            val openAlertsArg = savedStateHandle.get<Boolean>(ARG_OPEN_ALERTS) ?: false
+            _uiState.update {
+                it.copy(
+                    highlightEventId = eventIdArg,
+                    openAlerts = openAlertsArg
+                )
+            }
             if (tickerArg.isNotBlank()) {
                 setTicker(tickerArg)
             }
@@ -69,6 +75,7 @@ class StockDetailViewModel @Inject constructor(
                 companyName = null,
                 exchange = null,
                 errorMessage = null,
+                tags = emptyList(),
                 indicatorAlerts = emptyList()
             )
         }
@@ -97,29 +104,12 @@ class StockDetailViewModel @Inject constructor(
             val existing = watchlistRepository.getBySymbol(state.ticker)
             if (existing != null) {
                 watchlistRepository.deleteBySymbol(state.ticker)
+                _uiState.update { it.copy(inWatchlist = false, alertEnabled = false, tags = emptyList()) }
             } else {
-                val maxSort = watchlistSnapshot.mapNotNull { it.sortOrder }.maxOrNull()
-                val nextOrder = (maxSort ?: (watchlistSnapshot.size - 1)).coerceAtLeast(-1) + 1
-                val entity = WatchlistItemEntity(
-                    symbol = state.ticker,
-                    companyName = state.companyName ?: state.ticker,
-                    exchange = state.exchange,
-                    addedAt = LocalDateTime.now(),
-                    alertEnabled = true,
-                    minScoreForNotify = 60,
-                    quietHoursStart = null,
-                    quietHoursEnd = null,
-                    snoozedUntil = null,
-                    lastSignalScore = null,
-                    lastSignalLabel = null,
-                    lastSignalConfidence = null,
-                    lastSignalTime = null,
-                    notes = null,
-                    sortOrder = nextOrder,
-                    tags = emptyList(),
-                    muteMarketMovers = false,
-                    lastNotifiedAt = null,
-                    indicatorAlertsJson = null
+                val entity = buildWatchlistEntry(
+                    tags = state.tags,
+                    indicatorAlertsJson = null,
+                    alertEnabled = true
                 )
                 watchlistRepository.upsert(entity)
             }
@@ -178,28 +168,10 @@ class StockDetailViewModel @Inject constructor(
             val encoded = IndicatorAlertJson.toJson(alerts)
             val existing = watchlistRepository.getBySymbol(ticker)
             if (existing == null) {
-                val maxSort = watchlistSnapshot.mapNotNull { it.sortOrder }.maxOrNull()
-                val nextOrder = (maxSort ?: (watchlistSnapshot.size - 1)).coerceAtLeast(-1) + 1
-                val entity = WatchlistItemEntity(
-                    symbol = ticker,
-                    companyName = state.companyName ?: ticker,
-                    exchange = state.exchange,
-                    addedAt = LocalDateTime.now(),
-                    alertEnabled = enabledAlerts,
-                    minScoreForNotify = 60,
-                    quietHoursStart = null,
-                    quietHoursEnd = null,
-                    snoozedUntil = null,
-                    lastSignalScore = null,
-                    lastSignalLabel = null,
-                    lastSignalConfidence = null,
-                    lastSignalTime = null,
-                    notes = null,
-                    sortOrder = nextOrder,
-                    tags = emptyList(),
-                    muteMarketMovers = false,
-                    lastNotifiedAt = null,
-                    indicatorAlertsJson = encoded
+                val entity = buildWatchlistEntry(
+                    tags = state.tags,
+                    indicatorAlertsJson = encoded,
+                    alertEnabled = enabledAlerts
                 )
                 watchlistRepository.upsert(entity)
                 _uiState.update { it.copy(inWatchlist = true, alertEnabled = enabledAlerts) }
@@ -210,6 +182,42 @@ class StockDetailViewModel @Inject constructor(
                 )
                 watchlistRepository.upsert(updated)
                 _uiState.update { it.copy(alertEnabled = updated.alertEnabled, inWatchlist = true) }
+            }
+        }
+    }
+
+    fun addTag(rawTag: String) {
+        val ticker = _uiState.value.ticker
+        if (ticker.isBlank()) return
+        val tag = rawTag.trim()
+        if (tag.isBlank()) return
+        viewModelScope.launch {
+            val existing = watchlistRepository.getBySymbol(ticker)
+            val updatedTags = mergeTags(existing?.tags.orEmpty(), tag)
+            if (existing == null) {
+                val entity = buildWatchlistEntry(
+                    tags = updatedTags,
+                    indicatorAlertsJson = null,
+                    alertEnabled = true
+                )
+                watchlistRepository.upsert(entity)
+                _uiState.update { it.copy(inWatchlist = true, tags = updatedTags) }
+            } else if (updatedTags != existing.tags) {
+                watchlistRepository.upsert(existing.copy(tags = updatedTags))
+                _uiState.update { it.copy(tags = updatedTags) }
+            }
+        }
+    }
+
+    fun removeTag(tag: String) {
+        val ticker = _uiState.value.ticker
+        if (ticker.isBlank()) return
+        viewModelScope.launch {
+            val existing = watchlistRepository.getBySymbol(ticker) ?: return@launch
+            val updatedTags = existing.tags.filterNot { it.equals(tag, ignoreCase = true) }
+            if (updatedTags != existing.tags) {
+                watchlistRepository.upsert(existing.copy(tags = updatedTags))
+                _uiState.update { it.copy(tags = updatedTags) }
             }
         }
     }
@@ -232,7 +240,8 @@ class StockDetailViewModel @Inject constructor(
                 companyName = entry?.companyName ?: it.companyName,
                 exchange = entry?.exchange ?: it.exchange,
                 inWatchlist = entry != null,
-                alertEnabled = entry?.alertEnabled ?: it.alertEnabled
+                alertEnabled = entry?.alertEnabled ?: it.alertEnabled,
+                tags = entry?.tags ?: emptyList()
             )
         }
     }
@@ -312,9 +321,46 @@ class StockDetailViewModel @Inject constructor(
         )
     }
 
+    private fun buildWatchlistEntry(
+        tags: List<String>,
+        indicatorAlertsJson: String?,
+        alertEnabled: Boolean
+    ): WatchlistItemEntity {
+        val state = _uiState.value
+        val maxSort = watchlistSnapshot.mapNotNull { it.sortOrder }.maxOrNull()
+        val nextOrder = (maxSort ?: (watchlistSnapshot.size - 1)).coerceAtLeast(-1) + 1
+        return WatchlistItemEntity(
+            symbol = state.ticker,
+            companyName = state.companyName ?: state.ticker,
+            exchange = state.exchange,
+            addedAt = LocalDateTime.now(),
+            alertEnabled = alertEnabled,
+            minScoreForNotify = 60,
+            quietHoursStart = null,
+            quietHoursEnd = null,
+            snoozedUntil = null,
+            lastSignalScore = null,
+            lastSignalLabel = null,
+            lastSignalConfidence = null,
+            lastSignalTime = null,
+            notes = null,
+            sortOrder = nextOrder,
+            tags = tags,
+            muteMarketMovers = false,
+            lastNotifiedAt = null,
+            indicatorAlertsJson = indicatorAlertsJson
+        )
+    }
+
+    private fun mergeTags(existing: List<String>, newTag: String): List<String> {
+        if (existing.any { it.equals(newTag, ignoreCase = true) }) return existing
+        return existing + newTag
+    }
+
     companion object {
         const val ARG_TICKER = "ticker"
         const val ARG_EVENT_ID = "eventId"
+        const val ARG_OPEN_ALERTS = "openAlerts"
     }
 }
 
@@ -324,6 +370,7 @@ data class StockDetailUiState(
     val exchange: String? = null,
     val inWatchlist: Boolean = false,
     val alertEnabled: Boolean = false,
+    val tags: List<String> = emptyList(),
     val range: ChartRange = ChartRange.ONE_DAY,
     val series: List<PriceCandle> = emptyList(),
     val signal: SignalResult? = null,
@@ -332,5 +379,6 @@ data class StockDetailUiState(
     val isLoading: Boolean = false,
     val errorMessage: String? = null,
     val highlightEventId: String? = null,
-    val indicatorAlerts: List<IndicatorAlertSetting> = emptyList()
+    val indicatorAlerts: List<IndicatorAlertSetting> = emptyList(),
+    val openAlerts: Boolean = false
 )

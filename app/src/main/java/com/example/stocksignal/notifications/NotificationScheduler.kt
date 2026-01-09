@@ -51,7 +51,7 @@ class NotificationScheduler @Inject constructor(
         }
 
         windows.forEach { window ->
-            val delay = initialDelay(window)
+            val delay = initialDelay(window, settings)
             val request = PeriodicWorkRequestBuilder<NotificationWindowWorker>(
                 interval.toHours(),
                 TimeUnit.HOURS
@@ -74,20 +74,29 @@ class NotificationScheduler @Inject constructor(
         val windows = settings.scheduleWindows
         return when (settings.frequency) {
             NotificationFrequency.THREE_PER_DAY -> windows
-            NotificationFrequency.ONE_PER_DAY -> windows.take(1)
-            NotificationFrequency.ONE_PER_WEEK -> windows.take(1)
+            NotificationFrequency.ONE_PER_DAY ->
+                windows.filter { it.type == ScheduleWindowType.MARKET_OPEN_MINUS }
+            NotificationFrequency.ONE_PER_WEEK ->
+                windows.filter { it.type == ScheduleWindowType.MARKET_OPEN_MINUS }.take(1)
             NotificationFrequency.ONLY_WHEN_OPEN -> emptyList()
         }
     }
 
-    private fun initialDelay(window: ScheduleWindow): Duration {
+    private fun initialDelay(window: ScheduleWindow, settings: AppSettings): Duration {
         val now = ZonedDateTime.now()
-        val next = nextRunAt(window, now)
+        val next = nextRunAt(window, now, settings)
         val delay = Duration.between(Instant.now(), next.toInstant())
         return if (delay.isNegative) Duration.ZERO else delay
     }
 
-    private fun nextRunAt(window: ScheduleWindow, now: ZonedDateTime): ZonedDateTime {
+    private fun nextRunAt(
+        window: ScheduleWindow,
+        now: ZonedDateTime,
+        settings: AppSettings
+    ): ZonedDateTime {
+        if (settings.frequency == NotificationFrequency.ONE_PER_WEEK) {
+            return nextWeeklyWindow(window, now, settings.weeklyDay)
+        }
         return when (window.type) {
             ScheduleWindowType.FIXED_LOCAL -> nextLocalWindow(window, now)
             ScheduleWindowType.MARKET_OPEN_MINUS -> nextMarketOpenWindow(window, now)
@@ -118,6 +127,24 @@ class NotificationScheduler @Inject constructor(
         }
         if (candidate.dayOfWeek == DayOfWeek.SATURDAY || candidate.dayOfWeek == DayOfWeek.SUNDAY) {
             candidate = candidate.with(TemporalAdjusters.next(DayOfWeek.MONDAY))
+        }
+        return candidate
+    }
+
+    private fun nextWeeklyWindow(
+        window: ScheduleWindow,
+        now: ZonedDateTime,
+        weeklyDay: DayOfWeek
+    ): ZonedDateTime {
+        val zone = ZoneId.of(window.zoneId ?: "America/New_York")
+        val offset = window.offsetMinutes?.toLong() ?: -10L
+        val marketOpen = LocalTime.of(9, 30).plusMinutes(offset)
+        val nowInZone = now.withZoneSameInstant(zone)
+        var candidateDate = nowInZone.toLocalDate().with(TemporalAdjusters.nextOrSame(weeklyDay))
+        var candidate = candidateDate.atTime(marketOpen).atZone(zone)
+        if (!candidate.isAfter(nowInZone)) {
+            candidateDate = candidateDate.with(TemporalAdjusters.next(weeklyDay))
+            candidate = candidateDate.atTime(marketOpen).atZone(zone)
         }
         return candidate
     }

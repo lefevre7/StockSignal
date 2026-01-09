@@ -1,5 +1,6 @@
 package com.example.stocksignal.ui.watchlist
 
+import android.widget.Toast
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
@@ -20,10 +21,10 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DragHandle
-import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -39,29 +40,32 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.stocksignal.domain.model.PriceCandle
 import com.example.stocksignal.domain.model.SignalTier
 import com.example.stocksignal.domain.model.WatchlistItem
+import com.example.stocksignal.ui.components.CompanyExchangeText
 import com.example.stocksignal.ui.components.SignalBadge
 import com.example.stocksignal.ui.components.SignalChip
 import com.example.stocksignal.ui.components.SignalScoreRow
 import com.example.stocksignal.ui.components.StockCard
 import com.example.stocksignal.ui.components.TagChip
-import com.example.stocksignal.ui.components.CompanyExchangeText
+import com.example.stocksignal.ui.components.signalColors
 import com.example.stocksignal.ui.theme.StockSignalDimens
 import java.time.Duration
-import java.time.LocalDateTime
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import kotlin.math.abs
 
@@ -69,14 +73,20 @@ import kotlin.math.abs
 fun WatchlistRoute(
     onSearchClick: () -> Unit = {},
     onOpenDetail: (String, String?) -> Unit = { _, _ -> },
+    onAddNote: (String) -> Unit = {},
+    onOpenAlert: (String) -> Unit = {},
     viewModel: WatchlistViewModel = hiltViewModel()
 ) {
-    val items by viewModel.watchlistItems.collectAsStateWithLifecycle()
+    val items by viewModel.watchlistCards.collectAsStateWithLifecycle()
     WatchlistScreen(
         items = items,
         onReorder = viewModel::persistCustomOrder,
+        onRemove = viewModel::remove,
+        onSnooze = viewModel::snooze,
         onSearchClick = onSearchClick,
-        onOpenDetail = onOpenDetail
+        onOpenDetail = onOpenDetail,
+        onAddNote = onAddNote,
+        onOpenAlert = onOpenAlert
     )
 }
 
@@ -98,17 +108,21 @@ private fun <T> MutableList<T>.move(from: Int, to: Int) {
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun WatchlistScreen(
-    items: List<WatchlistItem>,
+    items: List<WatchlistCardState>,
     modifier: Modifier = Modifier,
     onReorder: (List<WatchlistItem>) -> Unit = {},
+    onRemove: (String) -> Unit = {},
+    onSnooze: (String) -> Unit = {},
     onSearchClick: () -> Unit = {},
-    onOpenDetail: (String, String?) -> Unit = { _, _ -> }
+    onOpenDetail: (String, String?) -> Unit = { _, _ -> },
+    onAddNote: (String) -> Unit = {},
+    onOpenAlert: (String) -> Unit = {}
 ) {
     var sortMode by remember { mutableStateOf(SortMode.STRONG_BUY_FIRST) }
     var groupByTag by remember { mutableStateOf(false) }
     val isCustomSort = sortMode == SortMode.CUSTOM
     val listState = rememberLazyListState()
-    val customItems = remember { mutableStateListOf<WatchlistItem>() }
+    val customItems = remember { mutableStateListOf<WatchlistCardState>() }
     var draggingIndex by remember { mutableStateOf<Int?>(null) }
     var dragOffset by remember { mutableStateOf(0f) }
     var reorderPending by remember { mutableStateOf(false) }
@@ -122,12 +136,12 @@ fun WatchlistScreen(
     val sorted = remember(items, sortMode) {
         when (sortMode) {
             SortMode.STRONG_BUY_FIRST ->
-                items.sortedByDescending { it.lastSignal?.score ?: Int.MIN_VALUE }
+                items.sortedByDescending { it.displaySignal()?.score ?: Int.MIN_VALUE }
             SortMode.STRONG_SELL_FIRST ->
-                items.sortedBy { it.lastSignal?.score ?: Int.MAX_VALUE }
-            SortMode.ALPHABETICAL -> items.sortedBy { it.symbol }
-            SortMode.PRICE_CHANGE -> items.sortedByDescending { it.lastSignal?.score ?: 0 }
-            SortMode.CUSTOM -> items.sortedBy { it.sortOrder ?: Int.MAX_VALUE }
+                items.sortedBy { it.displaySignal()?.score ?: Int.MAX_VALUE }
+            SortMode.ALPHABETICAL -> items.sortedBy { it.item.symbol }
+            SortMode.PRICE_CHANGE -> items.sortedByDescending { it.percentChange ?: Double.NEGATIVE_INFINITY }
+            SortMode.CUSTOM -> items.sortedBy { it.item.sortOrder ?: Int.MAX_VALUE }
         }
     }
 
@@ -150,7 +164,7 @@ fun WatchlistScreen(
     val reorderEnabled = isCustomSort && !groupByTag
     val finalizeReorder = {
         if (reorderPending && reorderEnabled) {
-            onReorder(customItems.toList())
+            onReorder(customItems.map { it.item })
             reorderPending = false
         }
         draggingIndex = null
@@ -208,7 +222,7 @@ fun WatchlistScreen(
             EmptyWatchlist()
         } else {
             if (groupByTag) {
-                val grouped = displayItems.groupBy { it.tags.firstOrNull() ?: "Untagged" }
+                val grouped = displayItems.groupBy { it.item.tags.firstOrNull() ?: "Untagged" }
                 LazyColumn(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
@@ -220,10 +234,14 @@ fun WatchlistScreen(
                             )
                             Spacer(modifier = Modifier.height(8.dp))
                         }
-                        items(tagItems, key = { it.symbol }) { item ->
+                        items(tagItems, key = { it.item.symbol }) { item ->
                             WatchlistCard(
                                 item = item,
-                                onClick = { onOpenDetail(item.symbol, null) }
+                                onClick = { onOpenDetail(item.item.symbol, null) },
+                                onAddNote = { onAddNote(item.item.symbol) },
+                                onSetAlert = { onOpenAlert(item.item.symbol) },
+                                onRemove = { onRemove(item.item.symbol) },
+                                onSnooze = { onSnooze(item.item.symbol) }
                             )
                         }
                     }
@@ -233,7 +251,7 @@ fun WatchlistScreen(
                     state = listState,
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    itemsIndexed(displayItems, key = { _, item -> item.symbol }) { index, item ->
+                    itemsIndexed(displayItems, key = { _, item -> item.item.symbol }) { index, item ->
                         val isDragging = draggingIndex == index
                         val dragModifier = if (reorderEnabled) {
                             Modifier.pointerInput(reorderEnabled, customItems, draggingIndex) {
@@ -271,7 +289,11 @@ fun WatchlistScreen(
                         WatchlistCard(
                             item = item,
                             showDragHandle = reorderEnabled,
-                            onClick = if (reorderEnabled) null else { { onOpenDetail(item.symbol, null) } },
+                            onClick = if (reorderEnabled) null else { { onOpenDetail(item.item.symbol, null) } },
+                            onAddNote = { onAddNote(item.item.symbol) },
+                            onSetAlert = { onOpenAlert(item.item.symbol) },
+                            onRemove = { onRemove(item.item.symbol) },
+                            onSnooze = { onSnooze(item.item.symbol) },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .zIndex(if (isDragging) 1f else 0f)
@@ -304,12 +326,15 @@ private fun WatchlistTopBar(onSearchClick: () -> Unit) {
             )
         }
         Spacer(modifier = Modifier.width(12.dp))
+        val context = LocalContext.current
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onSearchClick) {
                 Icon(Icons.Filled.Search, contentDescription = "Search")
             }
             Spacer(modifier = Modifier.width(8.dp))
-            IconButton(onClick = { /* TODO open profile */ }) {
+            IconButton(onClick = { 
+                Toast.makeText(context, "Coming soon but not currently needed", Toast.LENGTH_SHORT).show()
+            }) {
                 Icon(Icons.Filled.Person, contentDescription = "Profile")
             }
         }
@@ -317,11 +342,13 @@ private fun WatchlistTopBar(onSearchClick: () -> Unit) {
 }
 
 @Composable
-private fun WatchlistSummary(items: List<WatchlistItem>) {
-    val activeSignals = items.count { it.lastSignal?.score?.let { score -> abs(score) >= 30 } == true }
+private fun WatchlistSummary(items: List<WatchlistCardState>) {
+    val activeSignals = items.count { card ->
+        card.displaySignal()?.score?.let { score -> abs(score) >= 30 } == true
+    }
     val today = LocalDate.now()
     val newBuysToday = items.count {
-        val signal = it.lastSignal ?: return@count false
+        val signal = it.displaySignal() ?: return@count false
         signal.score >= 60 && signal.generatedAt.toLocalDate() == today
     }
     Row(
@@ -342,15 +369,26 @@ private fun WatchlistSummary(items: List<WatchlistItem>) {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun WatchlistCard(
-    item: WatchlistItem,
+    item: WatchlistCardState,
     modifier: Modifier = Modifier,
     showDragHandle: Boolean = false,
-    onClick: (() -> Unit)? = null
+    onClick: (() -> Unit)? = null,
+    onAddNote: () -> Unit,
+    onSetAlert: () -> Unit,
+    onRemove: () -> Unit,
+    onSnooze: () -> Unit
 ) {
-    val lastSignal = item.lastSignal
-    val score = lastSignal?.score ?: 0
+    val displaySignal = item.displaySignal()
+    val score = displaySignal?.score ?: 0
     val tier = SignalTier.fromScore(score)
     val timeFormatter = remember { DateTimeFormatter.ofPattern("HH:mm") }
+    val price = item.price
+    val percentChange = item.percentChange
+    val changeColor = when {
+        percentChange == null -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+        percentChange >= 0 -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.error
+    }
 
     val cardModifier = if (onClick != null) {
         modifier.clickable(onClick = onClick)
@@ -365,10 +403,10 @@ private fun WatchlistCard(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column {
-                Text(text = item.symbol, style = MaterialTheme.typography.headlineMedium)
+                Text(text = item.item.symbol, style = MaterialTheme.typography.headlineMedium)
                 CompanyExchangeText(
-                    companyName = item.companyName,
-                    exchange = item.exchange,
+                    companyName = item.item.companyName,
+                    exchange = item.item.exchange,
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -383,8 +421,8 @@ private fun WatchlistCard(
                 SignalBadge(
                     tier = tier,
                     score = score,
-                    confidence = lastSignal?.confidence,
-                    ticker = item.symbol
+                    confidence = displaySignal?.confidence,
+                    ticker = item.item.symbol
                 )
             }
         }
@@ -393,50 +431,52 @@ private fun WatchlistCard(
         SignalScoreRow(
             tier = tier,
             score = score,
-            confidence = lastSignal?.confidence
+            confidence = displaySignal?.confidence
         )
 
         Spacer(modifier = Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(
-                text = "Price —",
+                text = "Price ${formatPrice(price)}",
                 style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
             )
             Text(
-                text = "1D —",
+                text = "1D ${formatPercentChange(percentChange)}",
                 style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                color = changeColor
             )
         }
 
         Spacer(modifier = Modifier.height(12.dp))
-        SparklinePlaceholder()
+        Sparkline(
+            series = item.series,
+            lineColor = signalColors(tier).primary
+        )
 
         Spacer(modifier = Modifier.height(12.dp))
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            item.tags.forEach { tag ->
+            item.item.tags.forEach { tag ->
                 TagChip(label = tag)
             }
         }
 
         Spacer(modifier = Modifier.height(12.dp))
-        NotificationStatusRow(item = item, formatter = timeFormatter)
+        NotificationStatusRow(item = item.item, formatter = timeFormatter)
 
         Spacer(modifier = Modifier.height(6.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            TextButton(onClick = { /* TODO add note */ }) { Text("Add note") }
-            TextButton(onClick = { /* TODO set alert */ }) { Text("Set alert") }
-            TextButton(onClick = { /* TODO remove */ }) { Text("Remove") }
+            TextButton(onClick = onAddNote) { Text("Add note") }
+            TextButton(onClick = onSetAlert) { Text("Set alert") }
+            TextButton(onClick = onRemove) { Text("Remove") }
         }
 
         Spacer(modifier = Modifier.height(4.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            TextButton(onClick = { /* TODO snooze */ }) { Text("Snooze") }
-            TextButton(onClick = { /* TODO mute movers */ }) { Text("Mute movers") }
+            TextButton(onClick = onSnooze) { Text("Snooze") }
         }
     }
 }
@@ -468,35 +508,54 @@ private fun NotificationStatusRow(item: WatchlistItem, formatter: DateTimeFormat
         if (item.alertSettings.enabled) {
             SignalChip(tier = SignalTier.NEUTRAL, label = "Alerts on")
         }
+        val snoozedUntil = item.alertSettings.snoozedUntil
+        if (snoozedUntil != null && snoozedUntil.isAfter(LocalDateTime.now())) {
+            TagChip(label = "Snoozed until ${formatSnoozeTime(snoozedUntil)}")
+        }
     }
 }
 
 @Composable
-private fun SparklinePlaceholder() {
+private fun Sparkline(series: List<PriceCandle>, lineColor: Color) {
+    if (series.isEmpty()) {
+        Text(
+            text = "No chart data",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+        )
+        return
+    }
+    val closes = series.map { it.close }
+    val min = closes.minOrNull() ?: return
+    val max = closes.maxOrNull() ?: return
+    val range = (max - min).takeIf { it > 0 } ?: 1.0
+
     Canvas(
         modifier = Modifier
             .fillMaxWidth()
             .height(48.dp)
     ) {
-        val stepX = size.width / 8f
-        val mid = size.height / 2f
-        val lineColor = Color(0xFF4DA3FF)
-        val points = listOf(
-            0f to mid + 6f,
-            stepX to mid - 4f,
-            stepX * 2 to mid + 2f,
-            stepX * 3 to mid - 10f,
-            stepX * 4 to mid + 8f,
-            stepX * 5 to mid - 2f,
-            stepX * 6 to mid + 4f,
-            stepX * 7 to mid - 6f,
-            stepX * 8 to mid
-        )
+        if (closes.size == 1) {
+            val y = size.height - ((closes.first() - min) / range).toFloat() * size.height
+            drawLine(
+                color = lineColor,
+                start = androidx.compose.ui.geometry.Offset(0f, y),
+                end = androidx.compose.ui.geometry.Offset(size.width, y),
+                strokeWidth = 3f
+            )
+            return@Canvas
+        }
+        val stepX = size.width / (closes.size - 1)
+        val points = closes.mapIndexed { index, value ->
+            val x = stepX * index
+            val y = size.height - ((value - min) / range).toFloat() * size.height
+            androidx.compose.ui.geometry.Offset(x, y)
+        }
         for (i in 0 until points.size - 1) {
             drawLine(
                 color = lineColor,
-                start = androidx.compose.ui.geometry.Offset(points[i].first, points[i].second),
-                end = androidx.compose.ui.geometry.Offset(points[i + 1].first, points[i + 1].second),
+                start = points[i],
+                end = points[i + 1],
                 strokeWidth = 3f
             )
         }
@@ -521,4 +580,47 @@ private fun EmptyWatchlist() {
             style = MaterialTheme.typography.bodySmall
         )
     }
+}
+
+private data class DisplaySignal(
+    val score: Int,
+    val confidence: Int?,
+    val generatedAt: LocalDateTime
+)
+
+private fun WatchlistCardState.displaySignal(): DisplaySignal? {
+    val computed = signal
+    return if (computed != null) {
+        DisplaySignal(
+            score = computed.score,
+            confidence = computed.confidence,
+            generatedAt = computed.generatedAt
+        )
+    } else {
+        null
+    }
+}
+
+private fun formatPrice(price: Double?): String {
+    return if (price == null) {
+        "—"
+    } else {
+        "$" + String.format("%.2f", price)
+    }
+}
+
+private fun formatPercentChange(change: Double?): String {
+    return if (change == null) {
+        "—"
+    } else {
+        val sign = if (change > 0) "+" else if (change < 0) "-" else ""
+        val magnitude = abs(change)
+        sign + String.format("%.2f", magnitude) + "%"
+    }
+}
+
+private fun formatSnoozeTime(time: LocalDateTime): String {
+    val today = LocalDate.now()
+    val pattern = if (time.toLocalDate() == today) "HH:mm" else "MMM d HH:mm"
+    return time.format(DateTimeFormatter.ofPattern(pattern))
 }

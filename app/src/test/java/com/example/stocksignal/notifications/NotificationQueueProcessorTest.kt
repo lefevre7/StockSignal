@@ -12,7 +12,7 @@ import com.example.stocksignal.data.settings.NotificationFrequency
 import com.example.stocksignal.data.settings.NotificationType
 import com.example.stocksignal.data.settings.QuietHours
 import com.example.stocksignal.data.settings.SignalSensitivity
-import com.example.stocksignal.data.stooq.model.MarketMoverRange
+import com.example.stocksignal.data.settings.SnoozeDurationOption
 import com.example.stocksignal.domain.model.ChartRange
 import com.example.stocksignal.domain.model.NotificationEvent
 import com.example.stocksignal.domain.model.NotificationEventType
@@ -28,6 +28,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import java.time.DayOfWeek
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
@@ -152,13 +153,14 @@ class NotificationQueueProcessorTest {
                 end = "07:00"
             ),
             scheduleWindows = emptyList(),
+            weeklyDay = DayOfWeek.MONDAY,
+            snoozeDuration = SnoozeDurationOption.TWENTY_FOUR_HOURS,
             signalSensitivity = SignalSensitivity(
                 minScoreForNotify = 60,
                 strongBuyThreshold = 60,
                 strongSellThreshold = -60
             ),
             selectedChartRange = ChartRange.ONE_DAY,
-            selectedMarketMoverRange = MarketMoverRange.ONE_DAY,
             immediatePostsEnabled = false,
             onboardingCompleted = true
         )

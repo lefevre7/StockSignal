@@ -59,14 +59,22 @@ private val bottomNavItems = listOf(
 
 private const val ONBOARDING_ROUTE = "onboarding"
 private const val SEARCH_ROUTE = "search"
-private const val STOCK_DETAIL_ROUTE = "stock/{ticker}?eventId={eventId}"
+private const val STOCK_DETAIL_ROUTE = "stock/{ticker}?eventId={eventId}&openAlerts={openAlerts}"
 
-private fun stockDetailRoute(ticker: String, eventId: String? = null): String {
-    return if (eventId.isNullOrBlank()) {
-        "stock/${Uri.encode(ticker)}"
-    } else {
-        "stock/${Uri.encode(ticker)}?eventId=${Uri.encode(eventId)}"
+private fun stockDetailRoute(
+    ticker: String,
+    eventId: String? = null,
+    openAlerts: Boolean = false
+): String {
+    val base = "stock/${Uri.encode(ticker)}"
+    val params = mutableListOf<String>()
+    if (!eventId.isNullOrBlank()) {
+        params.add("eventId=${Uri.encode(eventId)}")
     }
+    if (openAlerts) {
+        params.add("openAlerts=true")
+    }
+    return if (params.isEmpty()) base else base + "?" + params.joinToString("&")
 }
 
 @Composable
@@ -127,12 +135,21 @@ fun StockSignalApp(launchIntent: Intent? = null) {
                         onSearchClick = { navController.navigate(SEARCH_ROUTE) },
                         onOpenDetail = { ticker, eventId ->
                             navController.navigate(stockDetailRoute(ticker, eventId))
+                        },
+                        onAddNote = { ticker ->
+                            navController.navigate("${BottomNavScreen.Notes.route}?symbol=${Uri.encode(ticker)}")
+                        },
+                        onOpenAlert = { ticker ->
+                            navController.navigate(stockDetailRoute(ticker, openAlerts = true))
                         }
                     )
                 }
                 composable(BottomNavScreen.MarketMovers.route) {
                     MarketMoversRoute(
-                        onOpenDetail = { navController.navigate(stockDetailRoute(it)) }
+                        onOpenDetail = { navController.navigate(stockDetailRoute(it)) },
+                        onOpenAlert = { ticker ->
+                            navController.navigate(stockDetailRoute(ticker, openAlerts = true))
+                        }
                     )
                 }
                 composable(BottomNavScreen.Signals.route) {
@@ -173,6 +190,10 @@ fun StockSignalApp(launchIntent: Intent? = null) {
                             type = NavType.StringType
                             nullable = true
                             defaultValue = null
+                        },
+                        navArgument("openAlerts") {
+                            type = NavType.BoolType
+                            defaultValue = false
                         }
                     ),
                     deepLinks = listOf(

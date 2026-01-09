@@ -7,8 +7,8 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
-import com.example.stocksignal.data.stooq.model.MarketMoverRange
 import com.example.stocksignal.domain.model.ChartRange
+import java.time.DayOfWeek
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
@@ -49,6 +49,18 @@ class SettingsRepository @Inject constructor(
         }
     }
 
+    suspend fun setWeeklyDay(day: DayOfWeek) {
+        dataStore.edit { prefs ->
+            prefs[SettingsKeys.weeklyDay] = day.name
+        }
+    }
+
+    suspend fun setSnoozeDuration(duration: SnoozeDurationOption) {
+        dataStore.edit { prefs ->
+            prefs[SettingsKeys.snoozeDuration] = duration.name
+        }
+    }
+
     suspend fun setSignalSensitivity(sensitivity: SignalSensitivity) {
         dataStore.edit { prefs ->
             prefs[SettingsKeys.minScoreForNotify] = sensitivity.minScoreForNotify
@@ -60,12 +72,6 @@ class SettingsRepository @Inject constructor(
     suspend fun setSelectedChartRange(range: ChartRange) {
         dataStore.edit { prefs ->
             prefs[SettingsKeys.selectedChartRange] = range.name
-        }
-    }
-
-    suspend fun setSelectedMarketMoverRange(range: MarketMoverRange) {
-        dataStore.edit { prefs ->
-            prefs[SettingsKeys.selectedMarketMoverRange] = range.name
         }
     }
 
@@ -97,6 +103,14 @@ class SettingsRepository @Inject constructor(
         val scheduleWindows = SettingsJson.decodeScheduleWindows(
             this[SettingsKeys.scheduleWindows]
         ).ifEmpty { defaultScheduleWindows }
+        val weeklyDay = runCatching {
+            DayOfWeek.valueOf(this[SettingsKeys.weeklyDay] ?: DayOfWeek.MONDAY.name)
+        }.getOrDefault(DayOfWeek.MONDAY)
+        val snoozeDuration = runCatching {
+            SnoozeDurationOption.valueOf(
+                this[SettingsKeys.snoozeDuration] ?: SnoozeDurationOption.TWENTY_FOUR_HOURS.name
+            )
+        }.getOrDefault(SnoozeDurationOption.TWENTY_FOUR_HOURS)
         val sensitivity = SignalSensitivity(
             minScoreForNotify = this[SettingsKeys.minScoreForNotify] ?: 60,
             strongBuyThreshold = this[SettingsKeys.strongBuyThreshold] ?: 60,
@@ -105,11 +119,6 @@ class SettingsRepository @Inject constructor(
         val selectedChartRange = runCatching {
             ChartRange.valueOf(this[SettingsKeys.selectedChartRange] ?: ChartRange.ONE_DAY.name)
         }.getOrDefault(ChartRange.ONE_DAY)
-        val selectedMarketMoverRange = runCatching {
-            MarketMoverRange.valueOf(
-                this[SettingsKeys.selectedMarketMoverRange] ?: MarketMoverRange.ONE_DAY.name
-            )
-        }.getOrDefault(MarketMoverRange.ONE_DAY)
         val immediatePostsEnabled = this[SettingsKeys.immediatePostsEnabled] ?: false
         val onboardingCompleted = this[SettingsKeys.onboardingCompleted] ?: false
 
@@ -118,9 +127,10 @@ class SettingsRepository @Inject constructor(
             notificationTypes = types,
             quietHours = quietHours,
             scheduleWindows = scheduleWindows,
+            weeklyDay = weeklyDay,
+            snoozeDuration = snoozeDuration,
             signalSensitivity = sensitivity,
             selectedChartRange = selectedChartRange,
-            selectedMarketMoverRange = selectedMarketMoverRange,
             immediatePostsEnabled = immediatePostsEnabled,
             onboardingCompleted = onboardingCompleted
         )
@@ -168,11 +178,12 @@ private object SettingsKeys {
     val quietHoursStart = stringPreferencesKey("quiet_hours_start")
     val quietHoursEnd = stringPreferencesKey("quiet_hours_end")
     val scheduleWindows = stringPreferencesKey("schedule_windows")
+    val weeklyDay = stringPreferencesKey("weekly_day")
+    val snoozeDuration = stringPreferencesKey("snooze_duration")
     val minScoreForNotify = intPreferencesKey("min_score_for_notify")
     val strongBuyThreshold = intPreferencesKey("strong_buy_threshold")
     val strongSellThreshold = intPreferencesKey("strong_sell_threshold")
     val selectedChartRange = stringPreferencesKey("selected_chart_range")
-    val selectedMarketMoverRange = stringPreferencesKey("selected_market_mover_range")
     val immediatePostsEnabled = booleanPreferencesKey("immediate_posts_enabled")
     val onboardingCompleted = booleanPreferencesKey("onboarding_completed")
 }

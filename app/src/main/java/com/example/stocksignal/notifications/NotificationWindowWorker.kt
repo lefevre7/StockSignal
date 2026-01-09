@@ -63,7 +63,7 @@ class NotificationWindowWorker @AssistedInject constructor(
         val now = LocalDateTime.now()
 
         val watchlistRange = settings.selectedChartRange
-        val moversRange = settings.selectedMarketMoverRange
+        val moversRange = MarketMoverRange.ONE_DAY
         val moversChartRange = chartRangeForMarketRange(moversRange)
 
         val watchlist = watchlistRepository.getAll()

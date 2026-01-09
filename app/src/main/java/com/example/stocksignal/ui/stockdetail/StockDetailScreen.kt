@@ -24,11 +24,13 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.InputChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Tab
@@ -37,6 +39,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -49,7 +52,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -94,6 +96,8 @@ fun StockDetailRoute(
         onLoadIndicatorAlerts = viewModel::loadIndicatorAlerts,
         onUpdateIndicatorAlert = viewModel::updateIndicatorAlert,
         onSaveIndicatorAlerts = viewModel::saveIndicatorAlerts,
+        onAddTag = viewModel::addTag,
+        onRemoveTag = viewModel::removeTag,
         onAddNote = onAddNote,
         onShare = onShare
     )
@@ -110,6 +114,8 @@ fun StockDetailScreen(
     onLoadIndicatorAlerts: () -> Unit,
     onUpdateIndicatorAlert: (IndicatorMetric, Boolean?, Double?, AlertDirection?) -> Unit,
     onSaveIndicatorAlerts: () -> Unit,
+    onAddTag: (String) -> Unit,
+    onRemoveTag: (String) -> Unit,
     onAddNote: (String) -> Unit,
     onShare: (String, String?) -> Unit,
     modifier: Modifier = Modifier
@@ -121,10 +127,18 @@ fun StockDetailScreen(
     }
     val scrollState = rememberScrollState()
     var showAlertSheet by rememberSaveable { mutableStateOf(false) }
+    var showTagSheet by rememberSaveable { mutableStateOf(false) }
+    var menuExpanded by remember { mutableStateOf(false) }
     val alertOptions = if (state.indicatorAlerts.isEmpty()) {
         IndicatorAlertDefaults.defaultAlerts()
     } else {
         state.indicatorAlerts
+    }
+    LaunchedEffect(state.openAlerts) {
+        if (state.openAlerts) {
+            onLoadIndicatorAlerts()
+            showAlertSheet = true
+        }
     }
 
     Column(modifier = modifier.fillMaxSize()) {
@@ -134,7 +148,10 @@ fun StockDetailScreen(
             exchange = state.exchange,
             inWatchlist = state.inWatchlist,
             onBack = onBack,
-            onToggleWatchlist = onToggleWatchlist
+            onToggleWatchlist = onToggleWatchlist,
+            menuExpanded = menuExpanded,
+            onMenuExpandedChange = { menuExpanded = it },
+            onManageTags = { showTagSheet = true }
         )
 
         Column(
@@ -167,7 +184,8 @@ fun StockDetailScreen(
 
             PriceSignalSection(
                 series = state.series,
-                signal = state.signal
+                signal = state.signal,
+                range = state.range
             )
             Spacer(modifier = Modifier.height(16.dp))
 
@@ -194,9 +212,9 @@ fun StockDetailScreen(
             Spacer(modifier = Modifier.height(12.dp))
             when (selectedTab) {
                 StockDetailTab.OVERVIEW -> OverviewTab(state = state)
-                StockDetailTab.METRICS -> MetricsTab(indicators = state.indicators)
+                StockDetailTab.METRICS -> MetricsTab(indicators = state.indicators, range = state.range)
                 StockDetailTab.NEWS -> NewsTab()
-                StockDetailTab.SIGNALS -> SignalsTab(signal = state.signal)
+                StockDetailTab.SIGNALS -> SignalsTab(signal = state.signal, range = state.range)
                 StockDetailTab.HISTORY -> HistoryTab(
                     history = state.history,
                     highlightEventId = state.highlightEventId
@@ -238,6 +256,15 @@ fun StockDetailScreen(
             onDismiss = { showAlertSheet = false }
         )
     }
+
+    if (showTagSheet) {
+        TagManagementSheet(
+            tags = state.tags,
+            onAddTag = onAddTag,
+            onRemoveTag = onRemoveTag,
+            onDismiss = { showTagSheet = false }
+        )
+    }
 }
 
 private enum class StockDetailTab(val label: String) {
@@ -255,7 +282,10 @@ private fun StockDetailTopBar(
     exchange: String?,
     inWatchlist: Boolean,
     onBack: () -> Unit,
-    onToggleWatchlist: () -> Unit
+    onToggleWatchlist: () -> Unit,
+    menuExpanded: Boolean,
+    onMenuExpandedChange: (Boolean) -> Unit,
+    onManageTags: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -289,8 +319,22 @@ private fun StockDetailTopBar(
                     contentDescription = if (inWatchlist) "Remove from watchlist" else "Add to watchlist"
                 )
             }
-            IconButton(onClick = { /* TODO menu */ }) {
-                Icon(Icons.Filled.MoreVert, contentDescription = "More")
+            androidx.compose.foundation.layout.Box {
+                IconButton(onClick = { onMenuExpandedChange(true) }) {
+                    Icon(Icons.Filled.MoreVert, contentDescription = "More")
+                }
+                androidx.compose.material3.DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { onMenuExpandedChange(false) }
+                ) {
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text("Manage tags") },
+                        onClick = {
+                            onMenuExpandedChange(false)
+                            onManageTags()
+                        }
+                    )
+                }
             }
         }
     }
@@ -299,7 +343,8 @@ private fun StockDetailTopBar(
 @Composable
 private fun PriceSignalSection(
     series: List<PriceCandle>,
-    signal: SignalResult?
+    signal: SignalResult?,
+    range: ChartRange
 ) {
     val last = series.lastOrNull()
     val prev = series.getOrNull(series.lastIndex - 1)
@@ -339,6 +384,12 @@ private fun PriceSignalSection(
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 SignalChip(tier = signalTier, label = signalTier.label)
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Signal for ${range.label}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                )
             }
             Spacer(modifier = Modifier.width(12.dp))
             SignalBadge(
@@ -432,9 +483,15 @@ private fun OverviewTab(state: StockDetailUiState) {
 }
 
 @Composable
-private fun MetricsTab(indicators: TechnicalIndicators?) {
+private fun MetricsTab(indicators: TechnicalIndicators?, range: ChartRange) {
     StockCard {
         Text(text = "Metrics", style = MaterialTheme.typography.headlineMedium)
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "Range: ${range.label}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+        )
         Spacer(modifier = Modifier.height(8.dp))
         IndicatorRow(label = "RSI 14", value = formatIndicator(indicators?.rsi14))
         IndicatorRow(label = "MACD", value = formatIndicator(indicators?.macd))
@@ -457,9 +514,15 @@ private fun NewsTab() {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun SignalsTab(signal: SignalResult?) {
+private fun SignalsTab(signal: SignalResult?, range: ChartRange) {
     StockCard {
         Text(text = "Signal Details", style = MaterialTheme.typography.headlineMedium)
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "Range: ${range.label}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+        )
         Spacer(modifier = Modifier.height(8.dp))
         if (signal == null) {
             Text(text = "Signal data is unavailable.", style = MaterialTheme.typography.bodySmall)
@@ -621,6 +684,81 @@ private fun IndicatorAlertSheet(
                 TextButton(onClick = onDismiss) { Text("Cancel") }
                 Spacer(modifier = Modifier.width(8.dp))
                 TextButton(onClick = onSave) { Text("Save") }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun TagManagementSheet(
+    tags: List<String>,
+    onAddTag: (String) -> Unit,
+    onRemoveTag: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var input by rememberSaveable { mutableStateOf("") }
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = StockSignalDimens.cardPadding, vertical = 12.dp)
+        ) {
+            Text(text = "Manage tags", style = MaterialTheme.typography.headlineMedium)
+            Spacer(modifier = Modifier.height(8.dp))
+            if (tags.isEmpty()) {
+                Text(
+                    text = "No tags yet. Add one below.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            } else {
+                Text(
+                    text = "Tap a tag to remove it.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    tags.forEach { tag ->
+                        InputChip(
+                            selected = false,
+                            onClick = { onRemoveTag(tag) },
+                            label = { Text(tag) },
+                            trailingIcon = {
+                                Icon(
+                                    imageVector = Icons.Filled.Close,
+                                    contentDescription = "Remove tag"
+                                )
+                            }
+                        )
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+            TextField(
+                value = input,
+                onValueChange = { input = it },
+                label = { Text("Add tag") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(onClick = onDismiss) { Text("Done") }
+                Spacer(modifier = Modifier.width(8.dp))
+                TextButton(
+                    onClick = {
+                        onAddTag(input)
+                        input = ""
+                    },
+                    enabled = input.trim().isNotEmpty()
+                ) { Text("Add") }
             }
         }
     }

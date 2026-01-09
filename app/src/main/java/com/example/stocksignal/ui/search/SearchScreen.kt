@@ -115,19 +115,20 @@ fun SearchScreen(
                     )
                 }
 
-                val movers = if (state.quickFilter == MarketMoverDirection.INCREASERS) {
-                    state.topIncreasers
-                } else {
-                    state.topDecreasers
+                val movers = when (state.quickFilter) {
+                    MarketMoverDirection.MOST_ACTIVE -> state.topMostActive
+                    MarketMoverDirection.INCREASERS -> state.topIncreasers
+                    MarketMoverDirection.DECREASERS -> state.topDecreasers
                 }
 
                 if (movers.isNotEmpty()) {
+                    val title = when (state.quickFilter) {
+                        MarketMoverDirection.MOST_ACTIVE -> "Most Active"
+                        MarketMoverDirection.INCREASERS -> "Top Advancers"
+                        MarketMoverDirection.DECREASERS -> "Top Decliners"
+                    }
                     item {
-                        SectionHeader(title = if (state.quickFilter == MarketMoverDirection.INCREASERS) {
-                            "Top Increasers"
-                        } else {
-                            "Top Decreasers"
-                        })
+                        SectionHeader(title = title)
                     }
                     items(movers.take(6), key = { it.ticker }) { mover ->
                         MarketMoverSuggestion(
@@ -272,14 +273,19 @@ private fun QuickFilters(
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         FilterChip(
+            selected = selected == MarketMoverDirection.MOST_ACTIVE,
+            onClick = { onSelect(MarketMoverDirection.MOST_ACTIVE) },
+            label = { Text("Most Active") }
+        )
+        FilterChip(
             selected = selected == MarketMoverDirection.INCREASERS,
             onClick = { onSelect(MarketMoverDirection.INCREASERS) },
-            label = { Text("Top Increasers") }
+            label = { Text("Advancers") }
         )
         FilterChip(
             selected = selected == MarketMoverDirection.DECREASERS,
             onClick = { onSelect(MarketMoverDirection.DECREASERS) },
-            label = { Text("Top Decreasers") }
+            label = { Text("Decliners") }
         )
         TextButton(onClick = onOpenMovers) { Text("Open Market Movers") }
     }

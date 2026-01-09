@@ -25,6 +25,7 @@ enum class MarketMoverRange(val label: String) {
 }
 
 enum class MarketMoverDirection {
+    MOST_ACTIVE,
     INCREASERS,
     DECREASERS;
 
@@ -32,15 +33,26 @@ enum class MarketMoverDirection {
         fun fromText(text: String): MarketMoverDirection? {
             val normalized = text.lowercase()
             return when {
-                normalized.contains("increaser") ||
+                normalized.contains("most active") ||
+                    normalized.contains("najbardziej aktywne") ->
+                    MOST_ACTIVE
+                normalized.contains("advancer") ||
+                    normalized.contains("advancers") ||
                     normalized.contains("gainer") ||
+                    normalized.contains("gainers") ||
+                    normalized.contains("increaser") ||
                     normalized.contains("rising") ||
-                    normalized.contains("up") ->
+                    normalized.contains("up") ||
+                    normalized.contains("najmocniej rosn") ->
                     INCREASERS
-                normalized.contains("decreaser") ||
+                normalized.contains("decliner") ||
+                    normalized.contains("decliners") ||
                     normalized.contains("loser") ||
+                    normalized.contains("losers") ||
+                    normalized.contains("decreaser") ||
                     normalized.contains("falling") ||
-                    normalized.contains("down") ->
+                    normalized.contains("down") ||
+                    normalized.contains("najmocniej spadaj") ->
                     DECREASERS
                 else -> null
             }

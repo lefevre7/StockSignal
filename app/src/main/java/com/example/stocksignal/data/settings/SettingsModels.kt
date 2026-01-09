@@ -1,7 +1,7 @@
 package com.example.stocksignal.data.settings
 
-import com.example.stocksignal.data.stooq.model.MarketMoverRange
 import com.example.stocksignal.domain.model.ChartRange
+import java.time.DayOfWeek
 
 enum class NotificationFrequency {
     THREE_PER_DAY,
@@ -19,6 +19,17 @@ enum class NotificationType {
 enum class ScheduleWindowType {
     FIXED_LOCAL,
     MARKET_OPEN_MINUS
+}
+
+enum class SnoozeDurationOption(val minutes: Long, val label: String) {
+    ONE_HOUR(60, "1h"),
+    FIVE_HOURS(300, "5h"),
+    TEN_HOURS(600, "10h"),
+    FIFTEEN_HOURS(900, "15h"),
+    TWENTY_FOUR_HOURS(1440, "24h"),
+    TWO_DAYS(2880, "2d"),
+    THREE_DAYS(4320, "3d"),
+    ONE_WEEK(10080, "1w")
 }
 
 data class QuietHours(
@@ -47,9 +58,10 @@ data class AppSettings(
     val notificationTypes: Set<NotificationType>,
     val quietHours: QuietHours,
     val scheduleWindows: List<ScheduleWindow>,
+    val weeklyDay: DayOfWeek,
+    val snoozeDuration: SnoozeDurationOption,
     val signalSensitivity: SignalSensitivity,
     val selectedChartRange: ChartRange,
-    val selectedMarketMoverRange: MarketMoverRange,
     val immediatePostsEnabled: Boolean,
     val onboardingCompleted: Boolean
 )

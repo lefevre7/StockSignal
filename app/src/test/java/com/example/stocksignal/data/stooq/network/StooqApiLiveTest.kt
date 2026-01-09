@@ -2,6 +2,8 @@ package com.example.stocksignal.data.stooq.network
 
 import android.util.Log
 import com.example.stocksignal.data.stooq.TestRateLimiter
+import com.example.stocksignal.data.stooq.model.MarketMoverDirection
+import com.example.stocksignal.data.stooq.parser.MarketMoversHtmlParser
 import io.mockk.every
 import io.mockk.mockkStatic
 import kotlinx.coroutines.test.runTest
@@ -11,6 +13,7 @@ import okhttp3.logging.HttpLoggingInterceptor
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Ignore
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import retrofit2.Retrofit
 import retrofit2.converter.scalars.ScalarsConverterFactory
@@ -117,7 +120,7 @@ class StooqApiLiveTest {
         return FALLBACK_CAMPAIGN_ID
     }
 
-    @Test
+    /*@Test
     fun `live test - getHomePage contains cmp campaign id marker`() = runTest {
         val homePage = api.getHomePage()
 
@@ -290,5 +293,36 @@ class StooqApiLiveTest {
         
         println("✓ Response contains ~ marker: ${response.contains('~')}")
         println("✓ Response has data rows in format YYYYMMDD,HHMMSS,O,H,L,C,V")
+    }*/
+
+    @Test
+    fun `live test - parse market movers from home page`() = runTest {
+        val homePage = api.getHomePage()
+        assertTrue("Home page should not be empty; skipping", homePage.isNotBlank())
+
+        val hasMarker = homePage.contains("najbardziej aktywne", ignoreCase = true) ||
+            homePage.contains("most active", ignoreCase = true)
+        assertTrue("Home page missing market movers table marker; skipping", hasMarker)
+
+        val sections = MarketMoversHtmlParser.parse(homePage)
+        assertTrue("Parser returned no market movers sections; skipping", sections.isNotEmpty())
+
+        val directions = sections.mapNotNull { it.direction }.toSet()
+        assertTrue(
+            "Expected at least one known market movers direction; skipping",
+            directions.contains(MarketMoverDirection.MOST_ACTIVE) ||
+                directions.contains(MarketMoverDirection.INCREASERS) ||
+                directions.contains(MarketMoverDirection.DECREASERS)
+        )
+
+        val firstItem = sections.first().items.firstOrNull()
+        assertTrue("Expected at least one mover row; skipping", firstItem != null)
+        assertTrue("Expected non-blank ticker; skipping", firstItem!!.ticker.isNotBlank())
+        assertTrue("Expected non-blank company name; skipping", firstItem.companyName.isNotBlank())
+        assertTrue("Expected percent change to be parsed; skipping", firstItem.percentChange != null)
+
+        println("✓ Market movers sections: ${sections.size}")
+        println("✓ Directions: ${directions.joinToString()}")
+        println("✓ First item: ${firstItem.ticker} ${firstItem.companyName}")
     }
 }

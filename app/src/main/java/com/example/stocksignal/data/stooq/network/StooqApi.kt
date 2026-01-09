@@ -95,16 +95,6 @@ interface StooqApi {
         @Query("q") query: String
     ): String
 
-    /**
-     * Fetches market movers data.
-     *
-     * URL: https://stooq.com/market-movers
-     *
-     * @return Market movers data as a string
-     */
-    @GET("market-movers")
-    suspend fun getMarketMovers(): String
-
     companion object {
         const val BASE_URL = "https://stooq.com/"
         const val DEFAULT_USER_AGENT =

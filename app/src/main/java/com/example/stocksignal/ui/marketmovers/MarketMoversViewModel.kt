@@ -3,7 +3,8 @@ package com.example.stocksignal.ui.marketmovers
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.stocksignal.data.local.model.MarketMoverItem
-import com.example.stocksignal.data.settings.SettingsRepository
+import com.example.stocksignal.data.local.entity.WatchlistItemEntity
+import com.example.stocksignal.data.local.repository.WatchlistRepository
 import com.example.stocksignal.data.stooq.model.MarketMoverDirection
 import com.example.stocksignal.data.stooq.model.MarketMoverRange
 import com.example.stocksignal.data.stooq.model.Result
@@ -12,7 +13,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.LocalDateTime
@@ -21,26 +22,14 @@ import javax.inject.Inject
 @HiltViewModel
 class MarketMoversViewModel @Inject constructor(
     private val repository: MarketMoversRepository,
-    private val settingsRepository: SettingsRepository
+    private val watchlistRepository: WatchlistRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MarketMoversUiState())
     val uiState: StateFlow<MarketMoversUiState> = _uiState.asStateFlow()
 
     init {
-        viewModelScope.launch {
-            val settings = settingsRepository.settingsFlow.first()
-            _uiState.update { it.copy(range = settings.selectedMarketMoverRange) }
-            loadMarketMovers()
-        }
-    }
-
-    fun selectRange(range: MarketMoverRange) {
-        if (_uiState.value.range == range) return
-        _uiState.update { it.copy(range = range) }
-        viewModelScope.launch {
-            settingsRepository.setSelectedMarketMoverRange(range)
-        }
+        observeWatchlist()
         loadMarketMovers()
     }
 
@@ -55,10 +44,10 @@ class MarketMoversViewModel @Inject constructor(
     }
 
     private fun loadMarketMovers(forceRefresh: Boolean = false) {
-        val snapshot = _uiState.value
+        val direction = _uiState.value.direction
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, errorMessage = null) }
-            when (val result = repository.getMarketMovers(snapshot.range, snapshot.direction, forceRefresh)) {
+            when (val result = repository.getMarketMovers(MarketMoverRange.ONE_DAY, direction, forceRefresh)) {
                 is Result.Success -> {
                     val data = result.data
                     _uiState.update {
@@ -83,12 +72,55 @@ class MarketMoversViewModel @Inject constructor(
             }
         }
     }
+
+    private fun observeWatchlist() {
+        viewModelScope.launch {
+            watchlistRepository.watchlistFlow.collectLatest { items ->
+                val symbols = items.map { it.symbol }.toSet()
+                _uiState.update { it.copy(watchlistSymbols = symbols) }
+            }
+        }
+    }
+
+    fun addToWatchlist(item: MarketMoverItem) {
+        viewModelScope.launch {
+            val existing = watchlistRepository.getBySymbol(item.ticker)
+            if (existing != null) return@launch
+
+            val items = watchlistRepository.getAll()
+            val maxSort = items.mapNotNull { it.sortOrder }.maxOrNull()
+            val nextOrder = (maxSort ?: (items.size - 1)).coerceAtLeast(-1) + 1
+
+            val entity = WatchlistItemEntity(
+                symbol = item.ticker,
+                companyName = item.companyName,
+                exchange = item.exchange,
+                addedAt = LocalDateTime.now(),
+                alertEnabled = true,
+                minScoreForNotify = 60,
+                quietHoursStart = null,
+                quietHoursEnd = null,
+                snoozedUntil = null,
+                lastSignalScore = null,
+                lastSignalLabel = null,
+                lastSignalConfidence = null,
+                lastSignalTime = null,
+                notes = null,
+                sortOrder = nextOrder,
+                tags = emptyList(),
+                muteMarketMovers = false,
+                lastNotifiedAt = null,
+                indicatorAlertsJson = null
+            )
+            watchlistRepository.upsert(entity)
+        }
+    }
 }
 
 data class MarketMoversUiState(
-    val range: MarketMoverRange = MarketMoverRange.ONE_DAY,
-    val direction: MarketMoverDirection = MarketMoverDirection.INCREASERS,
+    val direction: MarketMoverDirection = MarketMoverDirection.MOST_ACTIVE,
     val items: List<MarketMoverItem> = emptyList(),
+    val watchlistSymbols: Set<String> = emptySet(),
     val isLoading: Boolean = false,
     val errorMessage: String? = null,
     val lastUpdated: LocalDateTime? = null,

@@ -40,8 +40,10 @@ import com.example.stocksignal.data.settings.QuietHours
 import com.example.stocksignal.data.settings.ScheduleWindow
 import com.example.stocksignal.data.settings.ScheduleWindowType
 import com.example.stocksignal.data.settings.SignalSensitivity
+import com.example.stocksignal.data.settings.SnoozeDurationOption
 import com.example.stocksignal.ui.components.StockCard
 import com.example.stocksignal.ui.theme.StockSignalDimens
+import java.time.DayOfWeek
 import kotlin.math.roundToInt
 
 @Composable
@@ -54,6 +56,8 @@ fun SettingsRoute(viewModel: SettingsViewModel = hiltViewModel()) {
         onQuietHoursToggle = viewModel::setQuietHoursEnabled,
         onQuietHoursChange = viewModel::setQuietHours,
         onScheduleWindowChange = viewModel::updateScheduleWindow,
+        onWeeklyDayChange = viewModel::setWeeklyDay,
+        onSnoozeDurationChange = viewModel::setSnoozeDuration,
         onSignalSensitivityChange = viewModel::setSignalSensitivity,
         onImmediatePostsToggle = viewModel::setImmediatePostsEnabled
     )
@@ -68,10 +72,21 @@ fun SettingsScreen(
     onQuietHoursToggle: (Boolean) -> Unit,
     onQuietHoursChange: (String, String) -> Unit,
     onScheduleWindowChange: (ScheduleWindow) -> Unit,
+    onWeeklyDayChange: (DayOfWeek) -> Unit,
+    onSnoozeDurationChange: (SnoozeDurationOption) -> Unit,
     onSignalSensitivityChange: (SignalSensitivity) -> Unit,
     onImmediatePostsToggle: (Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val windowsEnabled = settings.frequency != NotificationFrequency.ONLY_WHEN_OPEN
+    val scheduleWindows = when (settings.frequency) {
+        NotificationFrequency.THREE_PER_DAY -> settings.scheduleWindows
+        NotificationFrequency.ONE_PER_DAY ->
+            settings.scheduleWindows.filter { it.type == ScheduleWindowType.MARKET_OPEN_MINUS }
+        NotificationFrequency.ONE_PER_WEEK -> emptyList()
+        NotificationFrequency.ONLY_WHEN_OPEN -> settings.scheduleWindows
+    }
+
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
@@ -135,6 +150,13 @@ fun SettingsScreen(
         }
 
         item {
+            SnoozeDurationCard(
+                selected = settings.snoozeDuration,
+                onSelect = onSnoozeDurationChange
+            )
+        }
+
+        item {
             QuietHoursCard(
                 quietHours = settings.quietHours,
                 onToggle = onQuietHoursToggle,
@@ -144,20 +166,31 @@ fun SettingsScreen(
 
         item {
             StockCard {
-                Text(text = "Schedule windows", style = MaterialTheme.typography.headlineMedium)
+                Text(text = scheduleHeader(settings.frequency), style = MaterialTheme.typography.headlineMedium)
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
-                    text = "Default windows are 10 minutes before market open, 11:00, and 14:00 local.",
+                    text = scheduleDescription(settings.frequency),
                     style = MaterialTheme.typography.bodySmall
                 )
             }
         }
 
-        items(settings.scheduleWindows, key = { it.id }) { window ->
-            ScheduleWindowCard(
-                window = window,
-                onApply = onScheduleWindowChange
-            )
+        if (settings.frequency == NotificationFrequency.ONE_PER_WEEK) {
+            item {
+                WeeklyDayCard(
+                    selected = settings.weeklyDay,
+                    enabled = windowsEnabled,
+                    onSelect = onWeeklyDayChange
+                )
+            }
+        } else {
+            items(scheduleWindows, key = { it.id }) { window ->
+                ScheduleWindowCard(
+                    window = window,
+                    enabled = windowsEnabled,
+                    onApply = onScheduleWindowChange
+                )
+            }
         }
 
         item {
@@ -179,7 +212,7 @@ fun SettingsScreen(
                     Column(modifier = Modifier.weight(1f)) {
                         Text(text = "Post immediately", style = MaterialTheme.typography.bodyMedium)
                         Text(
-                            text = "Coming soon. Scheduled windows only.",
+                            text = "Coming soon. Scheduled windows only is the most granular for now.",
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
@@ -225,6 +258,36 @@ private fun NotificationTypeRow(
         Switch(checked = enabled, onCheckedChange = onToggle)
     }
     Spacer(modifier = Modifier.height(6.dp))
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun SnoozeDurationCard(
+    selected: SnoozeDurationOption,
+    onSelect: (SnoozeDurationOption) -> Unit
+) {
+    StockCard {
+        Text(text = "Snooze duration", style = MaterialTheme.typography.headlineMedium)
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            text = "Used when you snooze a watchlist alert.",
+            style = MaterialTheme.typography.bodySmall
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            SnoozeDurationOption.values().forEach { option ->
+                FilterChip(
+                    selected = option == selected,
+                    onClick = { onSelect(option) },
+                    label = { Text(option.label) }
+                )
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -290,6 +353,7 @@ private fun QuietHoursCard(
 @Composable
 private fun ScheduleWindowCard(
     window: ScheduleWindow,
+    enabled: Boolean,
     onApply: (ScheduleWindow) -> Unit
 ) {
     var hourText by remember(window.id, window.hour) { mutableStateOf(window.hour?.toString() ?: "") }
@@ -313,7 +377,8 @@ private fun ScheduleWindowCard(
                     label = { Text("Hour") },
                     singleLine = true,
                     modifier = Modifier.weight(1f),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    enabled = enabled
                 )
                 TextField(
                     value = minuteText,
@@ -321,7 +386,8 @@ private fun ScheduleWindowCard(
                     label = { Text("Minute") },
                     singleLine = true,
                     modifier = Modifier.weight(1f),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    enabled = enabled
                 )
             }
         } else {
@@ -331,7 +397,8 @@ private fun ScheduleWindowCard(
                 label = { Text("Offset minutes") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                enabled = enabled
             )
             Spacer(modifier = Modifier.height(6.dp))
             Text(
@@ -350,7 +417,7 @@ private fun ScheduleWindowCard(
                     }
                     onApply(updated)
                 },
-                enabled = canApply
+                enabled = canApply && enabled
             ) { Text("Apply") }
             if (!canApply) {
                 Text(
@@ -451,12 +518,72 @@ private fun scheduleLabel(window: ScheduleWindow): String {
     }
 }
 
+private fun scheduleHeader(frequency: NotificationFrequency): String {
+    return when (frequency) {
+        NotificationFrequency.ONE_PER_WEEK -> "Weekly schedule"
+        NotificationFrequency.ONE_PER_DAY -> "Schedule window"
+        else -> "Schedule windows"
+    }
+}
+
+private fun scheduleDescription(frequency: NotificationFrequency): String {
+    return when (frequency) {
+        NotificationFrequency.THREE_PER_DAY ->
+            "Default windows are 10 minutes before market open, 11:00, and 14:00 local."
+        NotificationFrequency.ONE_PER_DAY ->
+            "Daily notifications use the market open offset window."
+        NotificationFrequency.ONE_PER_WEEK ->
+            "Weekly notifications use market open offset on the selected day."
+        NotificationFrequency.ONLY_WHEN_OPEN ->
+            "Background windows are disabled when notifications only run on open."
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun WeeklyDayCard(
+    selected: DayOfWeek,
+    enabled: Boolean,
+    onSelect: (DayOfWeek) -> Unit
+) {
+    StockCard {
+        Text(text = "Weekly day", style = MaterialTheme.typography.headlineMedium)
+        Spacer(modifier = Modifier.height(6.dp))
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            DayOfWeek.values().forEach { day ->
+                FilterChip(
+                    selected = day == selected,
+                    onClick = { onSelect(day) },
+                    label = { Text(weekDayLabel(day)) },
+                    enabled = enabled
+                )
+            }
+        }
+    }
+}
+
 private fun frequencyLabel(option: NotificationFrequency): String {
     return when (option) {
         NotificationFrequency.THREE_PER_DAY -> "3x/day"
         NotificationFrequency.ONE_PER_DAY -> "1x/day"
         NotificationFrequency.ONE_PER_WEEK -> "1x/week"
-        NotificationFrequency.ONLY_WHEN_OPEN -> "Only when open"
+        NotificationFrequency.ONLY_WHEN_OPEN -> "Only when app is open"
+    }
+}
+
+private fun weekDayLabel(day: DayOfWeek): String {
+    return when (day) {
+        DayOfWeek.MONDAY -> "Mon"
+        DayOfWeek.TUESDAY -> "Tue"
+        DayOfWeek.WEDNESDAY -> "Wed"
+        DayOfWeek.THURSDAY -> "Thu"
+        DayOfWeek.FRIDAY -> "Fri"
+        DayOfWeek.SATURDAY -> "Sat"
+        DayOfWeek.SUNDAY -> "Sun"
     }
 }
 

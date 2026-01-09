@@ -10,7 +10,7 @@ import com.example.stocksignal.data.settings.ScheduleWindow
 import com.example.stocksignal.data.settings.ScheduleWindowType
 import com.example.stocksignal.data.settings.SettingsRepository
 import com.example.stocksignal.data.settings.SignalSensitivity
-import com.example.stocksignal.data.stooq.model.MarketMoverRange
+import com.example.stocksignal.data.settings.SnoozeDurationOption
 import com.example.stocksignal.domain.model.ChartRange
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.time.DayOfWeek
 import javax.inject.Inject
 
 @HiltViewModel
@@ -71,6 +72,18 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun setWeeklyDay(day: DayOfWeek) {
+        viewModelScope.launch {
+            settingsRepository.setWeeklyDay(day)
+        }
+    }
+
+    fun setSnoozeDuration(duration: SnoozeDurationOption) {
+        viewModelScope.launch {
+            settingsRepository.setSnoozeDuration(duration)
+        }
+    }
+
     fun setImmediatePostsEnabled(enabled: Boolean) {
         viewModelScope.launch {
             settingsRepository.setImmediatePostsEnabled(enabled)
@@ -116,13 +129,14 @@ class SettingsViewModel @Inject constructor(
                     offsetMinutes = null
                 )
             ),
+            weeklyDay = DayOfWeek.MONDAY,
+            snoozeDuration = SnoozeDurationOption.TWENTY_FOUR_HOURS,
             signalSensitivity = SignalSensitivity(
                 minScoreForNotify = 60,
                 strongBuyThreshold = 60,
                 strongSellThreshold = -60
             ),
             selectedChartRange = ChartRange.ONE_DAY,
-            selectedMarketMoverRange = MarketMoverRange.ONE_DAY,
             immediatePostsEnabled = false,
             onboardingCompleted = false
         )

@@ -169,6 +169,14 @@ class SearchViewModel @Inject constructor(
 
     private fun loadTopMovers() {
         viewModelScope.launch {
+            val mostActive = when (val result = marketMoversRepository.getMarketMovers(
+                range = MarketMoverRange.ONE_DAY,
+                direction = MarketMoverDirection.MOST_ACTIVE,
+                forceRefresh = false
+            )) {
+                is Result.Success -> result.data.items
+                is Result.Error -> emptyList()
+            }
             val increasers = when (val result = marketMoversRepository.getMarketMovers(
                 range = MarketMoverRange.ONE_DAY,
                 direction = MarketMoverDirection.INCREASERS,
@@ -185,9 +193,10 @@ class SearchViewModel @Inject constructor(
                 is Result.Success -> result.data.items
                 is Result.Error -> emptyList()
             }
-            val moverSymbols = (increasers + decreasers).map { it.ticker }.toSet()
+            val moverSymbols = (mostActive + increasers + decreasers).map { it.ticker }.toSet()
             _uiState.update {
                 it.copy(
+                    topMostActive = mostActive,
                     topIncreasers = increasers,
                     topDecreasers = decreasers,
                     moverSymbols = moverSymbols
@@ -201,13 +210,14 @@ data class SearchUiState(
     val query: String = "",
     val results: List<SearchResult> = emptyList(),
     val recentSearches: List<RecentSearch> = emptyList(),
+    val topMostActive: List<MarketMoverItem> = emptyList(),
     val topIncreasers: List<MarketMoverItem> = emptyList(),
     val topDecreasers: List<MarketMoverItem> = emptyList(),
     val moverSymbols: Set<String> = emptySet(),
     val watchlist: Map<String, WatchlistSummary> = emptyMap(),
     val isLoading: Boolean = false,
     val errorMessage: String? = null,
-    val quickFilter: MarketMoverDirection = MarketMoverDirection.INCREASERS
+    val quickFilter: MarketMoverDirection = MarketMoverDirection.MOST_ACTIVE
 )
 
 data class WatchlistSummary(

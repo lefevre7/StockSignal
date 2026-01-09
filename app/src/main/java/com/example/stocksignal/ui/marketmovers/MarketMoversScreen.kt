@@ -3,8 +3,6 @@ package com.example.stocksignal.ui.marketmovers
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -12,12 +10,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -36,7 +33,6 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.stocksignal.data.local.model.MarketMoverItem
 import com.example.stocksignal.data.stooq.model.MarketMoverDirection
-import com.example.stocksignal.data.stooq.model.MarketMoverRange
 import com.example.stocksignal.domain.model.SignalTier
 import com.example.stocksignal.ui.components.CompanyExchangeText
 import com.example.stocksignal.ui.components.SignalChip
@@ -50,26 +46,29 @@ import kotlin.math.abs
 @Composable
 fun MarketMoversRoute(
     onOpenDetail: (String) -> Unit,
+    onOpenAlert: (String) -> Unit,
     viewModel: MarketMoversViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     MarketMoversScreen(
         state = state,
-        onRangeSelected = viewModel::selectRange,
         onDirectionSelected = viewModel::selectDirection,
         onRefresh = { viewModel.refresh() },
-        onOpenDetail = onOpenDetail
+        onOpenDetail = onOpenDetail,
+        onOpenAlert = onOpenAlert,
+        onAddToWatchlist = viewModel::addToWatchlist
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MarketMoversScreen(
     state: MarketMoversUiState,
-    onRangeSelected: (MarketMoverRange) -> Unit,
     onDirectionSelected: (MarketMoverDirection) -> Unit,
     onRefresh: () -> Unit,
     onOpenDetail: (String) -> Unit,
+    onOpenAlert: (String) -> Unit,
+    onAddToWatchlist: (MarketMoverItem) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -82,11 +81,6 @@ fun MarketMoversScreen(
         MarketMoverDirectionTabs(
             selected = state.direction,
             onDirectionSelected = onDirectionSelected
-        )
-        Spacer(modifier = Modifier.height(12.dp))
-        MarketMoverRangeChips(
-            selected = state.range,
-            onRangeSelected = onRangeSelected
         )
         Spacer(modifier = Modifier.height(12.dp))
         MarketMoversMeta(state = state)
@@ -127,9 +121,12 @@ fun MarketMoversScreen(
             }
             else -> {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    items(state.items, key = { it.ticker }) { item ->
+                    itemsIndexed(state.items, key = { index, item -> "${item.ticker}_$index" }) { _, item ->
                         MarketMoverCard(
                             item = item,
+                            isInWatchlist = state.watchlistSymbols.contains(item.ticker),
+                            onAdd = { onAddToWatchlist(item) },
+                            onAlert = { onOpenAlert(item.ticker) },
                             onOpenDetail = { onOpenDetail(item.ticker) }
                         )
                     }
@@ -149,7 +146,7 @@ private fun MarketMoversTopBar(onRefresh: () -> Unit) {
         Column {
             Text(text = "Market Movers", style = MaterialTheme.typography.headlineLarge)
             Text(
-                text = "Largest increasers and decreasers, updated from Stooq.",
+                text = "Most active, advancers, and decliners from Stooq.",
                 style = MaterialTheme.typography.bodySmall
             )
         }
@@ -165,36 +162,17 @@ private fun MarketMoverDirectionTabs(
     onDirectionSelected: (MarketMoverDirection) -> Unit
 ) {
     val tabs = listOf(
-        MarketMoverDirection.INCREASERS to "Largest Increasers",
-        MarketMoverDirection.DECREASERS to "Largest Decreasers"
+        MarketMoverDirection.MOST_ACTIVE to "Most Active",
+        MarketMoverDirection.INCREASERS to "Advancers",
+        MarketMoverDirection.DECREASERS to "Decliners"
     )
-    TabRow(selectedTabIndex = tabs.indexOfFirst { it.first == selected }) {
+    val selectedIndex = tabs.indexOfFirst { it.first == selected }.coerceAtLeast(0)
+    TabRow(selectedTabIndex = selectedIndex) {
         tabs.forEachIndexed { index, (direction, title) ->
             Tab(
                 selected = tabs[index].first == selected,
                 onClick = { onDirectionSelected(direction) },
                 text = { Text(text = title) }
-            )
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun MarketMoverRangeChips(
-    selected: MarketMoverRange,
-    onRangeSelected: (MarketMoverRange) -> Unit
-) {
-    FlowRow(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        MarketMoverRange.values().forEach { range ->
-            FilterChip(
-                selected = selected == range,
-                onClick = { onRangeSelected(range) },
-                label = { Text(text = range.label) }
             )
         }
     }
@@ -225,6 +203,9 @@ private fun MarketMoversMeta(state: MarketMoversUiState) {
 @Composable
 private fun MarketMoverCard(
     item: MarketMoverItem,
+    isInWatchlist: Boolean,
+    onAdd: () -> Unit,
+    onAlert: () -> Unit,
     onOpenDetail: () -> Unit
 ) {
     val priceText = formatPrice(item.price)
@@ -268,6 +249,9 @@ private fun MarketMoverCard(
         Spacer(modifier = Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             item.rank?.let { TagChip(label = "Rank #$it") }
+            if (isInWatchlist) {
+                TagChip(label = "Already in watchlist")
+            }
             if (signalTier != null && signalLabel != null) {
                 SignalChip(tier = signalTier, label = signalLabel)
             }
@@ -278,8 +262,10 @@ private fun MarketMoverCard(
 
         Spacer(modifier = Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            TextButton(onClick = { /* TODO add to watchlist */ }) { Text("Add") }
-            TextButton(onClick = { /* TODO set alert */ }) { Text("Alert") }
+            if (!isInWatchlist) {
+                TextButton(onClick = onAdd) { Text("Add") }
+            }
+            TextButton(onClick = onAlert) { Text("Alert") }
             TextButton(onClick = onOpenDetail) { Text("Details") }
         }
     }

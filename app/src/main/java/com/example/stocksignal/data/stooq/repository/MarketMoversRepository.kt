@@ -32,7 +32,8 @@ class MarketMoversRepository @Inject constructor(
         }
 
         return try {
-            val html = api.getMarketMovers()
+            val html = api.getHomePage()
+            logLarge("Raw homepage response (length=${html.length}):", html)
             val sections = MarketMoversHtmlParser.parse(html)
             storeSections(sections)
 
@@ -109,11 +110,24 @@ class MarketMoversRepository @Inject constructor(
     ): MarketMoversSection? {
         return sections.firstOrNull { it.range == range && it.direction == direction }
             ?: sections.firstOrNull { it.direction == direction }
-            ?: sections.firstOrNull()
     }
 
     companion object {
         private val CACHE_TTL = Duration.ofMinutes(10)
         private const val TAG = "MarketMoversRepository"
+        private const val LOG_CHUNK_SIZE = 3500
+    }
+
+    private fun logLarge(label: String, message: String) {
+        Log.d(TAG, label)
+        Log.d(TAG, "--- START RAW HOMEPAGE RESPONSE ---")
+        var start = 0
+        val length = message.length
+        while (start < length) {
+            val end = (start + LOG_CHUNK_SIZE).coerceAtMost(length)
+            Log.d(TAG, message.substring(start, end))
+            start = end
+        }
+        Log.d(TAG, "--- END RAW HOMEPAGE RESPONSE ---")
     }
 }

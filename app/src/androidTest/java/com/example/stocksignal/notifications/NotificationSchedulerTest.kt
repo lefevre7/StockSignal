@@ -13,11 +13,12 @@ import com.example.stocksignal.data.settings.QuietHours
 import com.example.stocksignal.data.settings.ScheduleWindow
 import com.example.stocksignal.data.settings.ScheduleWindowType
 import com.example.stocksignal.data.settings.SignalSensitivity
-import com.example.stocksignal.data.stooq.model.MarketMoverRange
+import com.example.stocksignal.data.settings.SnoozeDurationOption
 import com.example.stocksignal.domain.model.ChartRange
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.time.DayOfWeek
 import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
@@ -63,13 +64,14 @@ class NotificationSchedulerTest {
                     offsetMinutes = null
                 )
             ),
+            weeklyDay = DayOfWeek.MONDAY,
+            snoozeDuration = SnoozeDurationOption.TWENTY_FOUR_HOURS,
             signalSensitivity = SignalSensitivity(
                 minScoreForNotify = 60,
                 strongBuyThreshold = 60,
                 strongSellThreshold = -60
             ),
             selectedChartRange = ChartRange.ONE_DAY,
-            selectedMarketMoverRange = MarketMoverRange.ONE_DAY,
             immediatePostsEnabled = false,
             onboardingCompleted = true
         )
