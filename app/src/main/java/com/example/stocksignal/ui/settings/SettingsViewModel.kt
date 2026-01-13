@@ -1,5 +1,6 @@
 package com.example.stocksignal.ui.settings
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.stocksignal.data.settings.AppSettings
@@ -13,9 +14,10 @@ import com.example.stocksignal.data.settings.SignalSensitivity
 import com.example.stocksignal.data.settings.SnoozeDurationOption
 import com.example.stocksignal.domain.model.ChartRange
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.time.DayOfWeek
@@ -26,9 +28,18 @@ class SettingsViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository
 ) : ViewModel() {
 
-    val uiState: StateFlow<SettingsUiState> = settingsRepository.settingsFlow
-        .map { settings -> SettingsUiState(settings = settings) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState(settings = defaultSettings()))
+    private val _errorMessage = MutableStateFlow<String?>(null)
+
+    val uiState: StateFlow<SettingsUiState> = combine(
+        settingsRepository.settingsFlow,
+        _errorMessage
+    ) { settings, error ->
+        SettingsUiState(settings = settings, errorMessage = error)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState(settings = defaultSettings()))
+
+    fun clearError() {
+        _errorMessage.value = null
+    }
 
     fun setFrequency(frequency: NotificationFrequency) {
         viewModelScope.launch {
@@ -47,14 +58,26 @@ class SettingsViewModel @Inject constructor(
     fun setQuietHoursEnabled(enabled: Boolean) {
         val current = uiState.value.settings.quietHours
         viewModelScope.launch {
-            settingsRepository.setQuietHours(current.copy(enabled = enabled))
+            try {
+                settingsRepository.setQuietHours(current.copy(enabled = enabled))
+                _errorMessage.value = null
+            } catch (e: Exception) {
+                Log.e(TAG, "Error setting quiet hours enabled to $enabled", e)
+                _errorMessage.value = "Failed to save quiet hours setting: ${e.message}"
+            }
         }
     }
 
     fun setQuietHours(start: String, end: String) {
         val current = uiState.value.settings.quietHours
         viewModelScope.launch {
-            settingsRepository.setQuietHours(current.copy(start = start, end = end))
+            try {
+                settingsRepository.setQuietHours(current.copy(start = start, end = end))
+                _errorMessage.value = null
+            } catch (e: Exception) {
+                Log.e(TAG, "Error setting quiet hours to $start - $end", e)
+                _errorMessage.value = "Failed to save quiet hours: ${e.message}"
+            }
         }
     }
 
@@ -62,31 +85,61 @@ class SettingsViewModel @Inject constructor(
         val current = uiState.value.settings.scheduleWindows
         val next = current.map { window -> if (window.id == updated.id) updated else window }
         viewModelScope.launch {
-            settingsRepository.setScheduleWindows(next)
+            try {
+                settingsRepository.setScheduleWindows(next)
+                _errorMessage.value = null
+            } catch (e: Exception) {
+                Log.e(TAG, "Error updating schedule window ${updated.id}", e)
+                _errorMessage.value = "Failed to save schedule window: ${e.message}"
+            }
         }
     }
 
     fun setSignalSensitivity(sensitivity: SignalSensitivity) {
         viewModelScope.launch {
-            settingsRepository.setSignalSensitivity(sensitivity)
+            try {
+                settingsRepository.setSignalSensitivity(sensitivity)
+                _errorMessage.value = null
+            } catch (e: Exception) {
+                Log.e(TAG, "Error setting signal sensitivity to $sensitivity", e)
+                _errorMessage.value = "Failed to save signal sensitivity: ${e.message}"
+            }
         }
     }
 
     fun setWeeklyDay(day: DayOfWeek) {
         viewModelScope.launch {
-            settingsRepository.setWeeklyDay(day)
+            try {
+                settingsRepository.setWeeklyDay(day)
+                _errorMessage.value = null
+            } catch (e: Exception) {
+                Log.e(TAG, "Error setting weekly day to $day", e)
+                _errorMessage.value = "Failed to save weekly day: ${e.message}"
+            }
         }
     }
 
     fun setSnoozeDuration(duration: SnoozeDurationOption) {
         viewModelScope.launch {
-            settingsRepository.setSnoozeDuration(duration)
+            try {
+                settingsRepository.setSnoozeDuration(duration)
+                _errorMessage.value = null
+            } catch (e: Exception) {
+                Log.e(TAG, "Error setting snooze duration to $duration", e)
+                _errorMessage.value = "Failed to save snooze duration: ${e.message}"
+            }
         }
     }
 
     fun setImmediatePostsEnabled(enabled: Boolean) {
         viewModelScope.launch {
-            settingsRepository.setImmediatePostsEnabled(enabled)
+            try {
+                settingsRepository.setImmediatePostsEnabled(enabled)
+                _errorMessage.value = null
+            } catch (e: Exception) {
+                Log.e(TAG, "Error setting immediate posts enabled to $enabled", e)
+                _errorMessage.value = "Failed to save immediate posts setting: ${e.message}"
+            }
         }
     }
 
@@ -141,8 +194,13 @@ class SettingsViewModel @Inject constructor(
             onboardingCompleted = false
         )
     }
+
+    companion object {
+        private const val TAG = "SettingsViewModel"
+    }
 }
 
 data class SettingsUiState(
-    val settings: AppSettings
+    val settings: AppSettings,
+    val errorMessage: String? = null
 )

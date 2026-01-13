@@ -68,6 +68,35 @@ class NotificationScheduler @Inject constructor(
                 request
             )
         }
+        
+        // Schedule daily robots.txt check at first notification window
+        scheduleRobotsTxtCheck(settings)
+    }
+    
+    private fun scheduleRobotsTxtCheck(settings: AppSettings) {
+        val windows = windowsForFrequency(settings)
+        if (windows.isEmpty()) return
+        
+        // Use the first window for the daily check
+        val firstWindow = windows.first()
+        val delay = initialDelay(firstWindow, settings)
+        
+        val request = PeriodicWorkRequestBuilder<RobotsTxtCheckWorker>(
+            24, // Daily
+            TimeUnit.HOURS
+        )
+            .setConstraints(CONSTRAINTS)
+            .setInitialDelay(delay.toMinutes(), TimeUnit.MINUTES)
+            .addTag(ROBOTS_TXT_CHECK_TAG)
+            .build()
+            
+        workManager.enqueueUniquePeriodicWork(
+            RobotsTxtCheckWorker.WORK_NAME,
+            ExistingPeriodicWorkPolicy.KEEP, // Keep existing to preserve check state
+            request
+        )
+        
+        Log.d(TAG, "Scheduled daily robots.txt check at first notification window")
     }
 
     private fun windowsForFrequency(settings: AppSettings): List<ScheduleWindow> {
@@ -154,6 +183,7 @@ class NotificationScheduler @Inject constructor(
     companion object {
         private const val TAG = "NotificationScheduler"
         private const val WORK_TAG = "notification_window"
+        private const val ROBOTS_TXT_CHECK_TAG = "robots_txt_check"
         private val CONSTRAINTS = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .build()

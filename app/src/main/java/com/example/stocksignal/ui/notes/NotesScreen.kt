@@ -11,7 +11,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -43,6 +49,7 @@ fun NotesRoute(
         state = state,
         onSaveNote = viewModel::saveNote,
         onDeleteNote = viewModel::deleteNote,
+        onClearError = viewModel::clearError,
         initialSymbol = initialSymbol
     )
 }
@@ -53,6 +60,7 @@ fun NotesScreen(
     state: NotesUiState,
     onSaveNote: (String, String) -> Unit,
     onDeleteNote: (String) -> Unit,
+    onClearError: () -> Unit = {},
     initialSymbol: String? = null,
     modifier: Modifier = Modifier
 ) {
@@ -77,6 +85,14 @@ fun NotesScreen(
             style = MaterialTheme.typography.bodySmall
         )
         Spacer(modifier = Modifier.height(12.dp))
+
+        state.errorMessage?.let { error ->
+            ErrorBanner(
+                message = error,
+                onDismiss = onClearError
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+        }
 
         StockCard {
             Text(text = "Add or edit note", style = MaterialTheme.typography.headlineMedium)
@@ -161,6 +177,41 @@ private fun NoteCard(
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             TextButton(onClick = onSelect) { Text("Edit") }
             TextButton(onClick = onDelete) { Text("Remove") }
+        }
+    }
+}
+
+@Composable
+private fun ErrorBanner(
+    message: String,
+    onDismiss: () -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer
+        ),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(onClick = onDismiss) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "Dismiss error",
+                    tint = MaterialTheme.colorScheme.onErrorContainer
+                )
+            }
         }
     }
 }

@@ -4,6 +4,7 @@ import com.example.stocksignal.data.local.model.MarketMoverItem
 import com.example.stocksignal.data.stooq.model.MarketMoverDirection
 import com.example.stocksignal.data.stooq.model.MarketMoverRange
 import com.example.stocksignal.data.stooq.model.MarketMoversSection
+import com.example.stocksignal.util.HtmlUtils
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import java.util.Locale
@@ -33,12 +34,17 @@ object MarketMoversHtmlParser {
 
             val link = row.selectFirst("a[href*=q/?s=]") ?: return@forEach
             val direction = currentDirection ?: return@forEach
-            val symbol = parseSymbol(link)
-            if (symbol.isBlank()) return@forEach
+            val rawSymbol = parseSymbol(link)
+            if (rawSymbol.isBlank()) return@forEach
 
             val cells = row.select("td")
-            val companyName = cells.getOrNull(1)?.text()?.trim().orEmpty()
-            if (companyName.isBlank()) return@forEach
+            val rawCompanyName = cells.getOrNull(1)?.text()?.trim().orEmpty()
+            if (rawCompanyName.isBlank()) return@forEach
+            
+            // Strip HTML tags and decode entities from symbol and company name
+            val symbol = HtmlUtils.stripHtml(rawSymbol)
+            val companyName = HtmlUtils.stripHtml(rawCompanyName)
+            if (symbol.isBlank() || companyName.isBlank()) return@forEach
 
             val price = parseNumber(cells.getOrNull(2)?.text().orEmpty())
             val percentChange = parsePercent(cells.getOrNull(3)?.text().orEmpty())

@@ -25,6 +25,9 @@ import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -78,8 +81,11 @@ fun WatchlistRoute(
     viewModel: WatchlistViewModel = hiltViewModel()
 ) {
     val items by viewModel.watchlistCards.collectAsStateWithLifecycle()
+    val errorMessage by viewModel.errorMessage.collectAsStateWithLifecycle()
     WatchlistScreen(
         items = items,
+        errorMessage = errorMessage,
+        onClearError = viewModel::clearError,
         onReorder = viewModel::persistCustomOrder,
         onRemove = viewModel::remove,
         onSnooze = viewModel::snooze,
@@ -109,6 +115,8 @@ private fun <T> MutableList<T>.move(from: Int, to: Int) {
 @Composable
 fun WatchlistScreen(
     items: List<WatchlistCardState>,
+    errorMessage: String? = null,
+    onClearError: () -> Unit = {},
     modifier: Modifier = Modifier,
     onReorder: (List<WatchlistItem>) -> Unit = {},
     onRemove: (String) -> Unit = {},
@@ -180,6 +188,14 @@ fun WatchlistScreen(
         Spacer(modifier = Modifier.height(12.dp))
         WatchlistSummary(items = items)
         Spacer(modifier = Modifier.height(16.dp))
+
+        errorMessage?.let { error ->
+            ErrorBanner(
+                message = error,
+                onDismiss = onClearError
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+        }
 
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -623,4 +639,39 @@ private fun formatSnoozeTime(time: LocalDateTime): String {
     val today = LocalDate.now()
     val pattern = if (time.toLocalDate() == today) "HH:mm" else "MMM d HH:mm"
     return time.format(DateTimeFormatter.ofPattern(pattern))
+}
+
+@Composable
+private fun ErrorBanner(
+    message: String,
+    onDismiss: () -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer
+        ),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(onClick = onDismiss) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "Dismiss error",
+                    tint = MaterialTheme.colorScheme.onErrorContainer
+                )
+            }
+        }
+    }
 }

@@ -47,62 +47,72 @@ class NotificationWindowWorker @AssistedInject constructor(
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
-        val windowId = inputData.getString(KEY_WINDOW_ID) ?: return Result.failure()
-        val settings = settingsRepository.settingsFlow.first()
-        if (!settings.notificationTypes.contains(NotificationType.DIGESTS)) {
-            Log.d(TAG, "Skipping window $windowId because digests are disabled")
-            return Result.success()
-        }
-        if (settings.frequency == NotificationFrequency.ONLY_WHEN_OPEN) {
-            Log.d(TAG, "Skipping window $windowId because frequency is only when open")
-            return Result.success()
+        val windowId = inputData.getString(KEY_WINDOW_ID)
+        if (windowId == null) {
+            Log.e(TAG, "Missing window ID in worker input")
+            return Result.failure()
         }
 
-        Log.d(TAG, "Running notification window worker for $windowId")
-        val candidates = mutableListOf<NotificationEvent>()
-        val now = LocalDateTime.now()
-
-        val watchlistRange = settings.selectedChartRange
-        val moversRange = MarketMoverRange.ONE_DAY
-        val moversChartRange = chartRangeForMarketRange(moversRange)
-
-        val watchlist = watchlistRepository.getAll()
-
-        if (settings.notificationTypes.contains(NotificationType.WATCHLIST)) {
-            for (item in watchlist) {
-                if (!item.alertEnabled) continue
-                if (item.snoozedUntil != null && item.snoozedUntil.isAfter(now)) continue
-                val minScore = item.minScoreForNotify ?: settings.signalSensitivity.minScoreForNotify
-                val result = stockRepository.getSeries(
-                    item.symbol,
-                    watchlistRange,
-                    forceRefresh = true,
-                    eventType = null
-                )
-                if (result is StooqResult.Success) {
-                    val series = result.data
-                    if (!isFresh(series, now)) continue
-                    val signal = signalsRepository.computeSignal(series, watchlistRange) ?: continue
-                    if (signal.score < minScore && signal.score > -minScore) continue
-                    if (signalsRepository.isInCooldown(item.symbol, signal.tier.label, signal.generatedAt)) continue
-                    val event = buildEvent(
-                        signal = signal,
-                        ticker = item.symbol,
-                        company = item.companyName,
-                        price = series.lastOrNull()?.close,
-                        percentChange = percentChange(series),
-                        type = NotificationEventType.WATCHLIST_SIGNAL
-                    )
-                    signalsRepository.recordEvent(event)
-                    candidates.add(event)
-                }
-                evaluateIndicatorAlerts(
-                    item = item,
-                    now = now,
-                    candidates = candidates
-                )
+        return try {
+            val settings = settingsRepository.settingsFlow.first()
+            if (!settings.notificationTypes.contains(NotificationType.DIGESTS)) {
+                Log.d(TAG, "Skipping window $windowId because digests are disabled")
+                return Result.success()
             }
-        }
+            if (settings.frequency == NotificationFrequency.ONLY_WHEN_OPEN) {
+                Log.d(TAG, "Skipping window $windowId because frequency is only when open")
+                return Result.success()
+            }
+
+            Log.d(TAG, "Running notification window worker for $windowId")
+            val candidates = mutableListOf<NotificationEvent>()
+            val now = LocalDateTime.now()
+
+            val watchlistRange = settings.selectedChartRange
+            val moversRange = MarketMoverRange.ONE_DAY
+            val moversChartRange = chartRangeForMarketRange(moversRange)
+
+            val watchlist = watchlistRepository.getAll()
+
+            if (settings.notificationTypes.contains(NotificationType.WATCHLIST)) {
+                for (item in watchlist) {
+                    try {
+                        if (!item.alertEnabled) continue
+                        if (item.snoozedUntil != null && item.snoozedUntil.isAfter(now)) continue
+                        val minScore = item.minScoreForNotify ?: settings.signalSensitivity.minScoreForNotify
+                        val result = stockRepository.getSeries(
+                            item.symbol,
+                            watchlistRange,
+                            forceRefresh = true,
+                            eventType = null
+                        )
+                        if (result is StooqResult.Success) {
+                            val series = result.data
+                            if (!isFresh(series, now)) continue
+                            val signal = signalsRepository.computeSignal(series, watchlistRange) ?: continue
+                            if (signal.score < minScore && signal.score > -minScore) continue
+                            if (signalsRepository.isInCooldown(item.symbol, signal.tier.label, signal.generatedAt)) continue
+                            val event = buildEvent(
+                                signal = signal,
+                                ticker = item.symbol,
+                                company = item.companyName,
+                                price = series.lastOrNull()?.close,
+                                percentChange = percentChange(series),
+                                type = NotificationEventType.WATCHLIST_SIGNAL
+                            )
+                            signalsRepository.recordEvent(event)
+                            candidates.add(event)
+                        }
+                        evaluateIndicatorAlerts(
+                            item = item,
+                            now = now,
+                            candidates = candidates
+                        )
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Error processing watchlist item ${item.symbol}, skipping", e)
+                    }
+                }
+            }
 
         if (settings.notificationTypes.contains(NotificationType.MARKET_MOVERS)) {
             val watchlistSymbols = watchlist.map { it.symbol }.toSet()
@@ -129,36 +139,54 @@ class NotificationWindowWorker @AssistedInject constructor(
                 .filterNot { watchlistSymbols.contains(it.ticker) }
 
             movers.forEach { mover ->
-                val result = stockRepository.getSeries(
-                    mover.ticker,
-                    moversChartRange,
-                    forceRefresh = true,
-                    eventType = null
-                )
-                if (result is StooqResult.Success) {
-                    val series = result.data
-                    if (!isFresh(series, now)) return@forEach
-                    val signal = signalsRepository.computeSignal(series, moversChartRange) ?: return@forEach
-                    val strongBuy = settings.signalSensitivity.strongBuyThreshold
-                    val strongSell = settings.signalSensitivity.strongSellThreshold
-                    if (signal.score < strongBuy && signal.score > strongSell) return@forEach
-                    if (signalsRepository.isInCooldown(mover.ticker, signal.tier.label, signal.generatedAt)) return@forEach
-                    val event = buildEvent(
-                        signal = signal,
-                        ticker = mover.ticker,
-                        company = mover.companyName,
-                        price = mover.price,
-                        percentChange = mover.percentChange,
-                        type = NotificationEventType.MARKET_MOVER
+                try {
+                    val result = stockRepository.getSeries(
+                        mover.ticker,
+                        moversChartRange,
+                        forceRefresh = true,
+                        eventType = null
                     )
-                    signalsRepository.recordEvent(event)
-                    candidates.add(event)
+                    if (result is StooqResult.Success) {
+                        val series = result.data
+                        if (!isFresh(series, now)) return@forEach
+                        val signal = signalsRepository.computeSignal(series, moversChartRange) ?: return@forEach
+                        val strongBuy = settings.signalSensitivity.strongBuyThreshold
+                        val strongSell = settings.signalSensitivity.strongSellThreshold
+                        if (signal.score < strongBuy && signal.score > strongSell) return@forEach
+                        if (signalsRepository.isInCooldown(mover.ticker, signal.tier.label, signal.generatedAt)) return@forEach
+                        val event = buildEvent(
+                            signal = signal,
+                            ticker = mover.ticker,
+                            company = mover.companyName,
+                            price = mover.price,
+                            percentChange = mover.percentChange,
+                            type = NotificationEventType.MARKET_MOVER
+                        )
+                        signalsRepository.recordEvent(event)
+                        candidates.add(event)
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error processing market mover ${mover.ticker}, skipping", e)
                 }
             }
         }
 
         notificationQueueProcessor.processCandidates(candidates, settings)
-        return Result.success()
+            Log.d(TAG, "Successfully processed ${candidates.size} candidate events for window $windowId")
+            Result.success()
+        } catch (e: java.io.IOException) {
+            Log.e(TAG, "Network error in window $windowId, will retry", e)
+            Result.retry()
+        } catch (e: android.database.sqlite.SQLiteException) {
+            Log.e(TAG, "Database error in window $windowId, will retry", e)
+            Result.retry()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            Log.w(TAG, "Worker cancelled for window $windowId", e)
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Unexpected error in window $windowId, will not retry", e)
+            Result.failure()
+        }
     }
 
     private fun buildEvent(
@@ -323,26 +351,14 @@ class NotificationWindowWorker @AssistedInject constructor(
 
     private fun isFresh(candles: List<PriceCandle>, now: LocalDateTime): Boolean {
         val last = candles.lastOrNull()?.time ?: return false
-        if (!isMarketHours(now)) return true
         val age = Duration.between(last, now)
         return !age.isNegative && age <= STALE_THRESHOLD
-    }
-
-    private fun isMarketHours(now: LocalDateTime): Boolean {
-        val eastern = now.atZone(ZoneId.systemDefault()).withZoneSameInstant(MARKET_ZONE)
-        val day = eastern.dayOfWeek
-        if (day.value >= 6) return false
-        val time = eastern.toLocalTime()
-        return !time.isBefore(MARKET_OPEN) && !time.isAfter(MARKET_CLOSE)
     }
 
     companion object {
         const val KEY_WINDOW_ID = "window_id"
         private const val TAG = "NotificationWindowWorker"
         private const val MAX_MOVERS = 3
-        private val STALE_THRESHOLD = Duration.ofMinutes(10)
-        private val MARKET_ZONE = ZoneId.of("America/New_York")
-        private val MARKET_OPEN = LocalTime.of(9, 30)
-        private val MARKET_CLOSE = LocalTime.of(16, 0)
+        private val STALE_THRESHOLD = Duration.ofDays(7)
     }
 }

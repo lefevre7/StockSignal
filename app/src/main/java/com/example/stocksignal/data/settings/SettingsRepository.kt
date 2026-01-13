@@ -1,5 +1,6 @@
 package com.example.stocksignal.data.settings
 
+import android.util.Log
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
@@ -10,6 +11,8 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import com.example.stocksignal.domain.model.ChartRange
 import java.time.DayOfWeek
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -19,71 +22,146 @@ class SettingsRepository @Inject constructor(
     private val dataStore: DataStore<Preferences>
 ) {
 
-    val settingsFlow: Flow<AppSettings> = dataStore.data.map { prefs ->
-        prefs.toAppSettings()
-    }
+    val settingsFlow: Flow<AppSettings> = dataStore.data
+        .map { prefs -> prefs.toAppSettings() }
+        .catch { e ->
+            Log.e(TAG, "Error reading settings from DataStore", e)
+            emit(createDefaultSettings())
+        }
 
     suspend fun setFrequency(frequency: NotificationFrequency) {
-        dataStore.edit { prefs ->
-            prefs[SettingsKeys.frequency] = frequency.name
+        try {
+            dataStore.edit { prefs ->
+                prefs[SettingsKeys.frequency] = frequency.name
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting frequency: ${frequency.name}", e)
+            throw e
         }
     }
 
     suspend fun setNotificationTypes(types: Set<NotificationType>) {
-        dataStore.edit { prefs ->
-            prefs[SettingsKeys.notificationTypes] = types.map { it.name }.toSet()
+        try {
+            dataStore.edit { prefs ->
+                prefs[SettingsKeys.notificationTypes] = types.map { it.name }.toSet()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting notification types", e)
+            throw e
         }
     }
 
     suspend fun setQuietHours(quietHours: QuietHours) {
-        dataStore.edit { prefs ->
-            prefs[SettingsKeys.quietHoursEnabled] = quietHours.enabled
-            prefs[SettingsKeys.quietHoursStart] = quietHours.start
-            prefs[SettingsKeys.quietHoursEnd] = quietHours.end
+        try {
+            dataStore.edit { prefs ->
+                prefs[SettingsKeys.quietHoursEnabled] = quietHours.enabled
+                prefs[SettingsKeys.quietHoursStart] = quietHours.start
+                prefs[SettingsKeys.quietHoursEnd] = quietHours.end
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting quiet hours", e)
+            throw e
         }
     }
 
     suspend fun setScheduleWindows(windows: List<ScheduleWindow>) {
-        dataStore.edit { prefs ->
-            prefs[SettingsKeys.scheduleWindows] = SettingsJson.encodeScheduleWindows(windows)
+        try {
+            dataStore.edit { prefs ->
+                prefs[SettingsKeys.scheduleWindows] = SettingsJson.encodeScheduleWindows(windows)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting schedule windows", e)
+            throw e
         }
     }
 
     suspend fun setWeeklyDay(day: DayOfWeek) {
-        dataStore.edit { prefs ->
-            prefs[SettingsKeys.weeklyDay] = day.name
+        try {
+            dataStore.edit { prefs ->
+                prefs[SettingsKeys.weeklyDay] = day.name
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting weekly day: ${day.name}", e)
+            throw e
         }
     }
 
     suspend fun setSnoozeDuration(duration: SnoozeDurationOption) {
-        dataStore.edit { prefs ->
-            prefs[SettingsKeys.snoozeDuration] = duration.name
+        try {
+            dataStore.edit { prefs ->
+                prefs[SettingsKeys.snoozeDuration] = duration.name
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting snooze duration: ${duration.name}", e)
+            throw e
         }
     }
 
     suspend fun setSignalSensitivity(sensitivity: SignalSensitivity) {
-        dataStore.edit { prefs ->
-            prefs[SettingsKeys.minScoreForNotify] = sensitivity.minScoreForNotify
-            prefs[SettingsKeys.strongBuyThreshold] = sensitivity.strongBuyThreshold
-            prefs[SettingsKeys.strongSellThreshold] = sensitivity.strongSellThreshold
+        try {
+            dataStore.edit { prefs ->
+                prefs[SettingsKeys.minScoreForNotify] = sensitivity.minScoreForNotify
+                prefs[SettingsKeys.strongBuyThreshold] = sensitivity.strongBuyThreshold
+                prefs[SettingsKeys.strongSellThreshold] = sensitivity.strongSellThreshold
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting signal sensitivity", e)
+            throw e
         }
     }
 
     suspend fun setSelectedChartRange(range: ChartRange) {
-        dataStore.edit { prefs ->
-            prefs[SettingsKeys.selectedChartRange] = range.name
+        try {
+            dataStore.edit { prefs ->
+                prefs[SettingsKeys.selectedChartRange] = range.name
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting chart range: ${range.name}", e)
+            throw e
         }
     }
 
     suspend fun setImmediatePostsEnabled(enabled: Boolean) {
-        dataStore.edit { prefs ->
-            prefs[SettingsKeys.immediatePostsEnabled] = enabled
+        try {
+            dataStore.edit { prefs ->
+                prefs[SettingsKeys.immediatePostsEnabled] = enabled
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting immediate posts: $enabled", e)
+            throw e
         }
     }
 
     suspend fun setOnboardingCompleted(completed: Boolean) {
-        dataStore.edit { prefs ->
-            prefs[SettingsKeys.onboardingCompleted] = completed
+        try {
+            dataStore.edit { prefs ->
+                prefs[SettingsKeys.onboardingCompleted] = completed
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting onboarding completed: $completed", e)
+            throw e
+        }
+    }
+
+    suspend fun getLastRobotsTxtCheckDate(): java.time.LocalDate? {
+        return try {
+            val prefs = dataStore.data.first()
+            val dateString = prefs[SettingsKeys.lastRobotsTxtCheckDate]
+            dateString?.let { java.time.LocalDate.parse(it) }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error reading last robots.txt check date", e)
+            null
+        }
+    }
+
+    suspend fun setLastRobotsTxtCheckDate(date: java.time.LocalDate) {
+        try {
+            dataStore.edit { prefs ->
+                prefs[SettingsKeys.lastRobotsTxtCheckDate] = date.toString()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting last robots.txt check date: $date", e)
+            throw e
         }
     }
 
@@ -137,6 +215,7 @@ class SettingsRepository @Inject constructor(
     }
 
     companion object {
+        private const val TAG = "SettingsRepository"
         private val defaultNotificationTypes = setOf(
             NotificationType.WATCHLIST,
             NotificationType.MARKET_MOVERS,
@@ -168,6 +247,29 @@ class SettingsRepository @Inject constructor(
                 offsetMinutes = null
             )
         )
+
+        private fun createDefaultSettings(): AppSettings {
+            return AppSettings(
+                frequency = NotificationFrequency.THREE_PER_DAY,
+                notificationTypes = defaultNotificationTypes,
+                quietHours = QuietHours(
+                    enabled = false,
+                    start = "22:00",
+                    end = "07:00"
+                ),
+                scheduleWindows = defaultScheduleWindows,
+                weeklyDay = DayOfWeek.MONDAY,
+                snoozeDuration = SnoozeDurationOption.TWENTY_FOUR_HOURS,
+                signalSensitivity = SignalSensitivity(
+                    minScoreForNotify = 60,
+                    strongBuyThreshold = 60,
+                    strongSellThreshold = -60
+                ),
+                selectedChartRange = ChartRange.ONE_DAY,
+                immediatePostsEnabled = false,
+                onboardingCompleted = false
+            )
+        }
     }
 }
 
@@ -186,4 +288,5 @@ private object SettingsKeys {
     val selectedChartRange = stringPreferencesKey("selected_chart_range")
     val immediatePostsEnabled = booleanPreferencesKey("immediate_posts_enabled")
     val onboardingCompleted = booleanPreferencesKey("onboarding_completed")
+    val lastRobotsTxtCheckDate = stringPreferencesKey("last_robots_txt_check_date")
 }

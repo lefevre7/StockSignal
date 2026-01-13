@@ -1,5 +1,6 @@
 package com.example.stocksignal.ui.watchlist
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.stocksignal.data.local.entity.WatchlistItemEntity
@@ -40,6 +41,7 @@ class WatchlistViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val marketData = MutableStateFlow<Map<String, WatchlistMarketData>>(emptyMap())
+    private val _errorMessage = MutableStateFlow<String?>(null)
 
     val watchlistCards: StateFlow<List<WatchlistCardState>> = combine(
         watchlistRepository.watchlistFlow,
@@ -59,34 +61,61 @@ class WatchlistViewModel @Inject constructor(
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    val errorMessage: StateFlow<String?> = _errorMessage
+
     init {
         viewModelScope.launch {
             watchlistRepository.watchlistFlow.collect { items ->
-                refreshMarketData(items)
+                try {
+                    refreshMarketData(items)
+                    _errorMessage.value = null
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error refreshing market data", e)
+                    _errorMessage.value = "Failed to refresh market data: ${e.message}"
+                }
             }
         }
     }
 
     fun persistCustomOrder(items: List<WatchlistItem>) {
         viewModelScope.launch {
-            watchlistRepository.updateSortOrder(items.map { it.symbol })
+            try {
+                watchlistRepository.updateSortOrder(items.map { it.symbol })
+            } catch (e: Exception) {
+                Log.e(TAG, "Error persisting custom order", e)
+                _errorMessage.value = "Failed to save order: ${e.message}"
+            }
         }
     }
 
     fun remove(symbol: String) {
         viewModelScope.launch {
-            watchlistRepository.deleteBySymbol(symbol)
+            try {
+                watchlistRepository.deleteBySymbol(symbol)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error removing symbol: $symbol", e)
+                _errorMessage.value = "Failed to remove $symbol: ${e.message}"
+            }
         }
     }
 
     fun snooze(symbol: String) {
         viewModelScope.launch {
-            val item = watchlistRepository.getBySymbol(symbol) ?: return@launch
-            val settings = settingsRepository.settingsFlow.first()
-            val duration = Duration.ofMinutes(settings.snoozeDuration.minutes)
-            val until = LocalDateTime.now().plus(duration)
-            watchlistRepository.upsert(item.copy(snoozedUntil = until))
+            try {
+                val item = watchlistRepository.getBySymbol(symbol) ?: return@launch
+                val settings = settingsRepository.settingsFlow.first()
+                val duration = Duration.ofMinutes(settings.snoozeDuration.minutes)
+                val until = LocalDateTime.now().plus(duration)
+                watchlistRepository.upsert(item.copy(snoozedUntil = until))
+            } catch (e: Exception) {
+                Log.e(TAG, "Error snoozing symbol: $symbol", e)
+                _errorMessage.value = "Failed to snooze $symbol: ${e.message}"
+            }
         }
+    }
+
+    fun clearError() {
+        _errorMessage.value = null
     }
 
     private suspend fun refreshMarketData(items: List<WatchlistItemEntity>) = coroutineScope {
@@ -101,17 +130,24 @@ class WatchlistViewModel @Inject constructor(
     }
 
     private suspend fun fetchMarketData(symbol: String) {
-        val existing = marketData.value[symbol]
-        if (existing != null && !isStale(existing)) return
+        try {
+            val existing = marketData.value[symbol]
+            if (existing != null && !isStale(existing)) return
 
-        when (val result = stockRepository.getSeries(symbol, ChartRange.ONE_DAY, eventType = null)) {
-            is Result.Success -> updateMarketData(symbol, result.data, ChartRange.ONE_DAY)
-            is Result.Error -> {
-                when (val fallback = stockRepository.getDailySeriesFallback(symbol, ChartRange.ONE_DAY)) {
-                    is Result.Success -> updateMarketData(symbol, fallback.data, ChartRange.ONE_DAY)
-                    is Result.Error -> Unit
+            when (val result = stockRepository.getSeries(symbol, ChartRange.ONE_DAY, eventType = null)) {
+                is Result.Success -> updateMarketData(symbol, result.data, ChartRange.ONE_DAY)
+                is Result.Error -> {
+                    Log.w(TAG, "Error fetching market data for $symbol: ${result.message}")
+                    when (val fallback = stockRepository.getDailySeriesFallback(symbol, ChartRange.ONE_DAY)) {
+                        is Result.Success -> updateMarketData(symbol, fallback.data, ChartRange.ONE_DAY)
+                        is Result.Error -> {
+                            Log.e(TAG, "Fallback also failed for $symbol", fallback.exception)
+                        }
+                    }
                 }
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "Unexpected error fetching market data for $symbol", e)
         }
     }
 
@@ -139,6 +175,10 @@ class WatchlistViewModel @Inject constructor(
 
     private fun isStale(data: WatchlistMarketData): Boolean {
         return Duration.between(data.updatedAt, LocalDateTime.now()) > Duration.ofMinutes(10)
+    }
+
+    companion object {
+        private const val TAG = "WatchlistViewModel"
     }
 }
 

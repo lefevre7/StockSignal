@@ -49,7 +49,9 @@ stocksignal://stock/{TICKER}?eventId={EVENT_ID}
 
 ## Disclaimer and attribution
 - Signals are informational only and not investment advice. The app does not execute trades.
-- Powered by Stooq.com data. Not affiliated with Stooq.
+- Market data is sourced from Stooq.com and may be delayed, incomplete, or inaccurate. The app does not guarantee the accuracy, completeness, or timeliness of any data.
+- Not affiliated with Stooq.
+- This app is provided for educational and informational purposes only.
 
 ## Tests - probably also ./gradlew clean build test --stacktrace
 Unit tests:

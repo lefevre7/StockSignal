@@ -13,8 +13,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -51,6 +57,8 @@ fun SettingsRoute(viewModel: SettingsViewModel = hiltViewModel()) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     SettingsScreen(
         settings = state.settings,
+        errorMessage = state.errorMessage,
+        onClearError = viewModel::clearError,
         onFrequencyChange = viewModel::setFrequency,
         onNotificationTypeToggle = viewModel::toggleNotificationType,
         onQuietHoursToggle = viewModel::setQuietHoursEnabled,
@@ -67,6 +75,8 @@ fun SettingsRoute(viewModel: SettingsViewModel = hiltViewModel()) {
 @Composable
 fun SettingsScreen(
     settings: AppSettings,
+    errorMessage: String? = null,
+    onClearError: () -> Unit = {},
     onFrequencyChange: (NotificationFrequency) -> Unit,
     onNotificationTypeToggle: (NotificationType, Boolean) -> Unit,
     onQuietHoursToggle: (Boolean) -> Unit,
@@ -100,6 +110,15 @@ fun SettingsScreen(
                 text = "Notification controls and signal sensitivity.",
                 style = MaterialTheme.typography.bodySmall
             )
+        }
+
+        errorMessage?.let { error ->
+            item {
+                ErrorBanner(
+                    message = error,
+                    onDismiss = onClearError
+                )
+            }
         }
 
         item {
@@ -235,7 +254,7 @@ fun SettingsScreen(
                 )
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
-                    text = "Powered by Stooq.com data. Not affiliated with Stooq.",
+                    text = "Market data is sourced from Stooq.com and may be delayed, incomplete, or inaccurate. The app does not guarantee the accuracy, completeness, or timeliness of any data. Not affiliated with Stooq.",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -599,4 +618,39 @@ private fun parseTime(raw: String): Pair<Int, Int>? {
     val minute = parts[1].toIntOrNull() ?: return null
     if (hour !in 0..23 || minute !in 0..59) return null
     return hour to minute
+}
+
+@Composable
+private fun ErrorBanner(
+    message: String,
+    onDismiss: () -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer
+        ),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(onClick = onDismiss) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "Dismiss error",
+                    tint = MaterialTheme.colorScheme.onErrorContainer
+                )
+            }
+        }
+    }
 }

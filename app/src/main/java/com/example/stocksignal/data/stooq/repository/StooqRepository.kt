@@ -273,7 +273,8 @@ class StooqRepository(private val api: StooqApi) {
                     val high = record.get("High").toDouble()
                     val low = record.get("Low").toDouble()
                     val close = record.get("Close").toDouble()
-                    val volume = record.get("Volume").toLong()
+                    // Parse volume as Double first (handles decimal values), then convert to Long
+                    val volume = record.get("Volume").toDouble().toLong()
 
                     dataMap[date] = StockData(
                         date = date,

@@ -16,26 +16,31 @@ object SignalEngine {
     ): SignalResult? {
         if (candles.size < 5) return null
         val atrPercent = atrPercent(candles)
-        val volatilityScale = volatilityScale(atrPercent)
 
-        val modelA = RuleBasedSignalModel.compute(candles, range)
-        val modelB = ReturnZScoreModel.compute(candles, volatilityScale)
+        val model = RuleBasedSignalModel.compute(candles, range) ?: return null
+        
+        // Get individual metric scores from the reasons
+        val metricScores = mutableMapOf<String, Int>()
+        model.reasons.forEach { reason ->
+            reason.model?.let { metricName ->
+                // Use the impact score as the metric score
+                metricScores[metricName] = reason.impactScore
+            }
+        }
+        
+        if (metricScores.isEmpty()) return null
 
-        val models = listOfNotNull(modelA, modelB)
-        if (models.isEmpty()) return null
-
-        val modelScores = models.associate { it.id to it.score }
-        val averageScore = modelScores.values.average().roundToInt()
-        val modeScore = scoreMode(modelScores.values.toList())
+        val averageScore = metricScores.values.average().roundToInt()
+        val modeScore = scoreMode(metricScores.values.toList())
         val finalScore = modeScore ?: averageScore
 
-        val reasons = models.flatMap { it.reasons }
+        val reasons = model.reasons
             .sortedByDescending { abs(it.impactScore) }
             .take(3)
 
         val confidence = confidenceScore(
             averageScore = averageScore,
-            modelScores = modelScores.values.toList(),
+            modelScores = metricScores.values.toList(),
             atrPercent = atrPercent
         )
 
@@ -45,7 +50,7 @@ object SignalEngine {
             modeScore = modeScore?.coerceIn(-100, 100),
             confidence = confidence,
             reasons = reasons,
-            modelScores = modelScores,
+            modelScores = metricScores,
             generatedAt = generatedAt
         )
     }

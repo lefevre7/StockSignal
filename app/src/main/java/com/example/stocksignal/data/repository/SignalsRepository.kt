@@ -1,5 +1,6 @@
 package com.example.stocksignal.data.repository
 
+import android.util.Log
 import com.example.stocksignal.data.local.entity.GlobalSignalEventEntity
 import com.example.stocksignal.data.local.repository.SignalEventsRepository
 import com.example.stocksignal.domain.model.NotificationEvent
@@ -67,17 +68,24 @@ class SignalsRepository @Inject constructor(
         range: ChartRange,
         type: NotificationEventType = NotificationEventType.WATCHLIST_SIGNAL
     ): SignalResult? {
-        val result = SignalEngine.computeSignal(candles, range) ?: return null
-        val label = result.tier.label
-        val latest = signalEventsRepository.getLatestForTickerAndLabel(ticker, label)
-        if (latest != null) {
-            val age = Duration.between(latest.generatedAt, result.generatedAt)
-            if (age < COOLDOWN) {
-                return result
+        try {
+            val result = SignalEngine.computeSignal(candles, range) ?: return null
+            val label = result.tier.label
+            val latest = signalEventsRepository.getLatestForTickerAndLabel(ticker, label)
+            if (latest != null) {
+                val age = Duration.between(latest.generatedAt, result.generatedAt)
+                if (age < COOLDOWN) {
+                    Log.d(TAG, "Signal for $ticker/$label in cooldown (age: ${age.toMinutes()}m)")
+                    return result
+                }
             }
+            signalEventsRepository.upsert(result.toEntity(ticker, type))
+            Log.d(TAG, "Stored signal for $ticker: ${result.tier.label} (score: ${result.score})")
+            return result
+        } catch (e: Exception) {
+            Log.e(TAG, "Error evaluating/storing signal for $ticker", e)
+            return null
         }
-        signalEventsRepository.upsert(result.toEntity(ticker, type))
-        return result
     }
 
     private fun GlobalSignalEventEntity.toDomain(): NotificationEvent {
@@ -190,6 +198,7 @@ class SignalsRepository @Inject constructor(
     }
 
     companion object {
+        private const val TAG = "SignalsRepository"
         private val COOLDOWN = Duration.ofHours(24)
     }
 }

@@ -1,5 +1,6 @@
 package com.example.stocksignal.data.repository
 
+import android.util.Log
 import com.example.stocksignal.data.local.entity.StockDetailCacheEntity
 import com.example.stocksignal.data.local.repository.StockDetailCacheRepository
 import com.example.stocksignal.data.stooq.model.IntradayStockData
@@ -29,18 +30,25 @@ class StockRepository @Inject constructor(
         forceRefresh: Boolean = false,
         eventType: NotificationEventType? = NotificationEventType.WATCHLIST_SIGNAL
     ): Result<List<PriceCandle>> {
-        val cached = cacheRepository.getCache(symbol, range.label)
-        if (!forceRefresh && cached != null && !isStale(cached, range)) {
-            return Result.Success(PriceCandleJson.fromJson(cached.seriesJson))
-        }
+        try {
+            val cached = cacheRepository.getCache(symbol, range.label)
+            if (!forceRefresh && cached != null && !isStale(cached, range)) {
+                Log.d(TAG, "Using cached data for $symbol/${range.label}")
+                return Result.Success(PriceCandleJson.fromJson(cached.seriesJson))
+            }
 
-        return when (range) {
-            ChartRange.ONE_DAY,
-            ChartRange.FIVE_DAY,
-            ChartRange.ONE_MONTH -> fetchIntradaySeries(symbol, range, eventType)
-            ChartRange.SIX_MONTH,
-            ChartRange.ONE_YEAR,
-            ChartRange.FIVE_YEAR -> fetchDailySeries(symbol, range, eventType)
+            Log.d(TAG, "Fetching fresh data for $symbol/${range.label}")
+            return when (range) {
+                ChartRange.ONE_DAY,
+                ChartRange.FIVE_DAY,
+                ChartRange.ONE_MONTH -> fetchIntradaySeries(symbol, range, eventType)
+                ChartRange.SIX_MONTH,
+                ChartRange.ONE_YEAR,
+                ChartRange.FIVE_YEAR -> fetchDailySeries(symbol, range, eventType)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Unexpected error getting series for $symbol/${range.label}", e)
+            return Result.Error(e, "Failed to get stock data: ${e.message}")
         }
     }
 
@@ -233,4 +241,7 @@ class StockRepository @Inject constructor(
         }
     }
 
+    companion object {
+        private const val TAG = "StockRepository"
+    }
 }

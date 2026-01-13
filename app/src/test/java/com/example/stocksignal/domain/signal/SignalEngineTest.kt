@@ -18,21 +18,22 @@ class SignalEngineTest {
         assertNotNull(signal)
         val result = signal!!
 
-        val modelA = RuleBasedSignalModel.compute(candles, ChartRange.ONE_MONTH)
+        val model = RuleBasedSignalModel.compute(candles, ChartRange.ONE_MONTH)
+        assertNotNull(model)
+        
+        // Extract metric scores from reasons
+        val metricScores = mutableMapOf<String, Int>()
+        model!!.reasons.forEach { reason ->
+            reason.model?.let { metricName ->
+                metricScores[metricName] = reason.impactScore
+            }
+        }
+        
         val atr = IndicatorCalculator.atr(candles, 14)
         val lastClose = candles.last().close
         val atrPercent = if (atr != null && lastClose > 0) atr / lastClose else null
-        val volatilityScale = when {
-            atrPercent == null -> 1.0
-            atrPercent < 0.002 -> 0.6
-            atrPercent < 0.005 -> 0.8
-            else -> 1.0
-        }
-        val modelB = ReturnZScoreModel.compute(candles, volatilityScale)
-
-        assertNotNull(modelA)
-        assertNotNull(modelB)
-        val scores = listOf(modelA!!.score, modelB!!.score)
+        
+        val scores = metricScores.values.toList()
         val expectedAverage = scores.average().roundToInt()
         val expectedMode = scoreMode(scores)
         val expectedFinal = (expectedMode ?: expectedAverage).coerceIn(-100, 100)

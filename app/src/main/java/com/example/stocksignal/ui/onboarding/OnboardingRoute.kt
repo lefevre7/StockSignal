@@ -105,7 +105,7 @@ fun OnboardingRoute(
                 )
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
-                    text = "Powered by Stooq.com data. Not affiliated with Stooq.",
+                    text = "Market data is sourced from Stooq.com and may be delayed, incomplete, or inaccurate. The app does not guarantee the accuracy, completeness, or timeliness of any data. Not affiliated with Stooq.",
                     style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(modifier = Modifier.height(24.dp))

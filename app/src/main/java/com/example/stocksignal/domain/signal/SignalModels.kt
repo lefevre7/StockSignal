@@ -32,7 +32,7 @@ object RuleBasedSignalModel {
         val volatilityScale = volatilityScale(atrPercent)
 
         val reasons = mutableListOf<SignalReason>()
-        var totalScore = 0.0
+        val metricScores = mutableMapOf<String, Int>()
 
         val (fastPeriod, slowPeriod) = maPeriodsForRange(range)
         val fast = IndicatorCalculator.sma(closes, fastPeriod)
@@ -40,67 +40,69 @@ object RuleBasedSignalModel {
         val prevFast = IndicatorCalculator.sma(closes.dropLast(1), fastPeriod)
         val prevSlow = IndicatorCalculator.sma(closes.dropLast(1), slowPeriod)
         if (fast != null && slow != null && prevFast != null && prevSlow != null) {
+            var maScore = 0.0
             if (prevFast <= prevSlow && fast > slow) {
                 val diffPct = ((fast - slow) / slow) * 100.0
                 val strength = 30.0 + min(30.0, diffPct * 2)
                 val volumeBoost = volumeBoost(volumeZ)
-                val impact = min(60.0, strength + volumeBoost)
-                totalScore += impact
+                maScore = min(60.0, strength + volumeBoost)
                 reasons.add(
                     reason(
                         id = "ma_crossover_bull",
                         title = "Moving averages crossed up",
                         explanation = "The short-term average moved above the long-term average.",
-                        impact = impact,
-                        model = "rule"
+                        impact = maScore,
+                        model = "ma"
                     )
                 )
             } else if (prevFast >= prevSlow && fast < slow) {
                 val diffPct = ((slow - fast) / slow) * 100.0
                 val strength = 30.0 + min(30.0, diffPct * 2)
                 val volumeBoost = volumeBoost(volumeZ)
-                val impact = -min(60.0, strength + volumeBoost)
-                totalScore += impact
+                maScore = -min(60.0, strength + volumeBoost)
                 reasons.add(
                     reason(
                         id = "ma_crossover_bear",
                         title = "Moving averages crossed down",
                         explanation = "The short-term average moved below the long-term average.",
-                        impact = impact,
-                        model = "rule"
+                        impact = maScore,
+                        model = "ma"
                     )
                 )
             }
+            val scaledMaScore = (maScore * volatilityScale).roundToInt().coerceIn(-100, 100)
+            metricScores["ma"] = scaledMaScore
         }
 
         if (rsi != null) {
+            var rsiScore = 0.0
             if (rsi < 30) {
                 val distance = 30.0 - rsi
-                val impact = min(40.0, (distance / 15.0) * 40.0)
-                totalScore += impact
+                rsiScore = min(40.0, (distance / 15.0) * 40.0)
                 reasons.add(
                     reason(
                         id = "rsi_oversold",
                         title = "RSI oversold",
                         explanation = "RSI ${rsi.roundToInt()} suggests the stock is oversold.",
-                        impact = impact,
-                        model = "rule"
+                        impact = rsiScore,
+                        model = "rsi"
                     )
                 )
             } else if (rsi > 70) {
                 val distance = rsi - 70.0
-                val impact = -min(40.0, (distance / 15.0) * 40.0)
-                totalScore += impact
+                rsiScore = -min(40.0, (distance / 15.0) * 40.0)
                 reasons.add(
                     reason(
                         id = "rsi_overbought",
                         title = "RSI overbought",
                         explanation = "RSI ${rsi.roundToInt()} suggests the stock is overbought.",
-                        impact = impact,
-                        model = "rule"
+                        impact = rsiScore,
+                        model = "rsi"
                     )
                 )
             }
+            val scaledRsiScore = (rsiScore * volatilityScale).roundToInt().coerceIn(-100, 100)
+            metricScores["rsi"] = scaledRsiScore
         }
 
         if (macd != null && macd.prevHistogram != null) {
@@ -108,110 +110,140 @@ object RuleBasedSignalModel {
             val momentumUp = macd.histogram > macd.prevHistogram
             val momentumDown = macd.histogram < macd.prevHistogram
             val magnitude = min(30.0, abs(macdDiff / lastClose) * 1000 + 5)
+            var macdScore = 0.0
             if (macdDiff > 0 && momentumUp) {
-                totalScore += magnitude
+                macdScore = magnitude
                 reasons.add(
                     reason(
                         id = "macd_bull",
                         title = "MACD bullish cross",
                         explanation = "MACD is above its signal line and momentum is rising.",
-                        impact = magnitude,
-                        model = "rule"
+                        impact = macdScore,
+                        model = "macd"
                     )
                 )
             } else if (macdDiff < 0 && momentumDown) {
-                totalScore -= magnitude
+                macdScore = -magnitude
                 reasons.add(
                     reason(
                         id = "macd_bear",
                         title = "MACD bearish cross",
                         explanation = "MACD is below its signal line and momentum is falling.",
-                        impact = -magnitude,
-                        model = "rule"
+                        impact = macdScore,
+                        model = "macd"
                     )
                 )
             }
+            val scaledMacdScore = (macdScore * volatilityScale).roundToInt().coerceIn(-100, 100)
+            metricScores["macd"] = scaledMacdScore
         }
 
         if (bollinger != null) {
+            var bbScore = 0.0
             if (lastClose > bollinger.upper) {
-                val impact = min(30.0, 15.0 + volumeBoost(volumeZ))
-                totalScore += impact
+                bbScore = min(30.0, 15.0 + volumeBoost(volumeZ))
                 reasons.add(
                     reason(
                         id = "bb_breakout_up",
                         title = "Bollinger band breakout",
                         explanation = "Price closed above the upper band, showing momentum.",
-                        impact = impact,
-                        model = "rule"
+                        impact = bbScore,
+                        model = "bb"
                     )
                 )
             } else if (lastClose < bollinger.lower) {
-                val impact = -min(30.0, 15.0 + volumeBoost(volumeZ))
-                totalScore += impact
+                bbScore = -min(30.0, 15.0 + volumeBoost(volumeZ))
                 reasons.add(
                     reason(
                         id = "bb_breakout_down",
                         title = "Bollinger band breakdown",
                         explanation = "Price closed below the lower band, showing weakness.",
-                        impact = impact,
-                        model = "rule"
+                        impact = bbScore,
+                        model = "bb"
                     )
                 )
             }
+            val scaledBbScore = (bbScore * volatilityScale).roundToInt().coerceIn(-100, 100)
+            metricScores["bb"] = scaledBbScore
         }
 
         val priceChangePct = if (prevClose == 0.0) 0.0 else ((lastClose - prevClose) / prevClose) * 100.0
         if (volumeZ != null && abs(priceChangePct) >= 3.0 && volumeZ >= 2.0) {
             val rawImpact = abs(priceChangePct) * 2 + (volumeZ - 2.0) * 5
-            val impact = min(40.0, rawImpact) * if (priceChangePct > 0) 1 else -1
-            totalScore += impact
+            val volMomentumScore = min(40.0, rawImpact) * if (priceChangePct > 0) 1 else -1
             reasons.add(
                 reason(
                     id = "volume_momentum",
                     title = "Volume spike + price move",
                     explanation = "Volume spiked with a ${"%.1f".format(priceChangePct)}% move.",
-                    impact = impact,
-                    model = "rule"
+                    impact = volMomentumScore,
+                    model = "volume"
                 )
             )
+            val scaledVolScore = (volMomentumScore * volatilityScale).roundToInt().coerceIn(-100, 100)
+            metricScores["volume"] = scaledVolScore
         }
 
         if (candles.size >= 21) {
             val previous = closes.dropLast(1).takeLast(20)
             val prevHigh = previous.maxOrNull()
             val prevLow = previous.minOrNull()
+            var breakoutScore = 0.0
             if (prevHigh != null && lastClose > prevHigh && (volumeZ ?: 0.0) >= 1.5) {
-                val impact = min(35.0, 25.0 + max(0.0, (volumeZ ?: 0.0) - 1.5) * 5)
-                totalScore += impact
+                breakoutScore = min(35.0, 25.0 + max(0.0, (volumeZ ?: 0.0) - 1.5) * 5)
                 reasons.add(
                     reason(
                         id = "breakout_up",
                         title = "Breakout above recent high",
                         explanation = "Price cleared the 20-day high with supportive volume.",
-                        impact = impact,
-                        model = "rule"
+                        impact = breakoutScore,
+                        model = "breakout"
                     )
                 )
             } else if (prevLow != null && lastClose < prevLow && (volumeZ ?: 0.0) >= 1.5) {
-                val impact = -min(35.0, 25.0 + max(0.0, (volumeZ ?: 0.0) - 1.5) * 5)
-                totalScore += impact
+                breakoutScore = -min(35.0, 25.0 + max(0.0, (volumeZ ?: 0.0) - 1.5) * 5)
                 reasons.add(
                     reason(
                         id = "breakout_down",
                         title = "Breakdown below support",
                         explanation = "Price fell below the 20-day low with heavy volume.",
-                        impact = impact,
-                        model = "rule"
+                        impact = breakoutScore,
+                        model = "breakout"
                     )
                 )
             }
+            val scaledBreakoutScore = (breakoutScore * volatilityScale).roundToInt().coerceIn(-100, 100)
+            metricScores["breakout"] = scaledBreakoutScore
         }
 
-        val scaledScore = (totalScore * volatilityScale).roundToInt().coerceIn(-100, 100)
+        // Add rolling z-score metric
+        if (candles.size >= 21) {
+            val returnZScore = IndicatorCalculator.returnZScore(closes, 20)
+            if (returnZScore != null) {
+                val rawZScore = (returnZScore * 20.0).coerceIn(-60.0, 60.0)
+                val zScoreImpact = rawZScore
+                reasons.add(
+                    reason(
+                        id = "return_zscore",
+                        title = "Return anomaly",
+                        explanation = "Latest return z-score is ${"%.2f".format(returnZScore)}.",
+                        impact = zScoreImpact,
+                        model = "zscore"
+                    )
+                )
+                val scaledZScore = (zScoreImpact * volatilityScale).roundToInt().coerceIn(-100, 100)
+                metricScores["zscore"] = scaledZScore
+            }
+        }
+
+        if (metricScores.isEmpty()) return null
+        
+        // Average score across all metrics
+        val avgScore = metricScores.values.average().roundToInt()
+        
         return ModelScoreResult(
-            id = "model_a",
-            score = scaledScore,
+            id = "unified",
+            score = avgScore,
             reasons = reasons
         )
     }
@@ -251,30 +283,6 @@ object RuleBasedSignalModel {
             explanation = explanation,
             impactScore = impact.roundToInt(),
             model = model
-        )
-    }
-}
-
-object ReturnZScoreModel {
-
-    fun compute(candles: List<PriceCandle>, volatilityScale: Double?): ModelScoreResult? {
-        if (candles.size < 21) return null
-        val closes = candles.map { it.close }
-        val zScore = IndicatorCalculator.returnZScore(closes, 20) ?: return null
-        val rawScore = (zScore * 20.0).coerceIn(-60.0, 60.0)
-        val scale = volatilityScale ?: 1.0
-        val score = (rawScore * scale).roundToInt().coerceIn(-100, 100)
-        val reason = SignalReason(
-            id = "return_zscore",
-            title = "Return anomaly",
-            explanation = "Latest return z-score is ${"%.2f".format(zScore)}.",
-            impactScore = score,
-            model = "stat"
-        )
-        return ModelScoreResult(
-            id = "model_b",
-            score = score,
-            reasons = listOf(reason)
         )
     }
 }

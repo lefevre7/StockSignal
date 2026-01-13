@@ -22,10 +22,18 @@ class StooqSearchRepository @Inject constructor(
         return try {
             val campaignId = cachedCampaignId ?: fetchCampaignId()
             if (campaignId == null) {
+                Log.i(TAG, "Search failed: missing cmp campaign id for query=$query")
                 Result.Error(Exception("Missing cmp campaign id"), "Unable to load search metadata")
             } else {
+                Log.i(TAG, "Searching for query=$query, campaignId=$campaignId")
                 val raw = api.getCmp(campaignId, query)
+                Log.i(TAG, "Raw cmp response for query=$query (length=${raw.length}):")
+                Log.i(TAG, "--- START RAW RESPONSE ---")
+                Log.i(TAG, raw)
+                Log.i(TAG, "--- END RAW RESPONSE ---")
+                
                 val results = CmpParser.parse(raw)
+                Log.i(TAG, "Parsed ${results.size} search results for query=$query")
                 Result.Success(results)
             }
         } catch (e: Exception) {

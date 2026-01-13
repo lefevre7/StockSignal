@@ -1,5 +1,6 @@
 package com.example.stocksignal.data.local.repository
 
+import android.util.Log
 import com.example.stocksignal.data.local.dao.NotificationStateDao
 import com.example.stocksignal.data.local.entity.NotificationStateEntity
 import javax.inject.Inject
@@ -11,10 +12,24 @@ class NotificationStateRepository @Inject constructor(
 ) {
 
     suspend fun getState(): NotificationStateEntity? {
-        return notificationStateDao.getState()
+        return try {
+            notificationStateDao.getState()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting notification state", e)
+            null
+        }
     }
 
     suspend fun upsert(state: NotificationStateEntity) {
-        notificationStateDao.upsert(state)
+        try {
+            notificationStateDao.upsert(state)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error upserting notification state", e)
+            throw e
+        }
+    }
+
+    companion object {
+        private const val TAG = "NotificationStateRepo"
     }
 }
