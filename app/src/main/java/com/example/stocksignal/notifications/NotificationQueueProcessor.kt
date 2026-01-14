@@ -11,7 +11,6 @@ import com.example.stocksignal.data.local.repository.WatchlistRepository
 import com.example.stocksignal.data.repository.SignalsRepository
 import com.example.stocksignal.data.settings.AppSettings
 import com.example.stocksignal.data.settings.NotificationFrequency
-import com.example.stocksignal.data.settings.NotificationType
 import com.example.stocksignal.data.settings.QuietHours
 import com.example.stocksignal.domain.model.NotificationEvent
 import com.example.stocksignal.domain.model.NotificationEventType
@@ -40,10 +39,6 @@ class NotificationQueueProcessor @Inject constructor(
     ) {
         if (candidates.isEmpty()) {
             logD("No candidates to process.")
-            return
-        }
-        if (!settings.notificationTypes.contains(NotificationType.DIGESTS)) {
-            logD("Digests disabled; skipping ${candidates.size} candidate(s).")
             return
         }
 
@@ -108,11 +103,6 @@ class NotificationQueueProcessor @Inject constructor(
     }
 
     suspend fun processQueued(settings: AppSettings) {
-        if (!settings.notificationTypes.contains(NotificationType.DIGESTS)) {
-            logD("Digests disabled; skipping queued delivery.")
-            return
-        }
-
         val now = LocalDateTime.now()
         var state = normalizeState(notificationStateRepository.getState(), now, settings.frequency)
         if (state.lastActiveNotificationId != null && !state.dismissed) return

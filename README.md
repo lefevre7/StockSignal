@@ -68,7 +68,7 @@ stocksignal://stock/{TICKER}?eventId={EVENT_ID}
 - Not affiliated with Stooq.
 - This app is provided for educational and informational purposes only.
 
-## Tests
+## Tests - probably also ./gradlew clean build test --stacktrace
 Unit tests:
 ```sh
 ./gradlew testDebugUnitTest

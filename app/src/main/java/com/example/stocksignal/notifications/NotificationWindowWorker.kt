@@ -33,6 +33,7 @@ import java.time.Duration
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.ZoneId
+import java.time.ZonedDateTime
 
 @HiltWorker
 class NotificationWindowWorker @AssistedInject constructor(
@@ -69,6 +70,17 @@ class NotificationWindowWorker @AssistedInject constructor(
             Log.d(TAG, "Running notification window worker for $windowId (watchlist=$watchlistEnabled movers=$moversEnabled)")
             val candidates = mutableListOf<NotificationEvent>()
             val now = LocalDateTime.now()
+            val premarketWindow = PremarketWindowUtils.resolvePremarketWindow(
+                settings,
+                windowId,
+                ZonedDateTime.now()
+            )
+            val usePremarketData = premarketWindow?.let { window ->
+                val nowInZone = ZonedDateTime.now(PremarketWindowUtils.marketZone(window))
+                val isWeekend = nowInZone.dayOfWeek == java.time.DayOfWeek.SATURDAY ||
+                    nowInZone.dayOfWeek == java.time.DayOfWeek.SUNDAY
+                !isWeekend && !PremarketWindowUtils.isDuringMarketHours(nowInZone)
+            } ?: false
             var watchlistCandidates = 0
             var moverCandidates = 0
 
@@ -97,12 +109,20 @@ class NotificationWindowWorker @AssistedInject constructor(
                         // NOTE: This call to stockRepository.getSeries() automatically triggers
                         // passive accumulation of intraday data via StockRepository.accumulateIntradayData()
                         // Data is stored in IntradayDataCache for up to 1 year
-                        val result = stockRepository.getSeries(
-                            item.symbol,
-                            watchlistRange,
-                            forceRefresh = true,
-                            eventType = null
-                        )
+                        val result = if (usePremarketData) {
+                            stockRepository.getSeriesForPremarket(
+                                item.symbol,
+                                watchlistRange,
+                                eventType = null
+                            )
+                        } else {
+                            stockRepository.getSeries(
+                                item.symbol,
+                                watchlistRange,
+                                forceRefresh = true,
+                                eventType = null
+                            )
+                        }
                         if (result is StooqResult.Success) {
                             val series = result.data
                             if (!isFresh(series, now)) {

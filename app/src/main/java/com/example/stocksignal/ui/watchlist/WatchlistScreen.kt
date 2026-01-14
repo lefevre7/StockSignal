@@ -447,7 +447,8 @@ private fun WatchlistCard(
         SignalScoreRow(
             tier = tier,
             score = score,
-            confidence = displaySignal?.confidence
+            confidence = displaySignal?.confidence,
+            compact = true
         )
 
         Spacer(modifier = Modifier.height(8.dp))

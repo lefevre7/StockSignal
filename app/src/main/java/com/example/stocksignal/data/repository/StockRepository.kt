@@ -19,6 +19,8 @@ import java.time.DayOfWeek
 import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.LocalTime
+import java.time.ZoneId
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -134,6 +136,21 @@ class StockRepository @Inject constructor(
         }
     }
 
+    suspend fun getSeriesForPremarket(
+        symbol: String,
+        range: ChartRange,
+        eventType: NotificationEventType? = NotificationEventType.WATCHLIST_SIGNAL
+    ): Result<List<PriceCandle>> {
+        return when (range) {
+            ChartRange.ONE_DAY,
+            ChartRange.FIVE_DAY,
+            ChartRange.ONE_MONTH -> fetchIntradaySeriesForPremarket(symbol, range, eventType)
+            ChartRange.SIX_MONTH,
+            ChartRange.ONE_YEAR,
+            ChartRange.FIVE_YEAR -> getSeries(symbol, range, forceRefresh = true, eventType = eventType)
+        }
+    }
+
     private suspend fun fetchIntradaySeries(
         symbol: String,
         range: ChartRange,
@@ -190,6 +207,64 @@ class StockRepository @Inject constructor(
             }
         }
     }
+
+    private suspend fun fetchIntradaySeriesForPremarket(
+        symbol: String,
+        range: ChartRange,
+        eventType: NotificationEventType?
+    ): Result<List<PriceCandle>> {
+        val end = LocalDateTime.now()
+        val start = premarketIntradayStartForRange(range, end)
+        return when (val result = stooqRepository.getIntradayData(listOf(symbol), start = start, end = end)) {
+            is Result.Error -> result
+            is Result.Success -> {
+                val map = result.data[symbol]
+                if (map.isNullOrEmpty()) {
+                    Result.Error(Exception("No intraday data for $symbol"), "No intraday data for $symbol")
+                } else {
+                    val candles = mapIntradayToCandles(map)
+                    val merged = mergePremarketCandles(symbol, candles, end)
+                    accumulateIntradayData(symbol, map)
+                    if (eventType != null) {
+                        signalsRepository.evaluateAndStoreSignal(symbol, merged, range, eventType)
+                    }
+                    cacheRepository.upsert(
+                        StockDetailCacheEntity(
+                            symbol = symbol,
+                            range = range.label,
+                            fetchedAt = LocalDateTime.now(),
+                            seriesJson = PriceCandleJson.toJson(merged),
+                            latestPrice = merged.lastOrNull()?.close,
+                            indicatorsJson = null,
+                            signalHistoryJson = null
+                        )
+                    )
+                    Result.Success(merged)
+                }
+            }
+        }
+    }
+
+    suspend fun storeIntradaySnapshot(
+        symbol: String,
+        data: Map<LocalDateTime, IntradayStockData>,
+        range: ChartRange = ChartRange.ONE_DAY
+    ) {
+        if (data.isEmpty()) return
+        val candles = mapIntradayToCandles(data)
+        accumulateIntradayData(symbol, data)
+        cacheRepository.upsert(
+            StockDetailCacheEntity(
+                symbol = symbol,
+                range = range.label,
+                fetchedAt = LocalDateTime.now(),
+                seriesJson = PriceCandleJson.toJson(candles),
+                latestPrice = candles.lastOrNull()?.close,
+                indicatorsJson = null,
+                signalHistoryJson = null
+            )
+        )
+    }
     
     /**
      * Accumulate intraday data into the long-term cache for historical analysis.
@@ -233,8 +308,16 @@ class StockRepository @Inject constructor(
                 // Only upsert if it's today's data (allow updates) or if we don't have this date yet
                 // Historical data (date < today) is immutable once stored
                 if (date == today) {
-                    intradayCacheRepository.upsert(entity)
-                    Log.d(TAG, "Updated today's intraday cache for $symbol on $date with ${candles.size} candles")
+                    val existing = intradayCacheRepository.getCandlesByDateRange(symbol, date, date)
+                    val existingEntity = existing.firstOrNull()
+                    val existingCandles = existingEntity?.let { PriceCandleJson.fromJson(it.candlesJson) }.orEmpty()
+                    val merged = mergeCandles(existingCandles, candles)
+                    val mergedEntity = entity.copy(
+                        createdAt = existingEntity?.createdAt ?: now,
+                        candlesJson = PriceCandleJson.toJson(merged)
+                    )
+                    intradayCacheRepository.upsert(mergedEntity)
+                    Log.d(TAG, "Updated today's intraday cache for $symbol on $date with ${merged.size} candles")
                 } else {
                     // Check if we already have this historical date
                     val existing = intradayCacheRepository.getCandlesByDateRange(symbol, date, date)
@@ -255,6 +338,67 @@ class StockRepository @Inject constructor(
             Log.e(TAG, "Failed to accumulate intraday data for $symbol", e)
             // Don't fail the main fetch operation if accumulation fails
         }
+    }
+
+    suspend fun upsertPremarketCandle(
+        symbol: String,
+        candle: PriceCandle
+    ) {
+        try {
+            val date = candle.time.toLocalDate()
+            val existingEntities = intradayCacheRepository.getCandlesByDateRange(symbol, date, date)
+            val existingEntity = existingEntities.firstOrNull()
+            val existingCandles = existingEntity?.let { PriceCandleJson.fromJson(it.candlesJson) }.orEmpty()
+            if (existingCandles.any { it.time == candle.time }) return
+
+            val merged = (existingCandles + candle).sortedBy { it.time }
+            val now = LocalDateTime.now()
+            val createdAt = existingEntity?.createdAt ?: now
+            val entity = IntradayDataCacheEntity(
+                symbol = symbol,
+                date = date,
+                createdAt = createdAt,
+                updatedAt = now,
+                candlesJson = PriceCandleJson.toJson(merged)
+            )
+            intradayCacheRepository.upsert(entity)
+            upsertOneDayCacheWithCandle(symbol, candle)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to upsert premarket candle for $symbol", e)
+        }
+    }
+
+    suspend fun getLatestCachedCandleForDate(
+        symbol: String,
+        date: LocalDate
+    ): PriceCandle? {
+        val entities = intradayCacheRepository.getCandlesByDateRange(symbol, date, date)
+        if (entities.isEmpty()) return null
+        val candles = entities.flatMap { PriceCandleJson.fromJson(it.candlesJson) }
+        return candles.maxByOrNull { it.time }
+    }
+
+    private suspend fun upsertOneDayCacheWithCandle(
+        symbol: String,
+        candle: PriceCandle
+    ) {
+        val range = ChartRange.ONE_DAY.label
+        val existing = cacheRepository.getCache(symbol, range)
+        val existingCandles = existing?.let { PriceCandleJson.fromJson(it.seriesJson) }.orEmpty()
+        if (existingCandles.any { it.time == candle.time }) return
+
+        val merged = (existingCandles + candle).sortedBy { it.time }
+        cacheRepository.upsert(
+            StockDetailCacheEntity(
+                symbol = symbol,
+                range = range,
+                fetchedAt = LocalDateTime.now(),
+                seriesJson = PriceCandleJson.toJson(merged),
+                latestPrice = merged.lastOrNull()?.close,
+                indicatorsJson = existing?.indicatorsJson,
+                signalHistoryJson = existing?.signalHistoryJson
+            )
+        )
     }
 
     private suspend fun fetchDailySeries(
@@ -349,6 +493,19 @@ class StockRepository @Inject constructor(
             ChartRange.ONE_MONTH -> end.minusMonths(1)
             else -> end.minusDays(1)
         }
+    }
+
+    private fun premarketIntradayStartForRange(range: ChartRange, end: LocalDateTime): LocalDateTime {
+        val base = intradayStartForRange(range, end)
+        val marketOpen = LocalTime.of(9, 30)
+        val zone = ZoneId.of("America/New_York")
+        val endInZone = end.atZone(zone)
+        if (endInZone.toLocalTime().isBefore(marketOpen)) {
+            val previousTradingDay = normalizeToTradingDay(endInZone.toLocalDate().minusDays(1))
+            val adjusted = previousTradingDay.atStartOfDay()
+            return if (adjusted.isBefore(base)) adjusted else base
+        }
+        return base
     }
 
     private fun intradayRefreshStartForRange(range: ChartRange, end: LocalDateTime): LocalDateTime {
@@ -455,6 +612,40 @@ class StockRepository @Inject constructor(
                 volume = stock.volume
             )
         }
+    }
+
+    private fun mergeCandles(
+        existing: List<PriceCandle>,
+        incoming: List<PriceCandle>
+    ): List<PriceCandle> {
+        if (existing.isEmpty()) return incoming
+        val merged = LinkedHashMap<LocalDateTime, PriceCandle>()
+        existing.forEach { merged[it.time] = it }
+        incoming.forEach { merged[it.time] = it }
+        return merged.values.sortedBy { it.time }
+    }
+
+    private suspend fun mergePremarketCandles(
+        symbol: String,
+        candles: List<PriceCandle>,
+        end: LocalDateTime
+    ): List<PriceCandle> {
+        val zone = ZoneId.of("America/New_York")
+        val date = end.atZone(zone).toLocalDate()
+        val cachedEntities = intradayCacheRepository.getCandlesByDateRange(symbol, date, date)
+        if (cachedEntities.isEmpty()) return candles
+
+        val cached = cachedEntities.flatMap { PriceCandleJson.fromJson(it.candlesJson) }
+        if (cached.isEmpty()) return candles
+
+        val merged = LinkedHashMap<LocalDateTime, PriceCandle>()
+        candles.forEach { merged[it.time] = it }
+        cached.forEach { candle ->
+            if (!merged.containsKey(candle.time)) {
+                merged[candle.time] = candle
+            }
+        }
+        return merged.values.sortedBy { it.time }
     }
 
     /**

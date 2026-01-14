@@ -6,10 +6,12 @@ import androidx.annotation.RequiresApi
 import com.example.stocksignal.data.stooq.model.EnrichedIntradayResponse
 import com.example.stocksignal.data.stooq.model.IntradayStockData
 import com.example.stocksignal.data.stooq.model.IntradayStockDataMap
+import com.example.stocksignal.data.stooq.model.PremarketQuote
 import com.example.stocksignal.data.stooq.model.Result
 import com.example.stocksignal.data.stooq.model.StockData
 import com.example.stocksignal.data.stooq.model.StockDataMap
 import com.example.stocksignal.data.stooq.network.StooqApi
+import com.example.stocksignal.data.stooq.parser.PremarketQuoteParser
 import kotlinx.coroutines.delay
 import org.apache.commons.csv.CSVFormat
 import org.apache.commons.csv.CSVParser
@@ -562,6 +564,77 @@ class StooqRepository(private val api: StooqApi) {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to fetch overview for $ticker", e)
             Result.Error(e, "Failed to fetch stock overview: ${e.message}")
+        }
+    }
+
+    /**
+     * Fetches premarket bid/ask/volume snapshot for multiple tickers.
+     *
+     * Example endpoint: https://stooq.com/q/?s=nvda.us
+     */
+    suspend fun getPremarketQuotes(
+        tickers: List<String>
+    ): Result<Map<String, PremarketQuote>> {
+        return try {
+            val results = mutableListOf<Pair<String, Result<PremarketQuote>>>()
+            for (ticker in tickers) {
+                val result = fetchPremarketQuoteForTicker(ticker)
+                results.add(ticker to result)
+                if (ticker != tickers.last()) {
+                    val delayMs = Random.nextLong(1000, 3001)
+                    Log.d(TAG, "Rate limit delay: ${delayMs}ms before next ticker")
+                    delay(delayMs)
+                }
+            }
+
+            val successfulData = mutableMapOf<String, PremarketQuote>()
+            val failedTickers = mutableListOf<String>()
+            results.forEach { (ticker, result) ->
+                when (result) {
+                    is Result.Success -> successfulData[ticker] = result.data
+                    is Result.Error -> {
+                        failedTickers.add(ticker)
+                        Log.e(TAG, "Failed to fetch premarket quote for $ticker", result.exception)
+                    }
+                }
+            }
+
+            if (failedTickers.isNotEmpty()) {
+                Log.w(TAG, "Premarket quote failures: ${failedTickers.joinToString(", ")}")
+            }
+
+            if (successfulData.isEmpty()) {
+                Result.Error(
+                    Exception("No premarket quotes fetched"),
+                    "Failed to fetch premarket quotes for ${tickers.size} tickers"
+                )
+            } else {
+                Result.Success(successfulData)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Unexpected error in getPremarketQuotes", e)
+            Result.Error(e, "Failed to fetch premarket quotes: ${e.message}")
+        }
+    }
+
+    private suspend fun fetchPremarketQuoteForTicker(
+        ticker: String
+    ): Result<PremarketQuote> {
+        return try {
+            Log.d(TAG, "Fetching premarket quote for $ticker")
+            val html = api.getQuotePage(ticker.lowercase())
+            val quote = PremarketQuoteParser.parse(html, ticker)
+            if (quote == null) {
+                Result.Error(
+                    Exception("No bid/ask data for $ticker"),
+                    "No premarket quote data for $ticker"
+                )
+            } else {
+                Result.Success(quote)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error fetching premarket quote for $ticker", e)
+            Result.Error(e, "Failed to fetch premarket quote for $ticker: ${e.message}")
         }
     }
 }

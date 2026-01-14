@@ -69,6 +69,10 @@ class MarketMoversRepositoryTest {
         override suspend fun getStockOverview(ticker: String): String {
             throw UnsupportedOperationException("Not used in this test")
         }
+
+        override suspend fun getQuotePage(ticker: String): String {
+            throw UnsupportedOperationException("Not used in this test")
+        }
     }
 
     private class InMemoryMarketMoversCacheDao : MarketMoversCacheDao {

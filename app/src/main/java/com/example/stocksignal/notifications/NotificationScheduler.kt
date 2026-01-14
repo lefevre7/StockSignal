@@ -72,6 +72,9 @@ class NotificationScheduler @Inject constructor(
         
         // Schedule daily robots.txt check at first notification window
         scheduleRobotsTxtCheck(settings)
+
+        // Schedule premarket quote snapshots relative to the first window
+        schedulePremarketQuotes(settings)
     }
     
     private fun scheduleRobotsTxtCheck(settings: AppSettings) {
@@ -98,6 +101,58 @@ class NotificationScheduler @Inject constructor(
         )
         
         Log.d(TAG, "Scheduled daily robots.txt check at first notification window")
+    }
+
+    private fun schedulePremarketQuotes(settings: AppSettings) {
+        workManager.cancelAllWorkByTag(PremarketQuoteWorker.WORK_TAG)
+        if (!settings.notificationTypes.contains(NotificationType.WATCHLIST)) return
+        if (settings.frequency == NotificationFrequency.ONLY_WHEN_OPEN) return
+
+        val now = ZonedDateTime.now()
+        val marketWindow = settings.scheduleWindows.firstOrNull {
+            it.type == ScheduleWindowType.MARKET_OPEN_MINUS
+        } ?: return
+        val offset = marketWindow.offsetMinutes ?: -10
+        if (offset >= 0) return
+        val windowRunAt = nextRunAt(marketWindow, now, settings)
+        val firstWindow = PremarketWindowUtils.firstWindowForReference(settings, windowRunAt) ?: return
+        if (firstWindow.id != marketWindow.id) return
+        val start = windowRunAt.minusMinutes(60)
+        val interval = if (settings.frequency == NotificationFrequency.ONE_PER_WEEK) {
+            Duration.ofDays(7)
+        } else {
+            Duration.ofDays(1)
+        }
+
+        (0..4).forEach { index ->
+            val runAt = start.plusMinutes(index * 10L)
+            var delay = Duration.between(Instant.now(), runAt.toInstant())
+            if (delay.isNegative) {
+                delay = delay.plus(interval)
+            }
+
+            val request = PeriodicWorkRequestBuilder<PremarketQuoteWorker>(
+                interval.toHours(),
+                TimeUnit.HOURS
+            )
+                .setConstraints(CONSTRAINTS)
+                .setInitialDelay(delay.toMinutes(), TimeUnit.MINUTES)
+                .addTag(PremarketQuoteWorker.WORK_TAG)
+                .setInputData(
+                    workDataOf(
+                        PremarketQuoteWorker.KEY_WINDOW_ID to firstWindow.id,
+                        PremarketQuoteWorker.KEY_SAMPLE_INDEX to index
+                    )
+                )
+                .build()
+
+            workManager.enqueueUniquePeriodicWork(
+                "premarket_${firstWindow.id}_$index",
+                ExistingPeriodicWorkPolicy.REPLACE,
+                request
+            )
+            Log.d(TAG, "Scheduled premarket sample #$index for ${firstWindow.id} with delay ${delay.toMinutes()}m")
+        }
     }
 
     private fun windowsForFrequency(settings: AppSettings): List<ScheduleWindow> {

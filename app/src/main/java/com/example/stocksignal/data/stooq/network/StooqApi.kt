@@ -114,6 +114,19 @@ interface StooqApi {
         @Query("s") ticker: String
     ): String
 
+    /**
+     * Fetches the Stooq quote page HTML for bid/ask data.
+     *
+     * Example URL: https://stooq.com/q/?s=nvda.us
+     *
+     * @param ticker Stock ticker symbol (e.g., "nvda.us")
+     * @return HTML page as a string
+     */
+    @GET("q/")
+    suspend fun getQuotePage(
+        @Query("s") ticker: String
+    ): String
+
     companion object {
         const val BASE_URL = "https://stooq.com/"
         const val DEFAULT_USER_AGENT =

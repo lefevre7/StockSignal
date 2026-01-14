@@ -306,4 +306,50 @@ class StooqApiTest {
         )
         assertEquals(StooqApi.DEFAULT_USER_AGENT, request.header("User-Agent"))
     }
+
+    @Test
+    fun `getQuotePage builds expected URL and sets User-Agent`() = runTest {
+        val recordedRequests = mutableListOf<Request>()
+        val ticker = "NVDA.US"
+
+        val okHttpClient = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val originalRequest = chain.request()
+                val requestWithUserAgent = originalRequest.newBuilder()
+                    .header("User-Agent", StooqApi.DEFAULT_USER_AGENT)
+                    .build()
+                chain.proceed(requestWithUserAgent)
+            }
+            .addInterceptor { chain ->
+                val request = chain.request()
+                recordedRequests.add(request)
+                Response.Builder()
+                    .request(request)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body("<html>OK</html>".toResponseBody("text/html".toMediaType()))
+                    .build()
+            }
+            .build()
+
+        val retrofitApi = Retrofit.Builder()
+            .baseUrl(StooqApi.BASE_URL)
+            .client(okHttpClient)
+            .addConverterFactory(ScalarsConverterFactory.create())
+            .build()
+            .create(StooqApi::class.java)
+
+        val response = retrofitApi.getQuotePage(ticker = ticker)
+
+        assertEquals("<html>OK</html>", response)
+        assertEquals(1, recordedRequests.size)
+
+        val request = recordedRequests.single()
+        assertEquals(
+            "https://stooq.com/q/?s=$ticker",
+            request.url.toString()
+        )
+        assertEquals(StooqApi.DEFAULT_USER_AGENT, request.header("User-Agent"))
+    }
 }

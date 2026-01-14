@@ -455,7 +455,8 @@ private fun PriceSignalSection(
         SignalScoreRow(
             tier = signalTier,
             score = signal?.score ?: 0,
-            confidence = signal?.confidence
+            confidence = signal?.confidence,
+            compact = false
         )
         Spacer(modifier = Modifier.height(6.dp))
         AverageModeRow(signal = signal)
