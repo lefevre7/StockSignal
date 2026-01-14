@@ -65,6 +65,10 @@ class MarketMoversRepositoryTest {
         override suspend fun getCmp(campaignId: String, query: String): String {
             throw UnsupportedOperationException("Not used in this test")
         }
+
+        override suspend fun getStockOverview(ticker: String): String {
+            throw UnsupportedOperationException("Not used in this test")
+        }
     }
 
     private class InMemoryMarketMoversCacheDao : MarketMoversCacheDao {

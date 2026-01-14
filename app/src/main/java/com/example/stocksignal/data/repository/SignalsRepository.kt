@@ -13,6 +13,7 @@ import com.example.stocksignal.domain.model.SignalTier
 import com.example.stocksignal.domain.signal.SignalEngine
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.first
 import java.time.Duration
 import java.time.LocalDateTime
 import javax.inject.Inject
@@ -20,7 +21,8 @@ import javax.inject.Singleton
 
 @Singleton
 class SignalsRepository @Inject constructor(
-    private val signalEventsRepository: SignalEventsRepository
+    private val signalEventsRepository: SignalEventsRepository,
+    private val settingsRepository: com.example.stocksignal.data.settings.SettingsRepository
 ) {
 
     val eventsFlow: Flow<List<NotificationEvent>> = signalEventsRepository.eventsFlow.map { events ->
@@ -55,11 +57,12 @@ class SignalsRepository @Inject constructor(
         return age < COOLDOWN
     }
 
-    fun computeSignal(
+    suspend fun computeSignal(
         candles: List<PriceCandle>,
         range: ChartRange
     ): SignalResult? {
-        return SignalEngine.computeSignal(candles, range)
+        val settings = settingsRepository.settingsFlow.first()
+        return SignalEngine.computeSignal(candles, range, settings.holdingPeriod)
     }
 
     suspend fun evaluateAndStoreSignal(
@@ -69,7 +72,8 @@ class SignalsRepository @Inject constructor(
         type: NotificationEventType = NotificationEventType.WATCHLIST_SIGNAL
     ): SignalResult? {
         try {
-            val result = SignalEngine.computeSignal(candles, range) ?: return null
+            val settings = settingsRepository.settingsFlow.first()
+            val result = SignalEngine.computeSignal(candles, range, settings.holdingPeriod) ?: return null
             val label = result.tier.label
             val latest = signalEventsRepository.getLatestForTickerAndLabel(ticker, label)
             if (latest != null) {

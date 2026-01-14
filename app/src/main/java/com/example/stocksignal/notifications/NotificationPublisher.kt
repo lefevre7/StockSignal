@@ -3,10 +3,10 @@ package com.example.stocksignal.notifications
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
-import android.content.Intent
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
-import com.example.stocksignal.MainActivity
 import com.example.stocksignal.R
 import com.example.stocksignal.domain.model.NotificationEvent
 import com.example.stocksignal.domain.model.NotificationPayload
@@ -26,6 +26,10 @@ class NotificationPublisher @Inject constructor(
     fun postDigest(events: List<NotificationEvent>): Int {
         if (events.isEmpty()) return 0
         ensureChannel()
+
+        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) {
+            logW("Notifications are disabled at the system level; posting anyway for audit.")
+        }
 
         val notificationId = generateNotificationId()
         val title = notificationTitle(events)
@@ -50,7 +54,7 @@ class NotificationPublisher @Inject constructor(
         val dismissIntent = NotificationIntentFactory.dismissIntent(context, notificationId, eventIds)
 
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(summary)
             .setStyle(inboxStyle)
@@ -58,7 +62,9 @@ class NotificationPublisher @Inject constructor(
             .setAutoCancel(true)
             .setDeleteIntent(dismissIntent)
             .setGroup(groupKey())
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setCategory(NotificationCompat.CATEGORY_EVENT)
 
         val payload = NotificationPayload(
             type = events.first().type,
@@ -105,6 +111,7 @@ class NotificationPublisher @Inject constructor(
         }
 
         NotificationManagerCompat.from(context).notify(notificationId, builder.build())
+        logD("Posted notification id=$notificationId with ${events.size} event(s).")
         return notificationId
     }
 
@@ -132,9 +139,23 @@ class NotificationPublisher @Inject constructor(
         val channel = NotificationChannel(
             CHANNEL_ID,
             "Signal alerts",
-            NotificationManager.IMPORTANCE_DEFAULT
+            NotificationManager.IMPORTANCE_HIGH
         ).apply {
-            description = "Scheduled signal alerts and digests"
+            runCatching { description = "Scheduled signal alerts and digests" }
+            runCatching { enableVibration(true) }
+            runCatching { vibrationPattern = longArrayOf(0, 200, 100, 200) }
+            val soundUri = runCatching {
+                RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            }.getOrNull()
+            val attributes = runCatching {
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+            }.getOrNull()
+            if (soundUri != null && attributes != null) {
+                runCatching { setSound(soundUri, attributes) }
+            }
         }
         manager.createNotificationChannel(channel)
     }
@@ -149,9 +170,18 @@ class NotificationPublisher @Inject constructor(
     }
 
     companion object {
-        const val CHANNEL_ID = "stock_signal_alerts"
+        const val CHANNEL_ID = "stock_signal_alerts_v2"
         const val EXTRA_EVENT_IDS = "extra_event_ids"
         const val EXTRA_PAYLOAD_JSON = "extra_payload_json"
         private const val MAX_LINES = 5
+        private const val TAG = "NotificationPublisher"
+    }
+
+    private fun logD(message: String) {
+        runCatching { android.util.Log.d(TAG, message) }
+    }
+
+    private fun logW(message: String) {
+        runCatching { android.util.Log.w(TAG, message) }
     }
 }

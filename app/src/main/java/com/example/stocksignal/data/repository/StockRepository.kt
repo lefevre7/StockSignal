@@ -1,14 +1,19 @@
 package com.example.stocksignal.data.repository
 
 import android.util.Log
+import com.example.stocksignal.data.local.entity.IntradayDataCacheEntity
 import com.example.stocksignal.data.local.entity.StockDetailCacheEntity
+import com.example.stocksignal.data.local.entity.StockOverviewCacheEntity
+import com.example.stocksignal.data.local.repository.IntradayDataCacheRepository
 import com.example.stocksignal.data.local.repository.StockDetailCacheRepository
+import com.example.stocksignal.data.local.repository.StockOverviewCacheRepository
 import com.example.stocksignal.data.stooq.model.IntradayStockData
 import com.example.stocksignal.data.stooq.model.Result
 import com.example.stocksignal.data.stooq.model.StockData
 import com.example.stocksignal.data.stooq.repository.StooqRepository
 import com.example.stocksignal.domain.model.ChartRange
 import com.example.stocksignal.domain.model.PriceCandle
+import com.example.stocksignal.domain.model.StockOverview
 import com.example.stocksignal.domain.model.NotificationEventType
 import java.time.DayOfWeek
 import java.time.Duration
@@ -21,7 +26,9 @@ import javax.inject.Singleton
 class StockRepository @Inject constructor(
     private val stooqRepository: StooqRepository,
     private val cacheRepository: StockDetailCacheRepository,
-    private val signalsRepository: SignalsRepository
+    private val intradayCacheRepository: IntradayDataCacheRepository,
+    private val signalsRepository: SignalsRepository,
+    private val overviewCacheRepository: StockOverviewCacheRepository
 ) {
 
     suspend fun getSeries(
@@ -38,6 +45,9 @@ class StockRepository @Inject constructor(
             }
 
             Log.d(TAG, "Fetching fresh data for $symbol/${range.label}")
+            
+            // Use chart range to determine data source (intraday for short ranges, daily for long ranges)
+            // Note: Holding period is used for indicator parameters, not data source selection
             return when (range) {
                 ChartRange.ONE_DAY,
                 ChartRange.FIVE_DAY,
@@ -49,6 +59,28 @@ class StockRepository @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "Unexpected error getting series for $symbol/${range.label}", e)
             return Result.Error(e, "Failed to get stock data: ${e.message}")
+        }
+    }
+
+    suspend fun getSeriesForDetail(
+        symbol: String,
+        range: ChartRange,
+        forceRefresh: Boolean = false
+    ): Result<List<PriceCandle>> {
+        return when (range) {
+            ChartRange.ONE_DAY -> getLiveIntradayForDetail(symbol, range, forceRefresh)
+            ChartRange.FIVE_DAY,
+            ChartRange.ONE_MONTH,
+            ChartRange.SIX_MONTH -> {
+                val intraday = getIntradayHistoryIfComplete(symbol, range)
+                if (!intraday.isNullOrEmpty()) {
+                    Result.Success(intraday)
+                } else {
+                    getDailySeriesFallback(symbol, range, forceRefresh)
+                }
+            }
+            ChartRange.ONE_YEAR,
+            ChartRange.FIVE_YEAR -> getSeries(symbol, range, forceRefresh, eventType = null)
         }
     }
 
@@ -65,11 +97,52 @@ class StockRepository @Inject constructor(
         return fetchDailySeries(symbol, range, eventType = null, cacheKey = cacheKey)
     }
 
+    suspend fun refreshIntradayHistory(
+        symbol: String,
+        range: ChartRange
+    ) {
+        try {
+            val end = LocalDateTime.now()
+            val start = intradayRefreshStartForRange(range, end)
+            when (val result = stooqRepository.getIntradayData(listOf(symbol), start = start, end = end)) {
+                is Result.Error -> {
+                    Log.w(TAG, "Intraday refresh failed for $symbol/${range.label}: ${result.message}")
+                }
+                is Result.Success -> {
+                    val map = result.data[symbol]
+                    if (map.isNullOrEmpty()) {
+                        Log.w(TAG, "Intraday refresh returned empty data for $symbol/${range.label}")
+                        return
+                    }
+                    val candles = mapIntradayToCandles(map)
+                    accumulateIntradayData(symbol, map)
+                    cacheRepository.upsert(
+                        StockDetailCacheEntity(
+                            symbol = symbol,
+                            range = range.label,
+                            fetchedAt = LocalDateTime.now(),
+                            seriesJson = PriceCandleJson.toJson(candles),
+                            latestPrice = candles.lastOrNull()?.close,
+                            indicatorsJson = null,
+                            signalHistoryJson = null
+                        )
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to refresh intraday history for $symbol/${range.label}", e)
+        }
+    }
+
     private suspend fun fetchIntradaySeries(
         symbol: String,
         range: ChartRange,
         eventType: NotificationEventType?
     ): Result<List<PriceCandle>> {
+        // TODO: API UPGRADE - Stooq API currently supports 1 day to 6 weeks of intraday data.
+        // Once extended historical intraday API is available, implement bulk backfill here.
+        // Until then, we accumulate data passively as users check their watchlist.
+        
         val end = LocalDateTime.now()
         val start = intradayStartForRange(range, end)
 
@@ -93,6 +166,11 @@ class StockRepository @Inject constructor(
                     fetchDailySeries(symbol, range, eventType)
                 } else {
                     val candles = mapIntradayToCandles(map)
+                    
+                    // Passive accumulation: Store 10-minute candles to IntradayDataCache
+                    // for gradual build-up of historical data (up to 1 year)
+                    accumulateIntradayData(symbol, map)
+                    
                     if (eventType != null) {
                         signalsRepository.evaluateAndStoreSignal(symbol, candles, range, eventType)
                     }
@@ -110,6 +188,72 @@ class StockRepository @Inject constructor(
                     Result.Success(candles)
                 }
             }
+        }
+    }
+    
+    /**
+     * Accumulate intraday data into the long-term cache for historical analysis.
+     * Data is chunked by date and stored for up to 1 year.
+     * Historical data (not today) is immutable; only today's data gets updated with new candles.
+     */
+    private suspend fun accumulateIntradayData(
+        symbol: String,
+        data: Map<LocalDateTime, IntradayStockData>
+    ) {
+        try {
+            val today = LocalDate.now()
+            
+            // Group candles by date
+            val candlesByDate = data.entries.groupBy { it.key.toLocalDate() }
+            
+            for ((date, entries) in candlesByDate) {
+                val candles = entries.map { (time, stock) ->
+                    PriceCandle(
+                        time = time,
+                        open = stock.open,
+                        high = stock.high,
+                        low = stock.low,
+                        close = stock.close,
+                        volume = stock.volume
+                    )
+                }.sortedBy { it.time }
+                
+                // Convert candles to JSON using existing PriceCandleJson utility
+                val candlesJson = PriceCandleJson.toJson(candles)
+                
+                val now = LocalDateTime.now()
+                val entity = IntradayDataCacheEntity(
+                    symbol = symbol,
+                    date = date,
+                    candlesJson = candlesJson,
+                    createdAt = now,
+                    updatedAt = now
+                )
+                
+                // Only upsert if it's today's data (allow updates) or if we don't have this date yet
+                // Historical data (date < today) is immutable once stored
+                if (date == today) {
+                    intradayCacheRepository.upsert(entity)
+                    Log.d(TAG, "Updated today's intraday cache for $symbol on $date with ${candles.size} candles")
+                } else {
+                    // Check if we already have this historical date
+                    val existing = intradayCacheRepository.getCandlesByDateRange(symbol, date, date)
+                    if (existing.isEmpty()) {
+                        intradayCacheRepository.upsert(entity)
+                        Log.d(TAG, "Stored historical intraday data for $symbol on $date with ${candles.size} candles")
+                    } else {
+                        Log.d(TAG, "Skipping already-stored historical data for $symbol on $date")
+                    }
+                }
+            }
+            
+            // Enforce 1-year retention: delete data older than 1 year
+            val oneYearAgo = today.minusYears(1)
+            intradayCacheRepository.deleteOldData(symbol, oneYearAgo)
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to accumulate intraday data for $symbol", e)
+            // Don't fail the main fetch operation if accumulation fails
         }
     }
 
@@ -157,6 +301,44 @@ class StockRepository @Inject constructor(
         }
     }
 
+    private suspend fun getLiveIntradayForDetail(
+        symbol: String,
+        range: ChartRange,
+        forceRefresh: Boolean
+    ): Result<List<PriceCandle>> {
+        return when (val result = fetchIntradaySeries(symbol, range, eventType = null)) {
+            is Result.Success -> result
+            is Result.Error -> {
+                val cached = cacheRepository.getCache(symbol, range.label)
+                if (cached != null) {
+                    Result.Success(PriceCandleJson.fromJson(cached.seriesJson))
+                } else {
+                    getDailySeriesFallback(symbol, range, forceRefresh)
+                }
+            }
+        }
+    }
+
+    private suspend fun getIntradayHistoryIfComplete(
+        symbol: String,
+        range: ChartRange
+    ): List<PriceCandle>? {
+        val (rawStart, rawEnd) = resolveDateRange(range)
+        val startDate = normalizeStartToTradingDay(rawStart)
+        val endDate = rawEnd
+        if (startDate.isAfter(endDate)) return null
+
+        val entities = intradayCacheRepository.getCandlesByDateRange(symbol, startDate, endDate)
+        if (entities.isEmpty()) return null
+
+        val dates = entities.map { it.date }.toSet()
+        if (!dates.contains(startDate) || !dates.contains(endDate)) return null
+
+        val candles = entities.flatMap { PriceCandleJson.fromJson(it.candlesJson) }
+            .sortedBy { it.time }
+        return candles
+    }
+
     private fun intradayStartForRange(range: ChartRange, end: LocalDateTime): LocalDateTime {
         return when (range) {
             ChartRange.ONE_DAY -> end.toLocalDate().atStartOfDay()
@@ -165,6 +347,19 @@ class StockRepository @Inject constructor(
                 minusTradingDays(endDate, 4).atStartOfDay()
             }
             ChartRange.ONE_MONTH -> end.minusMonths(1)
+            else -> end.minusDays(1)
+        }
+    }
+
+    private fun intradayRefreshStartForRange(range: ChartRange, end: LocalDateTime): LocalDateTime {
+        return when (range) {
+            ChartRange.ONE_DAY -> end.toLocalDate().atStartOfDay()
+            ChartRange.FIVE_DAY -> {
+                val endDate = end.toLocalDate()
+                minusTradingDays(endDate, 4).atStartOfDay()
+            }
+            ChartRange.ONE_MONTH,
+            ChartRange.SIX_MONTH -> end.minusMonths(1)
             else -> end.minusDays(1)
         }
     }
@@ -178,10 +373,31 @@ class StockRepository @Inject constructor(
         return distinctDays <= 1
     }
 
+    private fun resolveDateRange(range: ChartRange, today: LocalDate = LocalDate.now()): Pair<LocalDate, LocalDate> {
+        val endDate = normalizeToTradingDay(today)
+        val startDate = when (range) {
+            ChartRange.ONE_DAY -> endDate
+            ChartRange.FIVE_DAY -> minusTradingDays(endDate, 4)
+            ChartRange.ONE_MONTH -> endDate.minusMonths(1)
+            ChartRange.SIX_MONTH -> endDate.minusMonths(6)
+            ChartRange.ONE_YEAR -> endDate.minusYears(1)
+            ChartRange.FIVE_YEAR -> endDate.minusYears(5)
+        }
+        return startDate to endDate
+    }
+
     private fun normalizeToTradingDay(date: LocalDate): LocalDate {
         var adjusted = date
         while (adjusted.dayOfWeek == DayOfWeek.SATURDAY || adjusted.dayOfWeek == DayOfWeek.SUNDAY) {
             adjusted = adjusted.minusDays(1)
+        }
+        return adjusted
+    }
+
+    private fun normalizeStartToTradingDay(date: LocalDate): LocalDate {
+        var adjusted = date
+        while (adjusted.dayOfWeek == DayOfWeek.SATURDAY || adjusted.dayOfWeek == DayOfWeek.SUNDAY) {
+            adjusted = adjusted.plusDays(1)
         }
         return adjusted
     }
@@ -239,6 +455,68 @@ class StockRepository @Inject constructor(
                 volume = stock.volume
             )
         }
+    }
+
+    /**
+     * Fetches stock overview/fundamental data with 24-hour caching.
+     * 
+     * @param symbol Stock ticker symbol (e.g., "TSLA.US")
+     * @param forceRefresh If true, bypass cache and fetch fresh data
+     * @return Result containing StockOverview or Error
+     */
+    suspend fun getStockOverview(
+        symbol: String,
+        forceRefresh: Boolean = false
+    ): Result<StockOverview> {
+        try {
+            // Check cache first
+            val cached = overviewCacheRepository.getCache(symbol)
+            if (!forceRefresh && cached != null && !isOverviewStale(cached)) {
+                Log.d(TAG, "Using cached overview for $symbol")
+                return Result.Success(
+                    StockOverview(
+                        symbol = cached.symbol,
+                        marketCap = cached.marketCap,
+                        peRatio = cached.peRatio,
+                        dividend = cached.dividend,
+                        week52High = cached.week52High,
+                        week52Low = cached.week52Low
+                    )
+                )
+            }
+
+            // Fetch fresh data
+            Log.d(TAG, "Fetching fresh overview for $symbol")
+            return when (val result = stooqRepository.getStockOverview(symbol)) {
+                is Result.Error -> result
+                is Result.Success -> {
+                    val overview = result.data
+                    // Cache the result
+                    overviewCacheRepository.upsert(
+                        StockOverviewCacheEntity(
+                            symbol = overview.symbol,
+                            marketCap = overview.marketCap,
+                            peRatio = overview.peRatio,
+                            dividend = overview.dividend,
+                            week52High = overview.week52High,
+                            week52Low = overview.week52Low,
+                            fetchedAt = LocalDateTime.now().toString()
+                        )
+                    )
+                    Result.Success(overview)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Unexpected error getting overview for $symbol", e)
+            return Result.Error(e, "Failed to get stock overview: ${e.message}")
+        }
+    }
+
+    private fun isOverviewStale(cache: StockOverviewCacheEntity): Boolean {
+        val fetchedAt = LocalDateTime.parse(cache.fetchedAt)
+        val age = Duration.between(fetchedAt, LocalDateTime.now())
+        val ttl = Duration.ofHours(24)
+        return age > ttl
     }
 
     companion object {

@@ -2,6 +2,7 @@ package com.example.stocksignal.data.local.db
 
 import androidx.room.TypeConverter
 import com.example.stocksignal.data.local.model.MarketMoverItem
+import com.example.stocksignal.domain.model.PriceCandle
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.LocalDate
@@ -82,6 +83,23 @@ class Converters {
             json.put("rank", item.rank)
             json.put("signalScore", item.signalScore)
             json.put("signalLabel", item.signalLabel)
+            
+            // Serialize series (PriceCandle list)
+            if (item.series.isNotEmpty()) {
+                val seriesArray = JSONArray()
+                item.series.forEach { candle ->
+                    val candleJson = JSONObject()
+                    candleJson.put("time", candle.time.format(dateTimeFormatter))
+                    candleJson.put("open", candle.open)
+                    candleJson.put("high", candle.high)
+                    candleJson.put("low", candle.low)
+                    candleJson.put("close", candle.close)
+                    candleJson.put("volume", candle.volume)
+                    seriesArray.put(candleJson)
+                }
+                json.put("series", seriesArray)
+            }
+            
             array.put(json)
         }
         return array.toString()
@@ -97,6 +115,25 @@ class Converters {
             val percentChange = if (json.has("percentChange")) json.optDouble("percentChange") else null
             val rank = if (json.has("rank")) json.optInt("rank") else null
             val signalScore = if (json.has("signalScore")) json.optInt("signalScore") else null
+            
+            // Deserialize series (PriceCandle list)
+            val series = if (json.has("series")) {
+                val seriesArray = json.getJSONArray("series")
+                List(seriesArray.length()) { seriesIndex ->
+                    val candleJson = seriesArray.getJSONObject(seriesIndex)
+                    PriceCandle(
+                        time = LocalDateTime.parse(candleJson.getString("time"), dateTimeFormatter),
+                        open = candleJson.getDouble("open"),
+                        high = candleJson.getDouble("high"),
+                        low = candleJson.getDouble("low"),
+                        close = candleJson.getDouble("close"),
+                        volume = candleJson.getLong("volume")
+                    )
+                }
+            } else {
+                emptyList()
+            }
+            
             MarketMoverItem(
                 ticker = json.optString("ticker"),
                 companyName = json.optString("companyName"),
@@ -105,7 +142,8 @@ class Converters {
                 percentChange = percentChange,
                 rank = rank,
                 signalScore = signalScore,
-                signalLabel = json.optString("signalLabel").ifBlank { null }
+                signalLabel = json.optString("signalLabel").ifBlank { null },
+                series = series
             )
         }
     }

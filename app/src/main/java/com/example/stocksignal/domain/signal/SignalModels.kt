@@ -16,25 +16,34 @@ data class ModelScoreResult(
 
 object RuleBasedSignalModel {
 
-    fun compute(candles: List<PriceCandle>, range: ChartRange): ModelScoreResult? {
+    fun compute(
+        candles: List<PriceCandle>,
+        range: ChartRange,
+        holdingPeriod: com.example.stocksignal.data.settings.HoldingPeriod = com.example.stocksignal.data.settings.HoldingPeriod.MONTHS
+    ): ModelScoreResult? {
         if (candles.size < 20) return null
         val closes = candles.map { it.close }
         val volumes = candles.map { it.volume.toDouble() }
         val lastClose = closes.last()
         val prevClose = closes.getOrNull(closes.lastIndex - 1) ?: lastClose
 
-        val volumeZ = IndicatorCalculator.zScore(volumes, 20)
-        val rsi = IndicatorCalculator.rsi(closes, 14)
-        val macd = IndicatorCalculator.macd(closes)
-        val bollinger = IndicatorCalculator.bollinger(closes, 20, 2.0)
-        val atr = IndicatorCalculator.atr(candles, 14)
+        // Use IndicatorConfig for holding-period-aware indicator parameters
+        val config = IndicatorConfig.forHoldingPeriod(holdingPeriod)
+
+        val volumeZ = IndicatorCalculator.zScore(volumes, config.volumeZscoreWindow)
+        val rsi = IndicatorCalculator.rsi(closes, config.rsiPeriod)
+        val macd = IndicatorCalculator.macd(closes, config.macdFast, config.macdSlow, config.macdSignal)
+        val bollinger = IndicatorCalculator.bollinger(closes, config.bbPeriod, config.bbStdDev)
+        val atr = IndicatorCalculator.atr(candles, config.atrPeriod)
         val atrPercent = if (atr != null && lastClose > 0) atr / lastClose else null
         val volatilityScale = volatilityScale(atrPercent)
 
         val reasons = mutableListOf<SignalReason>()
         val metricScores = mutableMapOf<String, Int>()
 
-        val (fastPeriod, slowPeriod) = maPeriodsForRange(range)
+        // Use period-specific SMA periods from IndicatorConfig
+        val fastPeriod = config.smaShortPeriod
+        val slowPeriod = config.smaLongPeriod
         val fast = IndicatorCalculator.sma(closes, fastPeriod)
         val slow = IndicatorCalculator.sma(closes, slowPeriod)
         val prevFast = IndicatorCalculator.sma(closes.dropLast(1), fastPeriod)

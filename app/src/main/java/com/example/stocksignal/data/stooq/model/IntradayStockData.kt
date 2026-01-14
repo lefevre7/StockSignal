@@ -33,3 +33,12 @@ data class IntradayStockData(
  */
 typealias IntradayStockDataMap = Map<String, Map<LocalDateTime, IntradayStockData>>
 
+/**
+ * Enriched intraday response that includes market/exchange information
+ * parsed from the HTML header in addition to the stock data.
+ */
+data class EnrichedIntradayResponse(
+    val data: Map<LocalDateTime, IntradayStockData>,
+    val exchange: String?
+)
+

@@ -55,8 +55,10 @@ class NotificationWindowWorker @AssistedInject constructor(
 
         return try {
             val settings = settingsRepository.settingsFlow.first()
-            if (!settings.notificationTypes.contains(NotificationType.DIGESTS)) {
-                Log.d(TAG, "Skipping window $windowId because digests are disabled")
+            val watchlistEnabled = settings.notificationTypes.contains(NotificationType.WATCHLIST)
+            val moversEnabled = settings.notificationTypes.contains(NotificationType.MARKET_MOVERS)
+            if (!watchlistEnabled && !moversEnabled) {
+                Log.d(TAG, "Skipping window $windowId because no notification sources are enabled")
                 return Result.success()
             }
             if (settings.frequency == NotificationFrequency.ONLY_WHEN_OPEN) {
@@ -64,9 +66,11 @@ class NotificationWindowWorker @AssistedInject constructor(
                 return Result.success()
             }
 
-            Log.d(TAG, "Running notification window worker for $windowId")
+            Log.d(TAG, "Running notification window worker for $windowId (watchlist=$watchlistEnabled movers=$moversEnabled)")
             val candidates = mutableListOf<NotificationEvent>()
             val now = LocalDateTime.now()
+            var watchlistCandidates = 0
+            var moverCandidates = 0
 
             val watchlistRange = settings.selectedChartRange
             val moversRange = MarketMoverRange.ONE_DAY
@@ -74,12 +78,25 @@ class NotificationWindowWorker @AssistedInject constructor(
 
             val watchlist = watchlistRepository.getAll()
 
-            if (settings.notificationTypes.contains(NotificationType.WATCHLIST)) {
+            if (watchlistEnabled) {
+                if (watchlist.isEmpty()) {
+                    Log.d(TAG, "No watchlist items to evaluate for window $windowId")
+                }
                 for (item in watchlist) {
                     try {
-                        if (!item.alertEnabled) continue
-                        if (item.snoozedUntil != null && item.snoozedUntil.isAfter(now)) continue
+                        if (!item.alertEnabled) {
+                            Log.d(TAG, "Watchlist ${item.symbol} alerts disabled")
+                            continue
+                        }
+                        if (item.snoozedUntil != null && item.snoozedUntil.isAfter(now)) {
+                            Log.d(TAG, "Watchlist ${item.symbol} snoozed until ${item.snoozedUntil}")
+                            continue
+                        }
                         val minScore = item.minScoreForNotify ?: settings.signalSensitivity.minScoreForNotify
+                        
+                        // NOTE: This call to stockRepository.getSeries() automatically triggers
+                        // passive accumulation of intraday data via StockRepository.accumulateIntradayData()
+                        // Data is stored in IntradayDataCache for up to 1 year
                         val result = stockRepository.getSeries(
                             item.symbol,
                             watchlistRange,
@@ -88,10 +105,23 @@ class NotificationWindowWorker @AssistedInject constructor(
                         )
                         if (result is StooqResult.Success) {
                             val series = result.data
-                            if (!isFresh(series, now)) continue
-                            val signal = signalsRepository.computeSignal(series, watchlistRange) ?: continue
-                            if (signal.score < minScore && signal.score > -minScore) continue
-                            if (signalsRepository.isInCooldown(item.symbol, signal.tier.label, signal.generatedAt)) continue
+                            if (!isFresh(series, now)) {
+                                Log.d(TAG, "Watchlist ${item.symbol} data stale; skipping")
+                                continue
+                            }
+                            val signal = signalsRepository.computeSignal(series, watchlistRange)
+                            if (signal == null) {
+                                Log.d(TAG, "Watchlist ${item.symbol} no signal generated")
+                                continue
+                            }
+                            if (signal.score < minScore && signal.score > -minScore) {
+                                Log.d(TAG, "Watchlist ${item.symbol} signal score ${signal.score} below threshold $minScore")
+                                continue
+                            }
+                            if (signalsRepository.isInCooldown(item.symbol, signal.tier.label, signal.generatedAt)) {
+                                Log.d(TAG, "Watchlist ${item.symbol} signal ${signal.tier.label} in cooldown")
+                                continue
+                            }
                             val event = buildEvent(
                                 signal = signal,
                                 ticker = item.symbol,
@@ -102,6 +132,10 @@ class NotificationWindowWorker @AssistedInject constructor(
                             )
                             signalsRepository.recordEvent(event)
                             candidates.add(event)
+                            watchlistCandidates += 1
+                            Log.d(TAG, "Watchlist candidate ${item.symbol} ${signal.tier.label} score=${signal.score}")
+                        } else {
+                            Log.w(TAG, "Watchlist ${item.symbol} failed to fetch series; skipping")
                         }
                         evaluateIndicatorAlerts(
                             item = item,
@@ -114,65 +148,106 @@ class NotificationWindowWorker @AssistedInject constructor(
                 }
             }
 
-        if (settings.notificationTypes.contains(NotificationType.MARKET_MOVERS)) {
-            val watchlistSymbols = watchlist.map { it.symbol }.toSet()
-            val increasersSnapshot = when (val result = marketMoversRepository.getMarketMovers(
-                range = moversRange,
-                direction = MarketMoverDirection.INCREASERS,
-                forceRefresh = true
-            )) {
-                is StooqResult.Success -> result.data
-                is StooqResult.Error -> null
-            }
-            val decreasersSnapshot = when (val result = marketMoversRepository.getMarketMovers(
-                range = moversRange,
-                direction = MarketMoverDirection.DECREASERS,
-                forceRefresh = true
-            )) {
-                is StooqResult.Success -> result.data
-                is StooqResult.Error -> null
-            }
-            val increasers = increasersSnapshot?.takeUnless { it.isStale }?.items.orEmpty()
-            val decreasers = decreasersSnapshot?.takeUnless { it.isStale }?.items.orEmpty()
-            val movers = (increasers.take(MAX_MOVERS) + decreasers.take(MAX_MOVERS))
-                .distinctBy { it.ticker }
-                .filterNot { watchlistSymbols.contains(it.ticker) }
-
-            movers.forEach { mover ->
-                try {
-                    val result = stockRepository.getSeries(
-                        mover.ticker,
-                        moversChartRange,
-                        forceRefresh = true,
-                        eventType = null
-                    )
-                    if (result is StooqResult.Success) {
-                        val series = result.data
-                        if (!isFresh(series, now)) return@forEach
-                        val signal = signalsRepository.computeSignal(series, moversChartRange) ?: return@forEach
-                        val strongBuy = settings.signalSensitivity.strongBuyThreshold
-                        val strongSell = settings.signalSensitivity.strongSellThreshold
-                        if (signal.score < strongBuy && signal.score > strongSell) return@forEach
-                        if (signalsRepository.isInCooldown(mover.ticker, signal.tier.label, signal.generatedAt)) return@forEach
-                        val event = buildEvent(
-                            signal = signal,
-                            ticker = mover.ticker,
-                            company = mover.companyName,
-                            price = mover.price,
-                            percentChange = mover.percentChange,
-                            type = NotificationEventType.MARKET_MOVER
-                        )
-                        signalsRepository.recordEvent(event)
-                        candidates.add(event)
+            if (moversEnabled) {
+                val watchlistSymbols = watchlist.map { it.symbol }.toSet()
+                val increasersSnapshot = when (val result = marketMoversRepository.getMarketMovers(
+                    range = moversRange,
+                    direction = MarketMoverDirection.INCREASERS,
+                    forceRefresh = true
+                )) {
+                    is StooqResult.Success -> result.data
+                    is StooqResult.Error -> {
+                        Log.w(TAG, "Market movers increasers fetch failed: ${result.message}")
+                        null
                     }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Error processing market mover ${mover.ticker}, skipping", e)
+                }
+                val decreasersSnapshot = when (val result = marketMoversRepository.getMarketMovers(
+                    range = moversRange,
+                    direction = MarketMoverDirection.DECREASERS,
+                    forceRefresh = true
+                )) {
+                    is StooqResult.Success -> result.data
+                    is StooqResult.Error -> {
+                        Log.w(TAG, "Market movers decreasers fetch failed: ${result.message}")
+                        null
+                    }
+                }
+                if (increasersSnapshot?.isStale == true) {
+                    Log.d(TAG, "Market movers increasers snapshot stale; skipping")
+                }
+                if (decreasersSnapshot?.isStale == true) {
+                    Log.d(TAG, "Market movers decreasers snapshot stale; skipping")
+                }
+                val increasers = increasersSnapshot?.takeUnless { it.isStale }?.items.orEmpty()
+                val decreasers = decreasersSnapshot?.takeUnless { it.isStale }?.items.orEmpty()
+                val movers = (increasers.take(MAX_MOVERS) + decreasers.take(MAX_MOVERS))
+                    .distinctBy { it.ticker }
+                    .filterNot { watchlistSymbols.contains(it.ticker) }
+
+                if (movers.isEmpty()) {
+                    Log.d(TAG, "No market movers candidates to evaluate for window $windowId")
+                }
+
+                movers.forEach { mover ->
+                    try {
+                        val result = stockRepository.getSeries(
+                            mover.ticker,
+                            moversChartRange,
+                            forceRefresh = true,
+                            eventType = null
+                        )
+                        if (result is StooqResult.Success) {
+                            val series = result.data
+                            if (!isFresh(series, now)) {
+                                Log.d(TAG, "Market mover ${mover.ticker} data stale; skipping")
+                                return@forEach
+                            }
+                            val signal = signalsRepository.computeSignal(series, moversChartRange)
+                            if (signal == null) {
+                                Log.d(TAG, "Market mover ${mover.ticker} no signal generated")
+                                return@forEach
+                            }
+                            val strongBuy = settings.signalSensitivity.strongBuyThreshold
+                            val strongSell = settings.signalSensitivity.strongSellThreshold
+                            if (signal.score < strongBuy && signal.score > strongSell) {
+                                Log.d(TAG, "Market mover ${mover.ticker} score ${signal.score} below thresholds")
+                                return@forEach
+                            }
+                            if (signalsRepository.isInCooldown(mover.ticker, signal.tier.label, signal.generatedAt)) {
+                                Log.d(TAG, "Market mover ${mover.ticker} signal ${signal.tier.label} in cooldown")
+                                return@forEach
+                            }
+                            val event = buildEvent(
+                                signal = signal,
+                                ticker = mover.ticker,
+                                company = mover.companyName,
+                                price = mover.price,
+                                percentChange = mover.percentChange,
+                                type = NotificationEventType.MARKET_MOVER
+                            )
+                            signalsRepository.recordEvent(event)
+                            candidates.add(event)
+                            moverCandidates += 1
+                            Log.d(TAG, "Market mover candidate ${mover.ticker} ${signal.tier.label} score=${signal.score}")
+                        } else {
+                            Log.w(TAG, "Market mover ${mover.ticker} failed to fetch series; skipping")
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Error processing market mover ${mover.ticker}, skipping", e)
+                    }
                 }
             }
-        }
 
-        notificationQueueProcessor.processCandidates(candidates, settings)
-            Log.d(TAG, "Successfully processed ${candidates.size} candidate events for window $windowId")
+            if (candidates.isEmpty()) {
+                Log.d(TAG, "No candidates generated for window $windowId, processing queued events")
+                notificationQueueProcessor.processQueued(settings)
+            } else {
+                notificationQueueProcessor.processCandidates(candidates, settings)
+            }
+            Log.d(
+                TAG,
+                "Successfully processed window $windowId with watchlist=$watchlistCandidates movers=$moverCandidates total=${candidates.size}"
+            )
             Result.success()
         } catch (e: java.io.IOException) {
             Log.e(TAG, "Network error in window $windowId, will retry", e)
@@ -236,14 +311,23 @@ class NotificationWindowWorker @AssistedInject constructor(
             )
             if (result is StooqResult.Success) {
                 val series = result.data
-                if (series.isEmpty()) continue
-                if (!isFresh(series, now)) continue
+                if (series.isEmpty()) {
+                    Log.d(TAG, "Indicator alerts: ${item.symbol} no data for range $range")
+                    continue
+                }
+                if (!isFresh(series, now)) {
+                    Log.d(TAG, "Indicator alerts: ${item.symbol} data stale for range $range")
+                    continue
+                }
                 val signal = signalsRepository.computeSignal(series, range)
                 for (alert in rangeAlerts) {
                     val evaluation = IndicatorAlertEvaluator.evaluate(alert, series) ?: continue
                     if (!evaluation.crossed) continue
                     val label = indicatorLabel(alert)
-                    if (signalsRepository.isInCooldown(item.symbol, label, now)) continue
+                    if (signalsRepository.isInCooldown(item.symbol, label, now)) {
+                        Log.d(TAG, "Indicator alert ${item.symbol} ${alert.metric.name} in cooldown")
+                        continue
+                    }
                     val event = buildIndicatorEvent(
                         ticker = item.symbol,
                         company = item.companyName,
@@ -255,6 +339,7 @@ class NotificationWindowWorker @AssistedInject constructor(
                     )
                     signalsRepository.recordIndicatorEvent(event, label)
                     candidates.add(event)
+                    Log.d(TAG, "Indicator alert candidate ${item.symbol} ${alert.metric.label} ${alert.direction.name}")
                 }
             }
         }

@@ -1,5 +1,8 @@
 package com.example.stocksignal.ui.settings
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -34,12 +37,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.stocksignal.data.settings.AppSettings
+import com.example.stocksignal.data.settings.HoldingPeriod
 import com.example.stocksignal.data.settings.NotificationFrequency
 import com.example.stocksignal.data.settings.NotificationType
 import com.example.stocksignal.data.settings.QuietHours
@@ -59,6 +66,7 @@ fun SettingsRoute(viewModel: SettingsViewModel = hiltViewModel()) {
         settings = state.settings,
         errorMessage = state.errorMessage,
         onClearError = viewModel::clearError,
+        onHoldingPeriodChange = viewModel::setHoldingPeriod,
         onFrequencyChange = viewModel::setFrequency,
         onNotificationTypeToggle = viewModel::toggleNotificationType,
         onQuietHoursToggle = viewModel::setQuietHoursEnabled,
@@ -67,7 +75,8 @@ fun SettingsRoute(viewModel: SettingsViewModel = hiltViewModel()) {
         onWeeklyDayChange = viewModel::setWeeklyDay,
         onSnoozeDurationChange = viewModel::setSnoozeDuration,
         onSignalSensitivityChange = viewModel::setSignalSensitivity,
-        onImmediatePostsToggle = viewModel::setImmediatePostsEnabled
+        onImmediatePostsToggle = viewModel::setImmediatePostsEnabled,
+        onSendTestNotification = viewModel::sendTestNotification
     )
 }
 
@@ -77,6 +86,7 @@ fun SettingsScreen(
     settings: AppSettings,
     errorMessage: String? = null,
     onClearError: () -> Unit = {},
+    onHoldingPeriodChange: (HoldingPeriod) -> Unit,
     onFrequencyChange: (NotificationFrequency) -> Unit,
     onNotificationTypeToggle: (NotificationType, Boolean) -> Unit,
     onQuietHoursToggle: (Boolean) -> Unit,
@@ -86,8 +96,20 @@ fun SettingsScreen(
     onSnoozeDurationChange: (SnoozeDurationOption) -> Unit,
     onSignalSensitivityChange: (SignalSensitivity) -> Unit,
     onImmediatePostsToggle: (Boolean) -> Unit,
+    onSendTestNotification: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val notificationsEnabled = NotificationManagerCompat.from(context).areNotificationsEnabled()
+    val postPermissionGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+    } else {
+        true
+    }
+    val showPermissionBanner = !postPermissionGranted
+    val showNotificationsDisabledBanner = postPermissionGranted && !notificationsEnabled
+    val showDigestsDisabledBanner = !settings.notificationTypes.contains(NotificationType.DIGESTS)
+
     val windowsEnabled = settings.frequency != NotificationFrequency.ONLY_WHEN_OPEN
     val scheduleWindows = when (settings.frequency) {
         NotificationFrequency.THREE_PER_DAY -> settings.scheduleWindows
@@ -119,6 +141,35 @@ fun SettingsScreen(
                     onDismiss = onClearError
                 )
             }
+        }
+
+        if (showPermissionBanner) {
+            item {
+                InfoBanner(
+                    message = "Notifications permission is off. Enable POST_NOTIFICATIONS in system settings."
+                )
+            }
+        } else if (showNotificationsDisabledBanner) {
+            item {
+                InfoBanner(
+                    message = "Notifications are disabled for this app in system settings."
+                )
+            }
+        }
+
+        if (showDigestsDisabledBanner) {
+            item {
+                InfoBanner(
+                    message = "Digests are off. Enable Digests to receive scheduled alerts."
+                )
+            }
+        }
+
+        item {
+            HoldingPeriodCard(
+                selected = settings.holdingPeriod,
+                onSelect = onHoldingPeriodChange
+            )
         }
 
         item {
@@ -165,6 +216,19 @@ fun SettingsScreen(
                     enabled = settings.notificationTypes.contains(NotificationType.DIGESTS),
                     onToggle = { onNotificationTypeToggle(NotificationType.DIGESTS, it) }
                 )
+            }
+        }
+
+        item {
+            StockCard {
+                Text(text = "Test notification", style = MaterialTheme.typography.headlineMedium)
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "Sends a local alert to verify sound/vibration and delivery. Appears in Signals.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                TextButton(onClick = onSendTestNotification) { Text("Send test notification") }
             }
         }
 
@@ -649,6 +713,53 @@ private fun ErrorBanner(
                     Icons.Filled.Close,
                     contentDescription = "Dismiss error",
                     tint = MaterialTheme.colorScheme.onErrorContainer
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun InfoBanner(message: String) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer
+        ),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSecondaryContainer,
+            modifier = Modifier.padding(12.dp)
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun HoldingPeriodCard(
+    selected: HoldingPeriod,
+    onSelect: (HoldingPeriod) -> Unit
+) {
+    StockCard {
+        Text(text = "Investment Timeframe", style = MaterialTheme.typography.headlineMedium)
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            text = "How long do you typically hold positions? This optimizes signals and indicators for your trading style.",
+            style = MaterialTheme.typography.bodySmall
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            HoldingPeriod.entries.forEach { period ->
+                FilterChip(
+                    selected = selected == period,
+                    onClick = { onSelect(period) },
+                    label = { Text(text = period.displayName) }
                 )
             }
         }

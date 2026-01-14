@@ -28,6 +28,7 @@ work = "2.9.1"
 vico = "2.0.0"
 jsoup = "1.17.2"
 robolectric = "4.12.2"
+androidxTestRules = "1.5.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -79,6 +80,7 @@ vico-compose-m3 = { group = "com.patrykandpatrick.vico", name = "compose-m3", ve
 jsoup = { group = "org.jsoup", name = "jsoup", version.ref = "jsoup" }
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
 androidx-work-testing = { group = "androidx.work", name = "work-testing", version.ref = "work" }
+androidx-test-rules = { group = "androidx.test", name = "rules", version.ref = "androidxTestRules" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

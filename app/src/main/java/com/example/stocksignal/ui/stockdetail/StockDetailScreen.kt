@@ -107,6 +107,15 @@ fun StockDetailRoute(
     viewModel: StockDetailViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    // Show export message if present
+    LaunchedEffect(state.exportMessage) {
+        state.exportMessage?.let { message ->
+            android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
+
     StockDetailScreen(
         state = state,
         onBack = onBack,
@@ -119,7 +128,16 @@ fun StockDetailRoute(
         onAddTag = viewModel::addTag,
         onRemoveTag = viewModel::removeTag,
         onAddNote = onAddNote,
-        onShare = onShare
+        onShare = onShare,
+        onExportData = {
+            // Create export file in Downloads directory
+            val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(
+                android.os.Environment.DIRECTORY_DOWNLOADS
+            )
+            val fileName = "${state.ticker.replace(".", "_")}_intraday_data.csv"
+            val file = java.io.File(downloadsDir, fileName)
+            viewModel.exportHistoricalData(file)
+        }
     )
 }
 
@@ -138,6 +156,7 @@ fun StockDetailScreen(
     onRemoveTag: (String) -> Unit,
     onAddNote: (String) -> Unit,
     onShare: (String, String?) -> Unit,
+    onExportData: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var selectedTab by rememberSaveable(state.highlightEventId) {
@@ -171,7 +190,8 @@ fun StockDetailScreen(
             onToggleWatchlist = onToggleWatchlist,
             menuExpanded = menuExpanded,
             onMenuExpandedChange = { menuExpanded = it },
-            onManageTags = { showTagSheet = true }
+            onManageTags = { showTagSheet = true },
+            onExportData = onExportData
         )
 
         Column(
@@ -308,7 +328,8 @@ private fun StockDetailTopBar(
     onToggleWatchlist: () -> Unit,
     menuExpanded: Boolean,
     onMenuExpandedChange: (Boolean) -> Unit,
-    onManageTags: () -> Unit
+    onManageTags: () -> Unit,
+    onExportData: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -355,6 +376,13 @@ private fun StockDetailTopBar(
                         onClick = {
                             onMenuExpandedChange(false)
                             onManageTags()
+                        }
+                    )
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text("Export historical data") },
+                        onClick = {
+                            onMenuExpandedChange(false)
+                            onExportData()
                         }
                     )
                 }
@@ -495,14 +523,49 @@ private fun OverviewTab(state: StockDetailUiState) {
             )
         }
         Spacer(modifier = Modifier.height(12.dp))
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            KeyStat(label = "Market Cap", value = "—")
-            KeyStat(label = "P/E", value = "—")
-            KeyStat(label = "Dividend", value = "—")
-            KeyStat(label = "52W High", value = "—")
-            KeyStat(label = "52W Low", value = "—")
+        
+        if (state.overviewError != null) {
+            Text(
+                text = state.overviewError,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        } else {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                KeyStat(label = "Market Cap", value = formatOverviewMarketCap(state.marketCap))
+                KeyStat(label = "P/E", value = formatOverviewDecimal(state.peRatio))
+                KeyStat(label = "Dividend", value = formatOverviewPercent(state.dividend))
+                KeyStat(label = "52W High", value = formatOverviewPrice(state.week52High))
+                KeyStat(label = "52W Low", value = formatOverviewPrice(state.week52Low))
+            }
         }
     }
+}
+
+@Composable
+private fun formatOverviewMarketCap(value: Double?): String {
+    if (value == null) return "—"
+    return when {
+        value >= 1_000_000_000_000 -> "${"%.2f".format(value / 1_000_000_000_000)}T"
+        value >= 1_000_000_000 -> "${"%.2f".format(value / 1_000_000_000)}B"
+        value >= 1_000_000 -> "${"%.2f".format(value / 1_000_000)}M"
+        else -> "${"%.2f".format(value)}"
+    }
+}
+
+@Composable
+private fun formatOverviewDecimal(value: Double?): String {
+    return value?.let { "%.2f".format(it) } ?: "—"
+}
+
+@Composable
+private fun formatOverviewPercent(value: Double?): String {
+    return value?.let { "%.2f%%".format(it) } ?: "—"
+}
+
+@Composable
+private fun formatOverviewPrice(value: Double?): String {
+    return value?.let { "$%.2f".format(it) } ?: "—"
 }
 
 @Composable

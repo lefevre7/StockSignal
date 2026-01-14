@@ -7,6 +7,7 @@ import androidx.work.Configuration
 import androidx.work.WorkManager
 import androidx.work.testing.WorkManagerTestInitHelper
 import com.example.stocksignal.data.settings.AppSettings
+import com.example.stocksignal.data.settings.HoldingPeriod
 import com.example.stocksignal.data.settings.NotificationFrequency
 import com.example.stocksignal.data.settings.NotificationType
 import com.example.stocksignal.data.settings.QuietHours
@@ -73,7 +74,8 @@ class NotificationSchedulerTest {
             ),
             selectedChartRange = ChartRange.ONE_DAY,
             immediatePostsEnabled = false,
-            onboardingCompleted = true
+            onboardingCompleted = true,
+            holdingPeriod = HoldingPeriod.DAYS
         )
 
         scheduler.schedule(settings)

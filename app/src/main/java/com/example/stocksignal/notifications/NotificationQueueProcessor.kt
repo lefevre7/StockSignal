@@ -4,6 +4,7 @@ import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
 import android.service.notification.StatusBarNotification
+import android.util.Log
 import com.example.stocksignal.data.local.entity.NotificationStateEntity
 import com.example.stocksignal.data.local.repository.NotificationStateRepository
 import com.example.stocksignal.data.local.repository.WatchlistRepository
@@ -37,14 +38,25 @@ class NotificationQueueProcessor @Inject constructor(
         candidates: List<NotificationEvent>,
         settings: AppSettings
     ) {
-        if (candidates.isEmpty()) return
-        if (!settings.notificationTypes.contains(NotificationType.DIGESTS)) return
+        if (candidates.isEmpty()) {
+            logD("No candidates to process.")
+            return
+        }
+        if (!settings.notificationTypes.contains(NotificationType.DIGESTS)) {
+            logD("Digests disabled; skipping ${candidates.size} candidate(s).")
+            return
+        }
 
         val now = LocalDateTime.now()
         var state = normalizeState(notificationStateRepository.getState(), now, settings.frequency)
+        logD(
+            "Processing ${candidates.size} candidate(s); queued=${state.queuedEventIds.size} " +
+                "active=${state.lastActiveNotificationId} dismissed=${state.dismissed}"
+        )
 
         val (eligibleCandidates, blockedCandidates) = partitionByQuietHours(candidates, settings, now)
         if (state.lastActiveNotificationId != null && !state.dismissed) {
+            logD("Active notification ${state.lastActiveNotificationId} still visible; queueing ${candidates.size} event(s).")
             state = queueEvents(state, candidates)
             notificationStateRepository.upsert(state)
             return
@@ -54,6 +66,7 @@ class NotificationQueueProcessor @Inject constructor(
         val key = countKey(now, settings.frequency)
         val count = state.notificationCounts[key] ?: 0
         if (count >= cap) {
+            logD("Notification cap reached ($count/$cap) for key $key; queueing ${candidates.size} event(s).")
             state = queueEvents(state, candidates)
             notificationStateRepository.upsert(state)
             return
@@ -63,13 +76,20 @@ class NotificationQueueProcessor @Inject constructor(
         val (eligibleQueued, blockedQueued) = partitionByQuietHours(queued, settings, now)
         val toPost = (eligibleQueued + eligibleCandidates).distinctBy { it.id }
         if (toPost.isEmpty()) {
+            logD("No eligible events to post; queueing ${blockedCandidates.size} blocked candidate(s).")
             state = queueEvents(state, blockedCandidates)
             notificationStateRepository.upsert(state)
             return
         }
 
+        toPost.forEach { event ->
+            logD("Posting ${event.ticker} ${event.tier.label} score=${event.score} type=${event.type}")
+        }
         val notificationId = publisher.postDigest(toPost)
-        if (notificationId == 0) return
+        if (notificationId == 0) {
+            logW("postDigest returned 0; aborting delivery for ${toPost.size} event(s).")
+            return
+        }
 
         signalsRepository.markNotified(toPost.map { it.id }, now)
         val updatedCounts = state.notificationCounts.toMutableMap()
@@ -88,7 +108,10 @@ class NotificationQueueProcessor @Inject constructor(
     }
 
     suspend fun processQueued(settings: AppSettings) {
-        if (!settings.notificationTypes.contains(NotificationType.DIGESTS)) return
+        if (!settings.notificationTypes.contains(NotificationType.DIGESTS)) {
+            logD("Digests disabled; skipping queued delivery.")
+            return
+        }
 
         val now = LocalDateTime.now()
         var state = normalizeState(notificationStateRepository.getState(), now, settings.frequency)
@@ -104,8 +127,14 @@ class NotificationQueueProcessor @Inject constructor(
         val (eligible, blocked) = partitionByQuietHours(queued, settings, now)
         if (eligible.isEmpty()) return
 
+        eligible.forEach { event ->
+            logD("Posting queued ${event.ticker} ${event.tier.label} score=${event.score} type=${event.type}")
+        }
         val notificationId = publisher.postDigest(eligible)
-        if (notificationId == 0) return
+        if (notificationId == 0) {
+            logW("postDigest returned 0 for queued events; aborting delivery for ${eligible.size} event(s).")
+            return
+        }
 
         signalsRepository.markNotified(eligible.map { it.id }, now)
         val updatedCounts = state.notificationCounts.toMutableMap()
@@ -126,6 +155,7 @@ class NotificationQueueProcessor @Inject constructor(
         val now = LocalDateTime.now()
         val normalized = normalizeState(notificationStateRepository.getState(), now, settings.frequency)
         notificationStateRepository.upsert(normalized)
+        logD("Reconciled notification state for frequency ${settings.frequency}.")
     }
 
     private suspend fun loadQueuedEvents(state: NotificationStateEntity): List<NotificationEvent> {
@@ -155,8 +185,10 @@ class NotificationQueueProcessor @Inject constructor(
                 eligible.add(event)
             } else {
                 blocked.add(event)
+                logD("Quiet hours block for ${event.ticker} ${event.tier.label} (${event.id})")
             }
         }
+        logD("Quiet hours split: eligible=${eligible.size} blocked=${blocked.size}")
         return eligible to blocked
     }
 
@@ -261,5 +293,17 @@ class NotificationQueueProcessor @Inject constructor(
             NotificationFrequency.ONE_PER_WEEK -> 1
             NotificationFrequency.ONLY_WHEN_OPEN -> 0
         }
+    }
+
+    private fun logD(message: String) {
+        runCatching { Log.d(TAG, message) }
+    }
+
+    private fun logW(message: String) {
+        runCatching { Log.w(TAG, message) }
+    }
+
+    companion object {
+        private const val TAG = "NotificationQueueProcessor"
     }
 }

@@ -112,6 +112,23 @@ class MarketMoversRepository @Inject constructor(
             ?: sections.firstOrNull { it.direction == direction }
     }
 
+    /**
+     * Updates items in the cache while preserving the fetchedAt timestamp.
+     * Used to persist enriched data (series, exchange) without triggering a full refresh.
+     */
+    suspend fun updateItemsInCache(
+        range: MarketMoverRange,
+        direction: MarketMoverDirection,
+        items: List<com.example.stocksignal.data.local.model.MarketMoverItem>
+    ) {
+        val cached = cacheRepository.getCache(range.label, direction.name)
+        if (cached != null) {
+            val updated = cached.copy(items = items)
+            cacheRepository.upsert(updated)
+            Log.d(TAG, "Updated cache with ${items.size} enriched items for range=${range.label} direction=${direction.name}")
+        }
+    }
+
     companion object {
         private val CACHE_TTL = Duration.ofMinutes(10)
         private const val TAG = "MarketMoversRepository"

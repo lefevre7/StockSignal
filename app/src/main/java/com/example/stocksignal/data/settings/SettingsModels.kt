@@ -32,6 +32,14 @@ enum class SnoozeDurationOption(val minutes: Long, val label: String) {
     ONE_WEEK(10080, "1w")
 }
 
+enum class HoldingPeriod(val displayName: String, val description: String) {
+    HOURS("Hours", "Day trading - positions held for hours"),
+    DAYS("Days", "Swing trading - positions held for days"),
+    WEEKS("Weeks", "Short-term - positions held for weeks"),
+    MONTHS("Months", "Medium-term - positions held for months"),
+    YEARS("Years", "Long-term investing - positions held for years")
+}
+
 data class QuietHours(
     val enabled: Boolean,
     val start: String,
@@ -63,5 +71,6 @@ data class AppSettings(
     val signalSensitivity: SignalSensitivity,
     val selectedChartRange: ChartRange,
     val immediatePostsEnabled: Boolean,
-    val onboardingCompleted: Boolean
+    val onboardingCompleted: Boolean,
+    val holdingPeriod: HoldingPeriod
 )

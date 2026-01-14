@@ -34,8 +34,8 @@ class NotificationScheduler @Inject constructor(
 
     fun schedule(settings: AppSettings) {
         workManager.cancelAllWorkByTag(WORK_TAG)
-        if (!settings.notificationTypes.contains(NotificationType.DIGESTS)) {
-            Log.d(TAG, "Background scheduling disabled (digests off)")
+        if (!hasNotificationSources(settings)) {
+            Log.d(TAG, "Background scheduling disabled (no notification sources enabled)")
             return
         }
         if (settings.frequency == NotificationFrequency.ONLY_WHEN_OPEN) {
@@ -67,6 +67,7 @@ class NotificationScheduler @Inject constructor(
                 ExistingPeriodicWorkPolicy.REPLACE,
                 request
             )
+            Log.d(TAG, "Scheduled window ${window.id} with initial delay ${delay.toMinutes()}m")
         }
         
         // Schedule daily robots.txt check at first notification window
@@ -179,6 +180,11 @@ class NotificationScheduler @Inject constructor(
     }
 
     private fun workName(windowId: String) = "notification_window_$windowId"
+
+    private fun hasNotificationSources(settings: AppSettings): Boolean {
+        val types = settings.notificationTypes
+        return types.contains(NotificationType.WATCHLIST) || types.contains(NotificationType.MARKET_MOVERS)
+    }
 
     companion object {
         private const val TAG = "NotificationScheduler"

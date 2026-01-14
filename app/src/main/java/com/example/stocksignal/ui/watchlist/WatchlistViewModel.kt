@@ -151,7 +151,7 @@ class WatchlistViewModel @Inject constructor(
         }
     }
 
-    private fun updateMarketData(symbol: String, series: List<PriceCandle>, range: ChartRange) {
+    private suspend fun updateMarketData(symbol: String, series: List<PriceCandle>, range: ChartRange) {
         if (series.isEmpty()) return
         val signal = signalsRepository.computeSignal(series, range)
         val price = series.lastOrNull()?.close

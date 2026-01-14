@@ -8,6 +8,7 @@ import com.example.stocksignal.data.local.repository.NotificationStateRepository
 import com.example.stocksignal.data.local.repository.WatchlistRepository
 import com.example.stocksignal.data.repository.SignalsRepository
 import com.example.stocksignal.data.settings.AppSettings
+import com.example.stocksignal.data.settings.HoldingPeriod
 import com.example.stocksignal.data.settings.NotificationFrequency
 import com.example.stocksignal.data.settings.NotificationType
 import com.example.stocksignal.data.settings.QuietHours
@@ -107,6 +108,73 @@ class NotificationQueueProcessorTest {
     }
 
     @Test
+    fun `posts digest for two events`() = runTest {
+        stubNotificationManager()
+        val now = LocalDateTime.now()
+        val state = NotificationStateEntity(
+            lastActiveNotificationId = null,
+            lastActiveAt = null,
+            dismissed = true,
+            queuedEventIds = emptyList(),
+            notificationCounts = emptyMap(),
+            lastResetAt = now
+        )
+        coEvery { notificationStateRepository.getState() } returns state
+        val stateSlot = slot<NotificationStateEntity>()
+        coEvery { notificationStateRepository.upsert(capture(stateSlot)) } just runs
+        coEvery { signalsRepository.eventsByIds(any()) } returns emptyList()
+        val notifiedSlot = slot<List<String>>()
+        coEvery { signalsRepository.markNotified(capture(notifiedSlot), any()) } just runs
+        val postedSlot = slot<List<NotificationEvent>>()
+        every { publisher.postDigest(capture(postedSlot)) } returns 888
+
+        val events = listOf(
+            sampleEvent(id = "evt_4", ticker = "AAPL"),
+            sampleEvent(id = "evt_5", ticker = "MSFT")
+        )
+        processor.processCandidates(events, defaultSettings())
+
+        assertTrue(postedSlot.captured.map { it.id }.containsAll(listOf("evt_4", "evt_5")))
+        assertEquals(2, postedSlot.captured.size)
+        assertTrue(notifiedSlot.captured.containsAll(listOf("evt_4", "evt_5")))
+        assertEquals(2, notifiedSlot.captured.size)
+        val updated = stateSlot.captured
+        assertEquals(888, updated.lastActiveNotificationId)
+    }
+
+    @Test
+    fun `posts digest for six events`() = runTest {
+        stubNotificationManager()
+        val now = LocalDateTime.now()
+        val state = NotificationStateEntity(
+            lastActiveNotificationId = null,
+            lastActiveAt = null,
+            dismissed = true,
+            queuedEventIds = emptyList(),
+            notificationCounts = emptyMap(),
+            lastResetAt = now
+        )
+        coEvery { notificationStateRepository.getState() } returns state
+        val stateSlot = slot<NotificationStateEntity>()
+        coEvery { notificationStateRepository.upsert(capture(stateSlot)) } just runs
+        coEvery { signalsRepository.eventsByIds(any()) } returns emptyList()
+        val notifiedSlot = slot<List<String>>()
+        coEvery { signalsRepository.markNotified(capture(notifiedSlot), any()) } just runs
+        val postedSlot = slot<List<NotificationEvent>>()
+        every { publisher.postDigest(capture(postedSlot)) } returns 999
+
+        val events = (1..6).map { index ->
+            sampleEvent(id = "evt_${index + 10}", ticker = "T$index")
+        }
+        processor.processCandidates(events, defaultSettings())
+
+        assertEquals(6, postedSlot.captured.size)
+        assertEquals(6, notifiedSlot.captured.size)
+        val updated = stateSlot.captured
+        assertEquals(999, updated.lastActiveNotificationId)
+    }
+
+    @Test
     fun `queues when per-stock quiet hours are active`() = runTest {
         stubNotificationManager()
         val now = LocalDateTime.now()
@@ -161,6 +229,7 @@ class NotificationQueueProcessorTest {
                 strongSellThreshold = -60
             ),
             selectedChartRange = ChartRange.ONE_DAY,
+            holdingPeriod = HoldingPeriod.MONTHS,
             immediatePostsEnabled = false,
             onboardingCompleted = true
         )

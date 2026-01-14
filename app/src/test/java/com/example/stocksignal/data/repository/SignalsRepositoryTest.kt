@@ -2,6 +2,7 @@ package com.example.stocksignal.data.repository
 
 import com.example.stocksignal.data.local.entity.GlobalSignalEventEntity
 import com.example.stocksignal.data.local.repository.SignalEventsRepository
+import com.example.stocksignal.data.settings.SettingsRepository
 import io.mockk.coEvery
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
@@ -13,7 +14,8 @@ import java.time.LocalDateTime
 class SignalsRepositoryTest {
 
     private val signalEventsRepository = mockk<SignalEventsRepository>(relaxed = true)
-    private val repository = SignalsRepository(signalEventsRepository)
+    private val settingsRepository = mockk<SettingsRepository>(relaxed = true)
+    private val repository = SignalsRepository(signalEventsRepository, settingsRepository)
 
     @Test
     fun `cooldown returns true when recent event exists`() = runTest {

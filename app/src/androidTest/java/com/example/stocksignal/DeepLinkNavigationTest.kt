@@ -2,12 +2,14 @@ package com.example.stocksignal
 
 import android.content.Intent
 import android.net.Uri
-import androidx.compose.ui.test.junit4.AndroidComposeTestRule
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.test.ext.junit.rules.ActivityScenarioRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.example.stocksignal.data.settings.SettingsRepository
+import com.example.stocksignal.data.settings.settingsDataStore
+import kotlinx.coroutines.runBlocking
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -25,17 +27,19 @@ class DeepLinkNavigationTest {
         Uri.parse("stocksignal://stock/AAPL?eventId=evt_1")
     )
 
-    private val activityRule = ActivityScenarioRule<MainActivity>(deepLinkIntent)
-
     @get:Rule
-    val composeRule = AndroidComposeTestRule(activityRule) { rule ->
-        var activity: MainActivity? = null
-        rule.scenario.onActivity { activity = it }
-        checkNotNull(activity) { "Activity was not set in ActivityScenarioRule." }
-    }
+    val composeRule = createAndroidComposeRule<MainActivity>()
 
     @Test
     fun deepLinkOpensStockDetail() {
+        runBlocking {
+            val settingsRepository = SettingsRepository(composeRule.activity.settingsDataStore)
+            settingsRepository.setOnboardingCompleted(true)
+        }
+        composeRule.activity.runOnUiThread {
+            composeRule.activity.handleNewIntent(deepLinkIntent)
+        }
+
         // Wait for composition to complete and verify we're on stock detail screen
         // by checking for the back navigation button
         composeRule.waitUntil(timeoutMillis = 10_000) {

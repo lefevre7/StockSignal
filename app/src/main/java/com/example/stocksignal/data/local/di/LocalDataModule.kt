@@ -4,12 +4,16 @@ import android.content.Context
 import androidx.room.Room
 import com.example.stocksignal.data.local.db.StockSignalDatabase
 import com.example.stocksignal.data.local.db.MIGRATION_1_2
+import com.example.stocksignal.data.local.db.MIGRATION_2_3
+import com.example.stocksignal.data.local.db.MIGRATION_3_4
+import com.example.stocksignal.data.local.dao.IntradayDataCacheDao
 import com.example.stocksignal.data.local.dao.MarketMoversCacheDao
 import com.example.stocksignal.data.local.dao.NotesDao
 import com.example.stocksignal.data.local.dao.NotificationStateDao
 import com.example.stocksignal.data.local.dao.SearchHistoryDao
 import com.example.stocksignal.data.local.dao.SignalEventDao
 import com.example.stocksignal.data.local.dao.StockDetailCacheDao
+import com.example.stocksignal.data.local.dao.StockOverviewCacheDao
 import com.example.stocksignal.data.local.dao.WatchlistDao
 import dagger.Module
 import dagger.Provides
@@ -29,7 +33,7 @@ object LocalDataModule {
             context,
             StockSignalDatabase::class.java,
             "stocksignal.db"
-        ).addMigrations(MIGRATION_1_2)
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
             .build()
     }
 
@@ -66,5 +70,15 @@ object LocalDataModule {
     @Provides
     fun provideSearchHistoryDao(database: StockSignalDatabase): SearchHistoryDao {
         return database.searchHistoryDao()
+    }
+
+    @Provides
+    fun provideIntradayDataCacheDao(database: StockSignalDatabase): IntradayDataCacheDao {
+        return database.intradayDataCacheDao()
+    }
+
+    @Provides
+    fun provideStockOverviewCacheDao(database: StockSignalDatabase): StockOverviewCacheDao {
+        return database.stockOverviewCacheDao()
     }
 }

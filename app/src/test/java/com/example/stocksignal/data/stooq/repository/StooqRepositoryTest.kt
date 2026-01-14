@@ -235,7 +235,7 @@ class StooqRepositoryTest {
             20251125,190000,418.98,419.26,417.2101,417.51,972087
         """.trimIndent()
 
-        coEvery { api.getIntradayData(ticker, 10) } returns rawResponse
+        coEvery { api.getIntradayData(ticker.lowercase(), 10) } returns rawResponse
 
         val result = repository.getIntradayData(tickers = listOf(ticker))
 
@@ -268,7 +268,7 @@ class StooqRepositoryTest {
             20251125,093500,10.5,10.9,10.2,10.8,200
         """.trimIndent()
 
-        coEvery { api.getIntradayData(ticker, 10) } returns rawResponse
+        coEvery { api.getIntradayData(ticker.lowercase(), 10) } returns rawResponse
 
         val filtered = repository.getIntradayData(
             tickers = listOf(ticker),
@@ -290,8 +290,8 @@ class StooqRepositoryTest {
             X~OK~20251125,185000,10.0,11.0,9.5,10.5,100
         """.trimIndent()
 
-        coEvery { api.getIntradayData("OK", 10) } returns rawResponse
-        coEvery { api.getIntradayData("FAIL", 10) } throws Exception("Network error")
+        coEvery { api.getIntradayData("ok", 10) } returns rawResponse
+        coEvery { api.getIntradayData("fail", 10) } throws Exception("Network error")
 
         val result = repository.getIntradayData(tickers = listOf("OK", "FAIL"))
 

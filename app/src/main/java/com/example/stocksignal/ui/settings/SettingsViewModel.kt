@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.stocksignal.data.settings.AppSettings
+import com.example.stocksignal.data.settings.HoldingPeriod
 import com.example.stocksignal.data.settings.NotificationFrequency
 import com.example.stocksignal.data.settings.NotificationType
 import com.example.stocksignal.data.settings.QuietHours
@@ -13,6 +14,7 @@ import com.example.stocksignal.data.settings.SettingsRepository
 import com.example.stocksignal.data.settings.SignalSensitivity
 import com.example.stocksignal.data.settings.SnoozeDurationOption
 import com.example.stocksignal.domain.model.ChartRange
+import com.example.stocksignal.notifications.NotificationTestSender
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -25,7 +27,8 @@ import javax.inject.Inject
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
-    private val settingsRepository: SettingsRepository
+    private val settingsRepository: SettingsRepository,
+    private val notificationTestSender: NotificationTestSender
 ) : ViewModel() {
 
     private val _errorMessage = MutableStateFlow<String?>(null)
@@ -39,6 +42,17 @@ class SettingsViewModel @Inject constructor(
 
     fun clearError() {
         _errorMessage.value = null
+    }
+
+    fun setHoldingPeriod(period: HoldingPeriod) {
+        viewModelScope.launch {
+            try {
+                settingsRepository.setHoldingPeriod(period)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error setting holding period to $period", e)
+                _errorMessage.value = "Failed to save holding period: ${e.message}"
+            }
+        }
     }
 
     fun setFrequency(frequency: NotificationFrequency) {
@@ -143,6 +157,24 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun sendTestNotification() {
+        viewModelScope.launch {
+            try {
+                val notificationId = notificationTestSender.sendTestNotification()
+                if (notificationId == 0) {
+                    Log.w(TAG, "Test notification failed to post.")
+                    _errorMessage.value = "Failed to post test notification."
+                } else {
+                    Log.d(TAG, "Test notification posted with id=$notificationId")
+                    _errorMessage.value = null
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error posting test notification", e)
+                _errorMessage.value = "Failed to post test notification: ${e.message}"
+            }
+        }
+    }
+
     private fun defaultSettings(): AppSettings {
         return AppSettings(
             frequency = NotificationFrequency.THREE_PER_DAY,
@@ -189,7 +221,8 @@ class SettingsViewModel @Inject constructor(
                 strongBuyThreshold = 60,
                 strongSellThreshold = -60
             ),
-            selectedChartRange = ChartRange.ONE_DAY,
+            selectedChartRange = ChartRange.SIX_MONTH,
+            holdingPeriod = HoldingPeriod.MONTHS,
             immediatePostsEnabled = false,
             onboardingCompleted = false
         )

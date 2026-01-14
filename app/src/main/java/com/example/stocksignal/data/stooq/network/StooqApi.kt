@@ -95,6 +95,25 @@ interface StooqApi {
         @Query("q") query: String
     ): String
 
+    /**
+     * Fetches stock overview page HTML containing fundamental data.
+     *
+     * Example URL: https://stooq.com/q/g/?s=cost.us
+     *
+     * The response is an HTML page containing nested tables with:
+     * - "Max/min 52t" → 52-week high/low
+     * - "Stopa dywidendy" → Dividend
+     * - "Kapitalizacja" → Market Cap
+     * - "C/Z" → P/E Ratio
+     *
+     * @param ticker Stock ticker symbol (e.g., "cost.us", "tsla.us")
+     * @return HTML page as a string
+     */
+    @GET("q/g/")
+    suspend fun getStockOverview(
+        @Query("s") ticker: String
+    ): String
+
     companion object {
         const val BASE_URL = "https://stooq.com/"
         const val DEFAULT_USER_AGENT =

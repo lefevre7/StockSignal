@@ -12,12 +12,13 @@ object SignalEngine {
     fun computeSignal(
         candles: List<PriceCandle>,
         range: ChartRange,
+        holdingPeriod: com.example.stocksignal.data.settings.HoldingPeriod = com.example.stocksignal.data.settings.HoldingPeriod.MONTHS,
         generatedAt: LocalDateTime = LocalDateTime.now()
     ): SignalResult? {
         if (candles.size < 5) return null
         val atrPercent = atrPercent(candles)
 
-        val model = RuleBasedSignalModel.compute(candles, range) ?: return null
+        val model = RuleBasedSignalModel.compute(candles, range, holdingPeriod) ?: return null
         
         // Get individual metric scores from the reasons
         val metricScores = mutableMapOf<String, Int>()

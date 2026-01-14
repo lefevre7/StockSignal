@@ -3,12 +3,14 @@ package com.example.stocksignal.data.stooq.repository
 import android.os.Build
 import android.util.Log
 import androidx.annotation.RequiresApi
+import com.example.stocksignal.data.stooq.model.EnrichedIntradayResponse
 import com.example.stocksignal.data.stooq.model.IntradayStockData
 import com.example.stocksignal.data.stooq.model.IntradayStockDataMap
 import com.example.stocksignal.data.stooq.model.Result
 import com.example.stocksignal.data.stooq.model.StockData
 import com.example.stocksignal.data.stooq.model.StockDataMap
 import com.example.stocksignal.data.stooq.network.StooqApi
+import kotlinx.coroutines.delay
 import org.apache.commons.csv.CSVFormat
 import org.apache.commons.csv.CSVParser
 import java.io.StringReader
@@ -16,6 +18,7 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
+import kotlin.random.Random
 
 /**
  * Repository for fetching stock data from Stooq.
@@ -53,8 +56,17 @@ class StooqRepository(private val api: StooqApi) {
             val endDateStr = endDate.format(DATE_FORMATTER)
 
             // Fetch data for all tickers sequentially to avoid rate limiting
-            val results = tickers.map { ticker ->
-                ticker to fetchDataForTicker(ticker, startDateStr, endDateStr)
+            val results = mutableListOf<Pair<String, Result<Map<LocalDate, StockData>>>>()
+            for (ticker in tickers) {
+                val result = fetchDataForTicker(ticker, startDateStr, endDateStr)
+                results.add(ticker to result)
+                
+                // Random delay between 1-3 seconds to respect rate limits
+                if (ticker != tickers.last()) {
+                    val delayMs = Random.nextLong(1000, 3001)
+                    Log.d(TAG, "Rate limit delay: ${delayMs}ms before next ticker")
+                    delay(delayMs)
+                }
             }
 
             // Separate successful and failed fetches
@@ -126,8 +138,17 @@ class StooqRepository(private val api: StooqApi) {
             }
 
             // Fetch data for all tickers sequentially to avoid rate limiting
-            val results = tickers.map { ticker ->
-                ticker to fetchIntradayDataForTicker(ticker, intervalMinutes, start, end)
+            val results = mutableListOf<Pair<String, Result<Map<LocalDateTime, IntradayStockData>>>>()
+            for (ticker in tickers) {
+                val result = fetchIntradayDataForTicker(ticker, intervalMinutes, start, end)
+                results.add(ticker to result)
+                
+                // Random delay between 1-3 seconds to respect rate limits
+                if (ticker != tickers.last()) {
+                    val delayMs = Random.nextLong(1000, 3001)
+                    Log.d(TAG, "Rate limit delay: ${delayMs}ms before next ticker")
+                    delay(delayMs)
+                }
             }
 
             val successfulData = mutableMapOf<String, Map<LocalDateTime, IntradayStockData>>()
@@ -211,13 +232,13 @@ class StooqRepository(private val api: StooqApi) {
     ): Result<Map<LocalDateTime, IntradayStockData>> {
         return try {
             Log.d(TAG, "Fetching intraday data for ticker=$ticker, interval=$intervalMinutes, start=$start, end=$end")
-            val rawResponse = api.getIntradayData(ticker, intervalMinutes)
+            val rawResponse = api.getIntradayData(ticker.lowercase(), intervalMinutes)
             Log.d(TAG, "Raw intraday response for $ticker (length=${rawResponse.length}):")
             Log.d(TAG, "--- START RAW RESPONSE ---")
             Log.d(TAG, rawResponse)
             Log.d(TAG, "--- END RAW RESPONSE ---")
             
-            val parsedData = parseIntradayResponse(ticker, rawResponse)
+            val parsedData = parseIntradayData(ticker, rawResponse)
             Log.d(TAG, "Parsed ${parsedData.size} intraday records for $ticker")
             
             val filtered = filterIntradayByRange(parsedData, start, end)
@@ -236,6 +257,37 @@ class StooqRepository(private val api: StooqApi) {
         } catch (e: Exception) {
             Log.e(TAG, "Error fetching intraday data for ticker $ticker", e)
             Result.Error(e, "Failed to fetch intraday data for ticker $ticker: ${e.message}")
+        }
+    }
+
+    /**
+     * Fetches enriched intraday data (with exchange info) for a single ticker.
+     */
+    @RequiresApi(Build.VERSION_CODES.O)
+    suspend fun getEnrichedIntradayData(
+        ticker: String,
+        intervalMinutes: Int = 10,
+        start: LocalDateTime? = null,
+        end: LocalDateTime? = null
+    ): Result<EnrichedIntradayResponse> {
+        return try {
+            Log.d(TAG, "Fetching enriched intraday data for ticker=$ticker, interval=$intervalMinutes")
+            val rawResponse = api.getIntradayData(ticker.lowercase(), intervalMinutes)
+            val enriched = parseIntradayResponseEnriched(ticker, rawResponse)
+            val filtered = filterIntradayByRange(enriched.data, start, end)
+            
+            if (filtered.isEmpty()) {
+                Log.w(TAG, "No enriched intraday data after filtering for $ticker")
+                Result.Error(
+                    Exception("No intraday data after filtering for $ticker"),
+                    "No intraday data found for $ticker"
+                )
+            } else {
+                Result.Success(EnrichedIntradayResponse(filtered, enriched.exchange))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error fetching enriched intraday data for $ticker", e)
+            Result.Error(e, "Failed to fetch enriched data for $ticker: ${e.message}")
         }
     }
 
@@ -342,17 +394,41 @@ class StooqRepository(private val api: StooqApi) {
     }
 
     /**
-     * Parses the intraday response from stooq.com.
+     * Parses the intraday response from stooq.com, extracting both stock data and exchange info.
      * 
      * The response format is:
-     * - HTML metadata prefix (optional)
+     * - HTML metadata prefix with exchange info: <a href=...>NASDAQ</a>: TSLA.US
      * - After "~TICKER_NAME~" or similar marker, raw CSV data begins
      * - NO header row - data is: YYYYMMDD,HHMMSS,Open,High,Low,Close,Volume
      * 
      * Example line: 20260106,154000,446.3800,448.2500,438.4100,439.3908,5400955
      */
     @RequiresApi(Build.VERSION_CODES.O)
-    private fun parseIntradayResponse(
+    private fun parseIntradayResponseEnriched(
+        ticker: String,
+        rawResponse: String
+    ): EnrichedIntradayResponse {
+        // Extract exchange from HTML header (e.g., "<a href=...>NASDAQ</a>")
+        val exchange = extractExchangeFromResponse(rawResponse)
+        val data = parseIntradayData(ticker, rawResponse)
+        return EnrichedIntradayResponse(data, exchange)
+    }
+
+    @RequiresApi(Build.VERSION_CODES.O)
+    private fun extractExchangeFromResponse(rawResponse: String): String? {
+        return try {
+            // Look for pattern: <a href=...>EXCHANGE_NAME</a>: TICKER
+            val regex = """<a[^>]*>([A-Z]+)</a>\s*:""".toRegex()
+            val match = regex.find(rawResponse)
+            match?.groupValues?.getOrNull(1)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to extract exchange from intraday response", e)
+            null
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.O)
+    private fun parseIntradayData(
         ticker: String,
         rawResponse: String
     ): Map<LocalDateTime, IntradayStockData> {
@@ -362,22 +438,27 @@ class StooqRepository(private val api: StooqApi) {
         
         // Stooq intraday format: data starts after "~TICKER_NAME~" marker
         // Format: YYYYMMDD,HHMMSS,Open,High,Low,Close,Volume (no header)
+        // The first data row may be on the same line as the header after the last tilde
         val tildeIndex = rawResponse.lastIndexOf('~')
-        val csvData = if (tildeIndex >= 0) {
+        val afterTilde = if (tildeIndex >= 0) {
             Log.d(TAG, "Found ~ marker at index $tildeIndex, extracting data after it")
             rawResponse.substring(tildeIndex + 1).trim()
         } else {
             // Fallback: try to find first line that looks like data (starts with digit)
             Log.d(TAG, "No ~ marker found, looking for data lines starting with digits")
             rawResponse.lines()
-                .dropWhile { line -> !line.trimStart().firstOrNull()?.isDigit()!! }
+                .dropWhile { line -> line.trimStart().firstOrNull()?.isDigit() != true }
                 .joinToString("\n")
         }
         
-        Log.d(TAG, "CSV data to parse (first 500 chars): ${csvData.take(500)}")
+        // Split into lines - the first line after tilde might contain data
+        val allLines = afterTilde.lines()
         
-        if (csvData.isBlank()) {
-            Log.w(TAG, "No CSV data found in intraday response for $ticker")
+        Log.d(TAG, "CSV data to parse (first 500 chars): ${afterTilde.take(500)}")
+        
+        // Check for __nodata__ marker which indicates no data available
+        if (afterTilde.isBlank() || afterTilde.trim().equals("__nodata__", ignoreCase = true)) {
+            Log.i(TAG, "No intraday data available for $ticker (market may be closed or ticker has no intraday data)")
             return emptyMap()
         }
         
@@ -385,9 +466,15 @@ class StooqRepository(private val api: StooqApi) {
         var successCount = 0
         var failureCount = 0
         
-        for (line in csvData.lines()) {
+        for (line in allLines) {
             val trimmedLine = line.trim()
             if (trimmedLine.isBlank()) continue
+            
+            // Skip __nodata__ marker if it appears in the data
+            if (trimmedLine.equals("__nodata__", ignoreCase = true)) {
+                Log.d(TAG, "Skipping __nodata__ marker")
+                continue
+            }
             
             recordCount++
             try {
@@ -456,6 +543,25 @@ class StooqRepository(private val api: StooqApi) {
             record.get(header).takeIf { it.isNotBlank() }
         } catch (_: Exception) {
             null
+        }
+    }
+
+    /**
+     * Fetches stock overview/fundamental data from Stooq quote page.
+     * 
+     * @param ticker Stock ticker symbol (e.g., "TSLA.US", "COST.US")
+     * @return Result containing StockOverview or Error
+     */
+    suspend fun getStockOverview(ticker: String): Result<com.example.stocksignal.domain.model.StockOverview> {
+        return try {
+            Log.d(TAG, "Fetching overview for $ticker")
+            val html = api.getStockOverview(ticker)
+            val overview = com.example.stocksignal.data.stooq.parser.StockOverviewParser.parse(html, ticker)
+            Log.i(TAG, "Successfully parsed overview for $ticker")
+            Result.Success(overview)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to fetch overview for $ticker", e)
+            Result.Error(e, "Failed to fetch stock overview: ${e.message}")
         }
     }
 }

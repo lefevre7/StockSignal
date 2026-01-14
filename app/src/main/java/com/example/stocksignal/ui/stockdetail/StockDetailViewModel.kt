@@ -20,6 +20,8 @@ import com.example.stocksignal.domain.model.PriceCandle
 import com.example.stocksignal.domain.model.SignalResult
 import com.example.stocksignal.domain.model.TechnicalIndicators
 import com.example.stocksignal.domain.signal.IndicatorCalculator
+import com.example.stocksignal.domain.export.IntradayDataExporter
+import com.example.stocksignal.domain.export.ExportResult
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,6 +40,7 @@ class StockDetailViewModel @Inject constructor(
     private val signalsRepository: SignalsRepository,
     private val watchlistRepository: WatchlistRepository,
     private val settingsRepository: SettingsRepository,
+    private val intradayDataExporter: IntradayDataExporter,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
@@ -76,12 +79,19 @@ class StockDetailViewModel @Inject constructor(
                 exchange = null,
                 errorMessage = null,
                 tags = emptyList(),
-                indicatorAlerts = emptyList()
+                indicatorAlerts = emptyList(),
+                marketCap = null,
+                peRatio = null,
+                dividend = null,
+                week52High = null,
+                week52Low = null,
+                overviewError = null
             )
         }
         updateWatchlistMetadata()
         startHistoryObserver(ticker)
         loadSeries()
+        loadOverview()
     }
 
     fun selectRange(range: ChartRange) {
@@ -222,6 +232,68 @@ class StockDetailViewModel @Inject constructor(
         }
     }
 
+    fun exportHistoricalData(outputFile: java.io.File) {
+        val ticker = _uiState.value.ticker
+        if (ticker.isBlank()) return
+        viewModelScope.launch {
+            when (val result = intradayDataExporter.exportToCSV(ticker, outputFile)) {
+                is ExportResult.Success -> {
+                    _uiState.update {
+                        it.copy(
+                            exportMessage = "Exported ${result.rowCount} candles " +
+                                "from ${result.dateRange.first} to ${result.dateRange.second} " +
+                                "to ${outputFile.name}"
+                        )
+                    }
+                }
+                is ExportResult.NoData -> {
+                    _uiState.update {
+                        it.copy(exportMessage = "No historical data available for $ticker")
+                    }
+                }
+                is ExportResult.Error -> {
+                    _uiState.update {
+                        it.copy(exportMessage = "Export failed: ${result.message}")
+                    }
+                }
+            }
+        }
+    }
+
+    private fun loadOverview(forceRefresh: Boolean = false) {
+        val ticker = _uiState.value.ticker
+        if (ticker.isBlank()) return
+        viewModelScope.launch {
+            when (val result = stockRepository.getStockOverview(ticker, forceRefresh)) {
+                is Result.Success -> {
+                    val overview = result.data
+                    _uiState.update {
+                        it.copy(
+                            marketCap = overview.marketCap,
+                            peRatio = overview.peRatio,
+                            dividend = overview.dividend,
+                            week52High = overview.week52High,
+                            week52Low = overview.week52Low,
+                            overviewError = null
+                        )
+                    }
+                }
+                is Result.Error -> {
+                    _uiState.update {
+                        it.copy(
+                            overviewError = result.message,
+                            marketCap = null,
+                            peRatio = null,
+                            dividend = null,
+                            week52High = null,
+                            week52Low = null
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     private fun observeWatchlist() {
         viewModelScope.launch {
             watchlistRepository.watchlistFlow.collectLatest { items ->
@@ -261,7 +333,12 @@ class StockDetailViewModel @Inject constructor(
         val range = _uiState.value.range
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, errorMessage = null) }
-            when (val result = stockRepository.getSeries(ticker, range, forceRefresh, eventType = null)) {
+            if (range == ChartRange.FIVE_DAY || range == ChartRange.ONE_MONTH || range == ChartRange.SIX_MONTH) {
+                viewModelScope.launch {
+                    stockRepository.refreshIntradayHistory(ticker, range)
+                }
+            }
+            when (val result = stockRepository.getSeriesForDetail(ticker, range, forceRefresh)) {
                 is Result.Success -> handleSeriesSuccess(result.data, range)
                 is Result.Error -> {
                     _uiState.update {
@@ -278,7 +355,7 @@ class StockDetailViewModel @Inject constructor(
         }
     }
 
-    private fun handleSeriesSuccess(series: List<PriceCandle>, range: ChartRange) {
+    private suspend fun handleSeriesSuccess(series: List<PriceCandle>, range: ChartRange) {
         if (series.isEmpty()) {
             _uiState.update {
                 it.copy(
@@ -380,5 +457,12 @@ data class StockDetailUiState(
     val errorMessage: String? = null,
     val highlightEventId: String? = null,
     val indicatorAlerts: List<IndicatorAlertSetting> = emptyList(),
-    val openAlerts: Boolean = false
+    val openAlerts: Boolean = false,
+    val exportMessage: String? = null,
+    val marketCap: Double? = null,
+    val peRatio: Double? = null,
+    val dividend: Double? = null,
+    val week52High: Double? = null,
+    val week52Low: Double? = null,
+    val overviewError: String? = null
 )

@@ -143,6 +143,26 @@ class SettingsRepository @Inject constructor(
         }
     }
 
+    suspend fun setHoldingPeriod(period: HoldingPeriod) {
+        try {
+            dataStore.edit { prefs ->
+                prefs[SettingsKeys.holdingPeriod] = period.name
+                // Also update the default chart range based on holding period
+                val newChartRange = when (period) {
+                    HoldingPeriod.HOURS -> ChartRange.ONE_DAY
+                    HoldingPeriod.DAYS -> ChartRange.FIVE_DAY
+                    HoldingPeriod.WEEKS -> ChartRange.ONE_MONTH
+                    HoldingPeriod.MONTHS -> ChartRange.SIX_MONTH
+                    HoldingPeriod.YEARS -> ChartRange.FIVE_YEAR
+                }
+                prefs[SettingsKeys.selectedChartRange] = newChartRange.name
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting holding period: ${period.name}", e)
+            throw e
+        }
+    }
+
     suspend fun getLastRobotsTxtCheckDate(): java.time.LocalDate? {
         return try {
             val prefs = dataStore.data.first()
@@ -199,6 +219,9 @@ class SettingsRepository @Inject constructor(
         }.getOrDefault(ChartRange.ONE_DAY)
         val immediatePostsEnabled = this[SettingsKeys.immediatePostsEnabled] ?: false
         val onboardingCompleted = this[SettingsKeys.onboardingCompleted] ?: false
+        val holdingPeriod = runCatching {
+            HoldingPeriod.valueOf(this[SettingsKeys.holdingPeriod] ?: HoldingPeriod.MONTHS.name)
+        }.getOrDefault(HoldingPeriod.MONTHS)
 
         return AppSettings(
             frequency = frequency,
@@ -210,7 +233,8 @@ class SettingsRepository @Inject constructor(
             signalSensitivity = sensitivity,
             selectedChartRange = selectedChartRange,
             immediatePostsEnabled = immediatePostsEnabled,
-            onboardingCompleted = onboardingCompleted
+            onboardingCompleted = onboardingCompleted,
+            holdingPeriod = holdingPeriod
         )
     }
 
@@ -249,6 +273,15 @@ class SettingsRepository @Inject constructor(
         )
 
         private fun createDefaultSettings(): AppSettings {
+            val defaultHoldingPeriod = HoldingPeriod.MONTHS
+            val defaultChartRange = when (defaultHoldingPeriod) {
+                HoldingPeriod.HOURS -> ChartRange.ONE_DAY
+                HoldingPeriod.DAYS -> ChartRange.FIVE_DAY
+                HoldingPeriod.WEEKS -> ChartRange.ONE_MONTH
+                HoldingPeriod.MONTHS -> ChartRange.SIX_MONTH
+                HoldingPeriod.YEARS -> ChartRange.FIVE_YEAR
+            }
+            
             return AppSettings(
                 frequency = NotificationFrequency.THREE_PER_DAY,
                 notificationTypes = defaultNotificationTypes,
@@ -265,9 +298,10 @@ class SettingsRepository @Inject constructor(
                     strongBuyThreshold = 60,
                     strongSellThreshold = -60
                 ),
-                selectedChartRange = ChartRange.ONE_DAY,
+                selectedChartRange = defaultChartRange,
                 immediatePostsEnabled = false,
-                onboardingCompleted = false
+                onboardingCompleted = false,
+                holdingPeriod = defaultHoldingPeriod
             )
         }
     }
@@ -288,5 +322,6 @@ private object SettingsKeys {
     val selectedChartRange = stringPreferencesKey("selected_chart_range")
     val immediatePostsEnabled = booleanPreferencesKey("immediate_posts_enabled")
     val onboardingCompleted = booleanPreferencesKey("onboarding_completed")
+    val holdingPeriod = stringPreferencesKey("holding_period")
     val lastRobotsTxtCheckDate = stringPreferencesKey("last_robots_txt_check_date")
 }
