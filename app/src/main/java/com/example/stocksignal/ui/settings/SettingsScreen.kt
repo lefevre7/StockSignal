@@ -76,7 +76,9 @@ fun SettingsRoute(viewModel: SettingsViewModel = hiltViewModel()) {
         onSnoozeDurationChange = viewModel::setSnoozeDuration,
         onSignalSensitivityChange = viewModel::setSignalSensitivity,
         onImmediatePostsToggle = viewModel::setImmediatePostsEnabled,
-        onSendTestNotification = viewModel::sendTestNotification
+        onSendTestNotification = viewModel::sendTestNotification,
+        onCheckWorkerStatus = viewModel::checkWorkerStatus,
+        onForceScheduleWorkers = viewModel::forceScheduleWorkers
     )
 }
 
@@ -97,6 +99,8 @@ fun SettingsScreen(
     onSignalSensitivityChange: (SignalSensitivity) -> Unit,
     onImmediatePostsToggle: (Boolean) -> Unit,
     onSendTestNotification: () -> Unit,
+    onCheckWorkerStatus: () -> Unit,
+    onForceScheduleWorkers: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -229,6 +233,34 @@ fun SettingsScreen(
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 TextButton(onClick = onSendTestNotification) { Text("Send test notification") }
+            }
+        }
+
+        item {
+            StockCard {
+                Text(text = "Background work diagnostics", style = MaterialTheme.typography.headlineMedium)
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "Check if notification workers are scheduled to run in the background.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = onCheckWorkerStatus) { 
+                        Text("Check status") 
+                    }
+                    TextButton(onClick = onForceScheduleWorkers) { 
+                        Text("Force schedule") 
+                    }
+                }
+                if (errorMessage != null && errorMessage.contains("worker", ignoreCase = true)) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = errorMessage,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
             }
         }
 

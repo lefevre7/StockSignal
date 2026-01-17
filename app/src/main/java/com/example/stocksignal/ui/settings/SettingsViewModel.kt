@@ -3,6 +3,8 @@ package com.example.stocksignal.ui.settings
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import com.example.stocksignal.data.settings.AppSettings
 import com.example.stocksignal.data.settings.HoldingPeriod
 import com.example.stocksignal.data.settings.NotificationFrequency
@@ -14,12 +16,14 @@ import com.example.stocksignal.data.settings.SettingsRepository
 import com.example.stocksignal.data.settings.SignalSensitivity
 import com.example.stocksignal.data.settings.SnoozeDurationOption
 import com.example.stocksignal.domain.model.ChartRange
+import com.example.stocksignal.notifications.NotificationScheduler
 import com.example.stocksignal.notifications.NotificationTestSender
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.time.DayOfWeek
@@ -28,7 +32,9 @@ import javax.inject.Inject
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
-    private val notificationTestSender: NotificationTestSender
+    private val notificationTestSender: NotificationTestSender,
+    private val notificationScheduler: NotificationScheduler,
+    private val workManager: WorkManager
 ) : ViewModel() {
 
     private val _errorMessage = MutableStateFlow<String?>(null)
@@ -171,6 +177,63 @@ class SettingsViewModel @Inject constructor(
             } catch (e: Exception) {
                 Log.e(TAG, "Error posting test notification", e)
                 _errorMessage.value = "Failed to post test notification: ${e.message}"
+            }
+        }
+    }
+
+    fun checkWorkerStatus() {
+        viewModelScope.launch {
+            try {
+                val windowWorkers = workManager.getWorkInfosByTag("notification_window").get()
+                val bootstrapWorkers = workManager.getWorkInfosByTag("notification_bootstrap").get()
+                
+                val status = buildString {
+                    appendLine("📊 Worker Status:")
+                    appendLine()
+                    if (windowWorkers.isEmpty()) {
+                        appendLine("❌ No notification window workers scheduled!")
+                        appendLine("   This means background notifications won't run.")
+                    } else {
+                        appendLine("✓ ${windowWorkers.size} notification window worker(s) scheduled")
+                        windowWorkers.forEachIndexed { idx, info ->
+                            val state = when (info.state) {
+                                WorkInfo.State.ENQUEUED -> "⏳ Waiting"
+                                WorkInfo.State.RUNNING -> "▶️ Running"
+                                WorkInfo.State.SUCCEEDED -> "✓ Success"
+                                WorkInfo.State.FAILED -> "❌ Failed"
+                                WorkInfo.State.BLOCKED -> "🚫 Blocked"
+                                WorkInfo.State.CANCELLED -> "⛔ Cancelled"
+                            }
+                            appendLine("   Worker ${idx + 1}: $state")
+                        }
+                    }
+                    appendLine()
+                    if (bootstrapWorkers.isNotEmpty()) {
+                        appendLine("Bootstrap workers: ${bootstrapWorkers.size}")
+                    }
+                    appendLine()
+                    appendLine("💡 Tap 'Force schedule' to reschedule workers now")
+                }
+                
+                Log.d(TAG, status)
+                _errorMessage.value = status
+            } catch (e: Exception) {
+                Log.e(TAG, "Error checking worker status", e)
+                _errorMessage.value = "Error checking status: ${e.message}"
+            }
+        }
+    }
+
+    fun forceScheduleWorkers() {
+        viewModelScope.launch {
+            try {
+                val settings = settingsRepository.settingsFlow.first()
+                notificationScheduler.schedule(settings)
+                _errorMessage.value = "✓ Workers scheduled! Frequency: ${settings.frequency}, Types: ${settings.notificationTypes.joinToString()}"
+                Log.d(TAG, "Force scheduled workers for frequency: ${settings.frequency}")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error force scheduling workers", e)
+                _errorMessage.value = "Failed to schedule workers: ${e.message}"
             }
         }
     }

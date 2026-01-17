@@ -33,9 +33,13 @@ class NotificationScheduler @Inject constructor(
     private val workManager = WorkManager.getInstance(context)
 
     fun schedule(settings: AppSettings) {
+        Log.d(TAG, "=== Notification Scheduler Start ===")
+        Log.d(TAG, "Frequency: ${settings.frequency}, Types: ${settings.notificationTypes}")
+        
         workManager.cancelAllWorkByTag(WORK_TAG)
         if (!hasNotificationSources(settings)) {
-            Log.d(TAG, "Background scheduling disabled (no notification sources enabled)")
+            Log.w(TAG, "❌ Background scheduling DISABLED - no notification sources enabled")
+            Log.w(TAG, "   Enable Watchlist or Market Movers in Settings to receive background notifications")
             return
         }
         if (settings.frequency == NotificationFrequency.ONLY_WHEN_OPEN) {
@@ -44,12 +48,17 @@ class NotificationScheduler @Inject constructor(
         }
 
         val windows = windowsForFrequency(settings)
-        if (windows.isEmpty()) return
+        if (windows.isEmpty()) {
+            Log.w(TAG, "❌ No notification windows configured for frequency: ${settings.frequency}")
+            return
+        }
+        
         val interval = when (settings.frequency) {
             NotificationFrequency.ONE_PER_WEEK -> Duration.ofDays(7)
             else -> Duration.ofDays(1)
         }
 
+        Log.d(TAG, "Scheduling ${windows.size} notification window(s) with ${interval.toHours()}h interval")
         windows.forEach { window ->
             val delay = initialDelay(window, settings)
             val request = PeriodicWorkRequestBuilder<NotificationWindowWorker>(
@@ -67,8 +76,10 @@ class NotificationScheduler @Inject constructor(
                 ExistingPeriodicWorkPolicy.REPLACE,
                 request
             )
-            Log.d(TAG, "Scheduled window ${window.id} with initial delay ${delay.toMinutes()}m")
+            Log.d(TAG, "✓ Scheduled window ${window.id} with initial delay ${delay.toMinutes()}m (${delay.toHours()}h)")
         }
+        
+        Log.d(TAG, "=== Notification Scheduler Complete ===")
         
         // Schedule daily robots.txt check at first notification window
         scheduleRobotsTxtCheck(settings)

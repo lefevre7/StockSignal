@@ -135,11 +135,26 @@ class WatchlistViewModel @Inject constructor(
             if (existing != null && !isStale(existing)) return
 
             when (val result = stockRepository.getSeries(symbol, ChartRange.ONE_DAY, eventType = null)) {
-                is Result.Success -> updateMarketData(symbol, result.data, ChartRange.ONE_DAY)
+                is Result.Success -> {
+                    // If intraday data doesn't have enough candles for signal computation (need 20+),
+                    // fall back to daily data which will have more history
+                    if (result.data.size < MIN_CANDLES_FOR_SIGNAL) {
+                        Log.d(TAG, "Insufficient intraday candles for $symbol (${result.data.size}), falling back to daily")
+                        when (val fallback = stockRepository.getDailySeriesFallback(symbol, ChartRange.SIX_MONTH)) {
+                            is Result.Success -> updateMarketData(symbol, result.data, fallback.data, ChartRange.ONE_DAY)
+                            is Result.Error -> {
+                                Log.w(TAG, "Daily fallback failed for $symbol, using limited intraday data")
+                                updateMarketData(symbol, result.data, emptyList(), ChartRange.ONE_DAY)
+                            }
+                        }
+                    } else {
+                        updateMarketData(symbol, result.data, emptyList(), ChartRange.ONE_DAY)
+                    }
+                }
                 is Result.Error -> {
                     Log.w(TAG, "Error fetching market data for $symbol: ${result.message}")
-                    when (val fallback = stockRepository.getDailySeriesFallback(symbol, ChartRange.ONE_DAY)) {
-                        is Result.Success -> updateMarketData(symbol, fallback.data, ChartRange.ONE_DAY)
+                    when (val fallback = stockRepository.getDailySeriesFallback(symbol, ChartRange.SIX_MONTH)) {
+                        is Result.Success -> updateMarketData(symbol, emptyList(), fallback.data, ChartRange.ONE_DAY)
                         is Result.Error -> {
                             Log.e(TAG, "Fallback also failed for $symbol", fallback.exception)
                         }
@@ -151,20 +166,37 @@ class WatchlistViewModel @Inject constructor(
         }
     }
 
-    private suspend fun updateMarketData(symbol: String, series: List<PriceCandle>, range: ChartRange) {
-        if (series.isEmpty()) return
-        val signal = signalsRepository.computeSignal(series, range)
-        val price = series.lastOrNull()?.close
-        val prev = series.getOrNull(series.lastIndex - 1)
+    private suspend fun updateMarketData(
+        symbol: String, 
+        intradaySeries: List<PriceCandle>, 
+        dailySeries: List<PriceCandle>,
+        range: ChartRange
+    ) {
+        // Use intraday for display (price, chart) if available, otherwise daily
+        val displaySeries = intradaySeries.ifEmpty { dailySeries }
+        if (displaySeries.isEmpty()) return
+        
+        // Use daily series for signal computation if we have it and intraday is insufficient
+        val signalSeries = if (dailySeries.isNotEmpty() && intradaySeries.size < MIN_CANDLES_FOR_SIGNAL) {
+            dailySeries
+        } else {
+            intradaySeries.ifEmpty { dailySeries }
+        }
+        
+        Log.d(TAG, "$symbol: display=${displaySeries.size}, signal=${signalSeries.size} candles")
+        val signal = signalsRepository.computeSignal(signalSeries, range)
+        
+        val price = displaySeries.lastOrNull()?.close
+        val prev = displaySeries.getOrNull(displaySeries.lastIndex - 1)
         val percentChange = when {
             price != null && prev != null && prev.close != 0.0 ->
                 ((price - prev.close) / prev.close) * 100.0
-            price != null && series.lastOrNull()?.open != null && series.last().open != 0.0 ->
-                ((price - series.last().open) / series.last().open) * 100.0
+            price != null && displaySeries.lastOrNull()?.open != null && displaySeries.last().open != 0.0 ->
+                ((price - displaySeries.last().open) / displaySeries.last().open) * 100.0
             else -> null
         }
         val updated = WatchlistMarketData(
-            series = series,
+            series = displaySeries,
             signal = signal,
             price = price,
             percentChange = percentChange,
@@ -179,6 +211,7 @@ class WatchlistViewModel @Inject constructor(
 
     companion object {
         private const val TAG = "WatchlistViewModel"
+        private const val MIN_CANDLES_FOR_SIGNAL = 20
     }
 }
 

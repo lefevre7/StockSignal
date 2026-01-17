@@ -2,6 +2,7 @@ package com.example.stocksignal.data.local.di
 
 import android.content.Context
 import androidx.room.Room
+import androidx.work.WorkManager
 import com.example.stocksignal.data.local.db.StockSignalDatabase
 import com.example.stocksignal.data.local.db.MIGRATION_1_2
 import com.example.stocksignal.data.local.db.MIGRATION_2_3
@@ -35,6 +36,12 @@ object LocalDataModule {
             "stocksignal.db"
         ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
             .build()
+    }
+
+    @Provides
+    @Singleton
+    fun provideWorkManager(@ApplicationContext context: Context): WorkManager {
+        return WorkManager.getInstance(context)
     }
 
     @Provides
