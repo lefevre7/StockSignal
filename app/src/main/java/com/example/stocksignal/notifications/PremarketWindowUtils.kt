@@ -24,6 +24,7 @@ object PremarketWindowUtils {
             NotificationFrequency.ONE_PER_WEEK ->
                 windows.filter { it.type == ScheduleWindowType.MARKET_OPEN_MINUS }.take(1)
             NotificationFrequency.ONLY_WHEN_OPEN -> emptyList()
+            NotificationFrequency.DEV_ONE_MINUTE -> windows.take(1) // Dev mode: just first window
         }
     }
 

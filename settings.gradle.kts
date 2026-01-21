@@ -21,4 +21,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "StockSignal"
 include(":app")
+include(":gemma3_270m_model")
  

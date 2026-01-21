@@ -10,5 +10,6 @@ data class StockOverview(
     val peRatio: Double? = null,
     val dividend: Double? = null,
     val week52High: Double? = null,
-    val week52Low: Double? = null
+    val week52Low: Double? = null,
+    val news: List<StockNewsItem> = emptyList()
 )

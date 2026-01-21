@@ -8,7 +8,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  * 
  * Changes:
  * - Adds stock_overview_cache table for storing fundamental data (market cap, P/E, dividend, 52W high/low)
- * - TTL: 24 hours
+ * - TTL: 10 minutes (updated in v5)
  */
 val MIGRATION_3_4 = object : Migration(3, 4) {
     override fun migrate(database: SupportSQLiteDatabase) {

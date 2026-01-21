@@ -4,7 +4,9 @@ import android.content.Context
 import android.util.Log
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.workDataOf
@@ -13,6 +15,7 @@ import com.example.stocksignal.data.settings.NotificationFrequency
 import com.example.stocksignal.data.settings.NotificationType
 import com.example.stocksignal.data.settings.ScheduleWindow
 import com.example.stocksignal.data.settings.ScheduleWindowType
+import com.example.stocksignal.util.DebugConfig
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.time.DayOfWeek
 import java.time.Duration
@@ -55,28 +58,70 @@ class NotificationScheduler @Inject constructor(
         
         val interval = when (settings.frequency) {
             NotificationFrequency.ONE_PER_WEEK -> Duration.ofDays(7)
+            NotificationFrequency.DEV_ONE_MINUTE -> Duration.ofMinutes(15) // WorkManager minimum is 15 min
             else -> Duration.ofDays(1)
         }
+        
+        // For DEV mode, use expedited one-time work to run immediately, then periodic
+        val isDevMode = settings.frequency == NotificationFrequency.DEV_ONE_MINUTE && DebugConfig.ENABLE_DEV_MODE
 
-        Log.d(TAG, "Scheduling ${windows.size} notification window(s) with ${interval.toHours()}h interval")
+        Log.d(TAG, "Scheduling ${windows.size} notification window(s) with ${interval.toMinutes()}min interval (devMode=$isDevMode)")
         windows.forEach { window ->
-            val delay = initialDelay(window, settings)
-            val request = PeriodicWorkRequestBuilder<NotificationWindowWorker>(
-                interval.toHours(),
-                TimeUnit.HOURS
-            )
-                .setConstraints(CONSTRAINTS)
-                .setInitialDelay(delay.toMinutes(), TimeUnit.MINUTES)
-                .addTag(WORK_TAG)
-                .setInputData(workDataOf(NotificationWindowWorker.KEY_WINDOW_ID to window.id))
-                .build()
+            if (isDevMode) {
+                // DEV MODE: Schedule periodic work with minimum 15-minute interval
+                // AND run immediately with one-time work
+                Log.d(TAG, "🔧 DEV MODE: Scheduling immediate + periodic work for ${window.id}")
+                
+                // Immediate one-time execution
+                val immediateRequest = OneTimeWorkRequestBuilder<NotificationWindowWorker>()
+                    .setConstraints(CONSTRAINTS)
+                    .addTag(WORK_TAG)
+                    .addTag(DEV_IMMEDIATE_TAG)
+                    .setInputData(workDataOf(NotificationWindowWorker.KEY_WINDOW_ID to window.id))
+                    .build()
+                
+                workManager.enqueueUniqueWork(
+                    "dev_immediate_${window.id}",
+                    ExistingWorkPolicy.REPLACE,
+                    immediateRequest
+                )
+                Log.d(TAG, "⚡ DEV: Queued immediate execution for ${window.id}")
+                
+                // Periodic work with 15-min minimum (WorkManager constraint)
+                val periodicRequest = PeriodicWorkRequestBuilder<NotificationWindowWorker>(
+                    15, TimeUnit.MINUTES
+                )
+                    .setConstraints(CONSTRAINTS)
+                    .addTag(WORK_TAG)
+                    .setInputData(workDataOf(NotificationWindowWorker.KEY_WINDOW_ID to window.id))
+                    .build()
+                
+                workManager.enqueueUniquePeriodicWork(
+                    workName(window.id),
+                    ExistingPeriodicWorkPolicy.REPLACE,
+                    periodicRequest
+                )
+                Log.d(TAG, "✓ DEV: Scheduled periodic (15min) for ${window.id}")
+            } else {
+                // Normal mode: Schedule with calculated delay
+                val delay = initialDelay(window, settings)
+                val request = PeriodicWorkRequestBuilder<NotificationWindowWorker>(
+                    interval.toHours(),
+                    TimeUnit.HOURS
+                )
+                    .setConstraints(CONSTRAINTS)
+                    .setInitialDelay(delay.toMinutes(), TimeUnit.MINUTES)
+                    .addTag(WORK_TAG)
+                    .setInputData(workDataOf(NotificationWindowWorker.KEY_WINDOW_ID to window.id))
+                    .build()
 
-            workManager.enqueueUniquePeriodicWork(
-                workName(window.id),
-                ExistingPeriodicWorkPolicy.REPLACE,
-                request
-            )
-            Log.d(TAG, "✓ Scheduled window ${window.id} with initial delay ${delay.toMinutes()}m (${delay.toHours()}h)")
+                workManager.enqueueUniquePeriodicWork(
+                    workName(window.id),
+                    ExistingPeriodicWorkPolicy.REPLACE,
+                    request
+                )
+                Log.d(TAG, "✓ Scheduled window ${window.id} with initial delay ${delay.toMinutes()}m (${delay.toHours()}h)")
+            }
         }
         
         Log.d(TAG, "=== Notification Scheduler Complete ===")
@@ -175,6 +220,7 @@ class NotificationScheduler @Inject constructor(
             NotificationFrequency.ONE_PER_WEEK ->
                 windows.filter { it.type == ScheduleWindowType.MARKET_OPEN_MINUS }.take(1)
             NotificationFrequency.ONLY_WHEN_OPEN -> emptyList()
+            NotificationFrequency.DEV_ONE_MINUTE -> windows.take(1) // Just use first window for dev testing
         }
     }
 
@@ -255,6 +301,7 @@ class NotificationScheduler @Inject constructor(
     companion object {
         private const val TAG = "NotificationScheduler"
         private const val WORK_TAG = "notification_window"
+        private const val DEV_IMMEDIATE_TAG = "dev_immediate"
         private const val ROBOTS_TXT_CHECK_TAG = "robots_txt_check"
         private val CONSTRAINTS = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)

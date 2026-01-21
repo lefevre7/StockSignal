@@ -1,9 +1,15 @@
 package com.example.stocksignal.data.stooq.parser
 
 import android.util.Log
+import com.example.stocksignal.data.stooq.network.StooqApi
+import com.example.stocksignal.domain.model.StockNewsItem
 import com.example.stocksignal.domain.model.StockOverview
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.ZoneId
+import java.util.Locale
 
 /**
  * Parser for extracting stock overview/fundamental data from Stooq quote page HTML.
@@ -17,9 +23,26 @@ import org.jsoup.nodes.Element
 object StockOverviewParser {
 
     private const val TAG = "StockOverviewParser"
+    private const val NEWS_HEADER = "Wiadomości"
+    private val newsTimeZone = ZoneId.of("America/New_York")
 
     // Regex to match numbers with optional thousands separators, decimals, and multipliers (M, B, T)
     private val numberRegex = Regex("([+-]?[\\d,]+(?:\\.\\d+)?)\\s*([MBTmbt])?")
+    private val newsMonthMap = mapOf(
+        "sty" to 1,
+        "lut" to 2,
+        "mar" to 3,
+        "kwi" to 4,
+        "maj" to 5,
+        "cze" to 6,
+        "lip" to 7,
+        "sie" to 8,
+        "wrz" to 9,
+        "paź" to 10,
+        "paz" to 10,
+        "lis" to 11,
+        "gru" to 12
+    )
 
     fun parse(html: String, symbol: String): StockOverview {
         if (html.isBlank()) {
@@ -89,11 +112,95 @@ object StockOverviewParser {
                 peRatio = peRatio,
                 dividend = dividend,
                 week52High = week52High,
-                week52Low = week52Low
+                week52Low = week52Low,
+                news = parseNews(doc)
             )
         } catch (e: Exception) {
             logE("Error parsing overview for $symbol", e)
             return StockOverview(symbol = symbol)
+        }
+    }
+
+    private fun parseNews(doc: org.jsoup.nodes.Document): List<StockNewsItem> {
+        val headerCell = doc.select("td")
+            .firstOrNull { it.text().trim().equals(NEWS_HEADER, ignoreCase = true) }
+            ?: return emptyList()
+        val headerTable = headerCell.closest("table") ?: return emptyList()
+        val parent = headerTable.parent() ?: return emptyList()
+        val siblings = parent.children()
+        val headerIndex = siblings.indexOf(headerTable)
+        if (headerIndex == -1) return emptyList()
+        val newsTable = siblings.subList(headerIndex + 1, siblings.size)
+            .firstOrNull { it.tagName() == "table" } ?: return emptyList()
+
+        val items = mutableListOf<StockNewsItem>()
+        newsTable.select("tr").forEach { row ->
+            val cells = row.select("td")
+            if (cells.size < 2) return@forEach
+            val contentCell = cells[1]
+            val link = contentCell.selectFirst("a[href]") ?: return@forEach
+            val title = extractTitle(link)
+            if (title.isBlank()) return@forEach
+            val metaText = contentCell.selectFirst("font#a")?.text()?.trim()
+                ?: contentCell.select("font").lastOrNull()?.text()?.trim().orEmpty()
+            val (dateText, source) = splitNewsMeta(metaText)
+            val publishedAt = parseNewsDate(dateText)
+            val url = resolveNewsUrl(link.attr("href"))
+            items.add(
+                StockNewsItem(
+                    title = title,
+                    publishedAtText = dateText,
+                    publishedAt = publishedAt,
+                    source = source,
+                    url = url
+                )
+            )
+        }
+        return items
+    }
+
+    private fun extractTitle(link: Element): String {
+        val clone = link.clone()
+        clone.select("b").remove()
+        return clone.text().trim()
+    }
+
+    private fun splitNewsMeta(metaText: String): Pair<String, String?> {
+        if (metaText.isBlank()) return "" to null
+        val parts = metaText.split(" - ", limit = 2)
+        val dateText = parts.getOrNull(0)?.trim().orEmpty()
+        val source = parts.getOrNull(1)?.trim().takeIf { !it.isNullOrBlank() }
+        return dateText to source
+    }
+
+    private fun parseNewsDate(dateText: String): LocalDateTime? {
+        if (dateText.isBlank()) return null
+        val parts = dateText.split(",")
+        if (parts.size < 2) return null
+        val datePart = parts[0].trim().lowercase(Locale.ROOT)
+        val timePart = parts[1].trim()
+
+        val datePieces = datePart.split(" ").filter { it.isNotBlank() }
+        if (datePieces.size < 2) return null
+        val day = datePieces[0].toIntOrNull() ?: return null
+        val monthKey = datePieces[1].removeSuffix(".")
+        val month = newsMonthMap[monthKey] ?: return null
+
+        val timePieces = timePart.split(":")
+        if (timePieces.size < 2) return null
+        val hour = timePieces[0].toIntOrNull() ?: return null
+        val minute = timePieces[1].toIntOrNull() ?: return null
+
+        val year = LocalDate.now(newsTimeZone).year
+        return LocalDateTime.of(year, month, day, hour, minute)
+    }
+
+    private fun resolveNewsUrl(raw: String): String? {
+        if (raw.isBlank()) return null
+        return when {
+            raw.startsWith("http://") || raw.startsWith("https://") -> raw
+            raw.startsWith("//") -> "https:$raw"
+            else -> "${StooqApi.BASE_URL}${raw.trimStart('/')}"
         }
     }
 

@@ -1,5 +1,6 @@
 package com.example.stocksignal.ui.stockdetail
 
+import android.util.Log
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -9,6 +10,8 @@ import com.example.stocksignal.data.repository.SignalsRepository
 import com.example.stocksignal.data.repository.StockRepository
 import com.example.stocksignal.data.settings.SettingsRepository
 import com.example.stocksignal.data.stooq.model.Result
+import com.example.stocksignal.data.translation.ModelAvailability
+import com.example.stocksignal.data.translation.NewsTranslationService
 import com.example.stocksignal.domain.model.IndicatorAlertDefaults
 import com.example.stocksignal.domain.model.IndicatorAlertJson
 import com.example.stocksignal.domain.model.IndicatorAlertSetting
@@ -17,6 +20,7 @@ import com.example.stocksignal.domain.model.AlertDirection
 import com.example.stocksignal.domain.model.ChartRange
 import com.example.stocksignal.domain.model.NotificationEvent
 import com.example.stocksignal.domain.model.PriceCandle
+import com.example.stocksignal.domain.model.StockNewsItem
 import com.example.stocksignal.domain.model.SignalResult
 import com.example.stocksignal.domain.model.TechnicalIndicators
 import com.example.stocksignal.domain.signal.IndicatorCalculator
@@ -40,6 +44,7 @@ class StockDetailViewModel @Inject constructor(
     private val signalsRepository: SignalsRepository,
     private val watchlistRepository: WatchlistRepository,
     private val settingsRepository: SettingsRepository,
+    private val translationService: NewsTranslationService,
     private val intradayDataExporter: IntradayDataExporter,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
@@ -49,6 +54,9 @@ class StockDetailViewModel @Inject constructor(
 
     private var watchlistSnapshot: List<WatchlistItemEntity> = emptyList()
     private var historyJob: Job? = null
+    private var localModelDownloadJob: Job? = null
+    private var pendingTranslation: PendingTranslation? = null
+    private val promptedTranslationTickers = mutableSetOf<String>()
 
     init {
         observeWatchlist()
@@ -72,6 +80,7 @@ class StockDetailViewModel @Inject constructor(
 
     fun setTicker(ticker: String) {
         if (ticker.isBlank() || ticker == _uiState.value.ticker) return
+        pendingTranslation = null
         _uiState.update {
             it.copy(
                 ticker = ticker,
@@ -85,6 +94,18 @@ class StockDetailViewModel @Inject constructor(
                 dividend = null,
                 week52High = null,
                 week52Low = null,
+                news = emptyList(),
+                translationMessage = null,
+                showTranslationPrompt = false,
+                translationPromptTitle = null,
+                translationPromptMessage = null,
+                translationPromptType = null,
+                translationDownloadProgress = null,
+                translationDownloadInProgress = false,
+                showTranslationRetry = false,
+                offlineTranslationEnabled = false,
+                localModelAvailable = false,
+                localModelIncompatible = false,
                 overviewError = null
             )
         }
@@ -105,6 +126,7 @@ class StockDetailViewModel @Inject constructor(
 
     fun refresh() {
         loadSeries(forceRefresh = true)
+        loadOverview(forceRefresh = true)
     }
 
     fun toggleWatchlist() {
@@ -274,9 +296,13 @@ class StockDetailViewModel @Inject constructor(
                             dividend = overview.dividend,
                             week52High = overview.week52High,
                             week52Low = overview.week52Low,
+                            news = overview.news,
+                            translationMessage = null,
+                            showTranslationRetry = false,
                             overviewError = null
                         )
                     }
+                    translateNewsIfNeeded(ticker, overview.news)
                 }
                 is Result.Error -> {
                     _uiState.update {
@@ -286,12 +312,565 @@ class StockDetailViewModel @Inject constructor(
                             peRatio = null,
                             dividend = null,
                             week52High = null,
-                            week52Low = null
+                            week52Low = null,
+                            news = emptyList(),
+                            translationMessage = null,
+                            showTranslationRetry = false
                         )
                     }
                 }
             }
         }
+    }
+
+    fun confirmTranslationDownload() {
+        val pending = pendingTranslation ?: return
+        if (pending.promptType != TranslationPromptType.PLAY_SERVICES) {
+            Log.w(TAG, "confirmTranslationDownload called without Play services prompt.")
+            retryTranslationDownload()
+            return
+        }
+        _uiState.update {
+            it.copy(
+                translationPromptMessage = "Downloading Play services translation model.",
+                translationDownloadInProgress = true,
+                showTranslationPrompt = true
+            )
+        }
+        viewModelScope.launch {
+            if (!translationService.hasEnoughStorage(TRANSLATION_STORAGE_BYTES)) {
+                Log.w(TAG, "Not enough storage to download translation model.")
+                _uiState.update {
+                    it.copy(
+                        translationMessage = "Not enough storage for the translation model.",
+                        translationDownloadInProgress = false,
+                        showTranslationPrompt = false,
+                        translationPromptTitle = null,
+                        translationPromptMessage = null,
+                        translationPromptType = null,
+                        translationDownloadProgress = null,
+                        showTranslationRetry = false
+                    )
+                }
+                return@launch
+            }
+            val success = translationService.downloadModel()
+            _uiState.update {
+                it.copy(
+                    translationDownloadInProgress = false,
+                    showTranslationPrompt = false,
+                    translationPromptTitle = null,
+                    translationPromptMessage = null,
+                    translationPromptType = null,
+                    translationDownloadProgress = null
+                )
+            }
+            if (!success) {
+                Log.w(TAG, "Play services model download failed. Falling back to local model.")
+                pendingTranslation = null
+                showLocalModelPrompt(pending.ticker, pending.news, forcePrompt = true)
+                return@launch
+            }
+            pendingTranslation = null
+            translateNewsIfNeeded(pending.ticker, pending.news, allowPrompt = false)
+        }
+    }
+
+    fun dismissTranslationPrompt() {
+        val state = _uiState.value
+        if (state.translationDownloadInProgress &&
+            state.translationPromptType == TranslationPromptType.LOCAL_MODEL
+        ) {
+            _uiState.update { it.copy(showTranslationPrompt = false) }
+            return
+        }
+        pendingTranslation = null
+        _uiState.update {
+            it.copy(
+                showTranslationPrompt = false,
+                translationPromptTitle = null,
+                translationPromptMessage = null,
+                translationPromptType = null,
+                translationDownloadProgress = null,
+                translationDownloadInProgress = false
+            )
+        }
+    }
+
+    fun requestOfflineModelDownload() {
+        val ticker = _uiState.value.ticker
+        if (ticker.isBlank()) return
+        val news = _uiState.value.news
+        if (news.isEmpty()) return
+        viewModelScope.launch {
+            try {
+                settingsRepository.setOfflineTranslationEnabled(true)
+                _uiState.update { it.copy(translationMessage = null, offlineTranslationEnabled = true) }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to enable offline translation before download.", e)
+                _uiState.update {
+                    it.copy(
+                        translationMessage = "Failed to enable offline translation.",
+                        showTranslationRetry = true
+                    )
+                }
+                return@launch
+            }
+            showLocalModelPrompt(ticker, news, forcePrompt = true)
+        }
+    }
+
+    fun retryTranslationDownload() {
+        val ticker = _uiState.value.ticker
+        if (ticker.isBlank()) return
+        val news = _uiState.value.news
+        if (news.isEmpty()) return
+        Log.d(TAG, "Manual retry for offline translation model download.")
+        viewModelScope.launch {
+            val currentState = _uiState.value
+            val offlineEnabled = resolveOfflineTranslationEnabled()
+            _uiState.update { it.copy(offlineTranslationEnabled = offlineEnabled) }
+            if (!offlineEnabled) {
+                Log.w(TAG, "Offline translation disabled; cannot download local model.")
+                _uiState.update {
+                    it.copy(
+                        translationMessage = "Enable offline translation in Settings to download the model.",
+                        showTranslationPrompt = false,
+                        translationPromptTitle = null,
+                        translationPromptMessage = null,
+                        translationPromptType = null,
+                        translationDownloadProgress = null,
+                        translationDownloadInProgress = false,
+                        showTranslationRetry = false
+                    )
+                }
+                return@launch
+            }
+            if (currentState.showTranslationPrompt &&
+                currentState.translationPromptType == TranslationPromptType.LOCAL_MODEL &&
+                !currentState.translationDownloadInProgress
+            ) {
+                val pending = pendingTranslation
+                    ?: PendingTranslation(ticker, news, TranslationPromptType.LOCAL_MODEL)
+                pendingTranslation = pending
+                beginLocalModelDownload(pending)
+            } else {
+                showLocalModelPrompt(ticker, news, forcePrompt = true)
+            }
+        }
+    }
+
+    private suspend fun showLocalModelPrompt(
+        ticker: String,
+        news: List<StockNewsItem>,
+        forcePrompt: Boolean
+    ) {
+        val offlineEnabled = resolveOfflineTranslationEnabled()
+        if (!offlineEnabled) {
+            Log.w(TAG, "Offline translation disabled; skipping local model prompt.")
+            if (!forcePrompt) return
+            _uiState.update {
+                it.copy(
+                    translationMessage = "Enable offline translation in Settings to download the model.",
+                    showTranslationPrompt = false,
+                    translationPromptTitle = null,
+                    translationPromptMessage = null,
+                    translationPromptType = null,
+                    translationDownloadProgress = null,
+                    translationDownloadInProgress = false,
+                    showTranslationRetry = false
+                )
+            }
+            return
+        }
+        if (localModelDownloadJob?.isActive == true) {
+            Log.d(TAG, "Local model download already in progress.")
+            return
+        }
+        if (translationService.isLocalModelUsable()) {
+            Log.d(TAG, "Local model already available; translating for $ticker.")
+            translateNewsSerially(ticker, news, translationService::translateWithLocalModel, "local_model")
+            return
+        }
+        if (!forcePrompt && !shouldPromptForTicker(ticker)) return
+        if (forcePrompt) {
+            promptedTranslationTickers.add(ticker)
+        }
+        pendingTranslation = PendingTranslation(
+            ticker = ticker,
+            news = news,
+            promptType = TranslationPromptType.LOCAL_MODEL
+        )
+        Log.d(TAG, "Showing local model download prompt for $ticker.")
+        _uiState.update {
+            it.copy(
+                showTranslationPrompt = true,
+                translationPromptTitle = "Download 270M offline translation model",
+                translationPromptMessage = "Download the 270M offline model to translate headlines? " +
+                    "Wi-Fi required; uses ~304MB.",
+                translationPromptType = TranslationPromptType.LOCAL_MODEL,
+                translationDownloadProgress = null,
+                translationDownloadInProgress = false,
+                translationMessage = null,
+                showTranslationRetry = false
+            )
+        }
+    }
+
+    private fun beginLocalModelDownload(pending: PendingTranslation) {
+        if (localModelDownloadJob?.isActive == true) {
+            Log.d(TAG, "Local model download already in progress.")
+            return
+        }
+        localModelDownloadJob = viewModelScope.launch {
+            if (translationService.isLocalModelUsable()) {
+                Log.d(TAG, "Local model already available; translating for ${pending.ticker}.")
+                _uiState.update {
+                    it.copy(
+                        showTranslationPrompt = false,
+                        translationPromptTitle = null,
+                        translationPromptMessage = null,
+                        translationPromptType = null,
+                        translationDownloadProgress = null,
+                        translationDownloadInProgress = false
+                    )
+                }
+                translateNewsSerially(
+                    pending.ticker,
+                    pending.news,
+                    translationService::translateWithLocalModel,
+                    "local_model"
+                )
+                return@launch
+            }
+            if (!translationService.isOnWifi()) {
+                Log.w(TAG, "Wifi required for local model download.")
+                _uiState.update {
+                    it.copy(
+                        translationMessage = "Wi-Fi required to download the 270M offline model.",
+                        showTranslationPrompt = false,
+                        translationPromptTitle = null,
+                        translationPromptMessage = null,
+                        translationPromptType = null,
+                        translationDownloadProgress = null,
+                        translationDownloadInProgress = false,
+                        showTranslationRetry = true
+                    )
+                }
+                return@launch
+            }
+            val requiredBytes = translationService.getLocalModelRequiredBytes()
+            if (!translationService.hasEnoughStorage(requiredBytes)) {
+                Log.w(TAG, "Not enough storage to download local model.")
+                _uiState.update {
+                    it.copy(
+                        translationMessage = "Not enough storage for the 270M offline model.",
+                        showTranslationPrompt = false,
+                        translationPromptTitle = null,
+                        translationPromptMessage = null,
+                        translationPromptType = null,
+                        translationDownloadProgress = null,
+                        translationDownloadInProgress = false,
+                        showTranslationRetry = true
+                    )
+                }
+                return@launch
+            }
+            _uiState.update {
+                it.copy(
+                    showTranslationPrompt = true,
+                    translationPromptTitle = "Download 270M offline translation model",
+                    translationPromptMessage = "Downloading the 270M offline model for translation.",
+                    translationPromptType = TranslationPromptType.LOCAL_MODEL,
+                    translationDownloadProgress = 0,
+                    translationDownloadInProgress = true,
+                    translationMessage = null,
+                    showTranslationRetry = false
+                )
+            }
+            val success = translationService.downloadLocalModel { progress ->
+                _uiState.update { state ->
+                    state.copy(
+                        translationDownloadProgress = progress,
+                        translationDownloadInProgress = true
+                    )
+                }
+            }
+            if (!success) {
+                Log.w(TAG, "Offline model download failed; attempting asset pack fallback.")
+                val assetPackSuccess = translationService.tryFetchLocalModelFromAssetPack()
+                if (!assetPackSuccess) {
+                    val modelPath = translationService.getLocalModelFilePath()
+                    val modelHash = translationService.getLocalModelSha256()
+                    _uiState.update {
+                        it.copy(
+                            translationMessage = "Offline model download failed. " +
+                                "Sideload to $modelPath (SHA-256: $modelHash) and retry.",
+                            translationDownloadProgress = null,
+                            translationDownloadInProgress = false,
+                            showTranslationPrompt = false,
+                            translationPromptTitle = null,
+                            translationPromptMessage = null,
+                            translationPromptType = null,
+                            showTranslationRetry = true
+                        )
+                    }
+                    return@launch
+                }
+            }
+            _uiState.update {
+                it.copy(
+                    translationDownloadProgress = null,
+                    translationDownloadInProgress = false,
+                    showTranslationPrompt = false,
+                    translationPromptTitle = null,
+                    translationPromptMessage = null,
+                    translationPromptType = null,
+                    translationMessage = null,
+                    showTranslationRetry = false
+                )
+            }
+            pendingTranslation = null
+            translateNewsIfNeeded(pending.ticker, pending.news, allowPrompt = false)
+        }
+    }
+
+    private fun shouldPromptForTicker(ticker: String): Boolean {
+        if (promptedTranslationTickers.contains(ticker)) {
+            Log.d(TAG, "Translation prompt already shown for $ticker.")
+            return false
+        }
+        promptedTranslationTickers.add(ticker)
+        return true
+    }
+
+    private suspend fun translateNewsIfNeeded(
+        ticker: String,
+        news: List<StockNewsItem>,
+        allowPrompt: Boolean = true
+    ) {
+        if (news.none { shouldTranslate(it) }) return
+        val offlineEnabled = resolveOfflineTranslationEnabled()
+        val localAvailable = translationService.isLocalModelAvailable()
+        val localUsable = offlineEnabled && localAvailable && !translationService.isLocalModelIncompatible()
+        _uiState.update {
+            it.copy(
+                offlineTranslationEnabled = offlineEnabled,
+                localModelAvailable = localAvailable,
+                localModelIncompatible = translationService.isLocalModelIncompatible()
+            )
+        }
+        val availability = translationService.getModelAvailability()
+        Log.d(
+            TAG,
+            "Translation availability for $ticker. " +
+                "Play services=$availability, local=$localAvailable, offlineEnabled=$offlineEnabled"
+        )
+        when (availability) {
+            ModelAvailability.AVAILABLE -> {
+                translateNewsSerially(ticker, news, translationService::translateWithMlkit, "play_services")
+            }
+            ModelAvailability.NEEDS_DOWNLOAD -> {
+                if (localUsable) {
+                    Log.d(TAG, "Play services needs download; using local model for $ticker.")
+                    translateNewsSerially(ticker, news, translationService::translateWithLocalModel, "local_model")
+                    return
+                }
+                if (!allowPrompt || !shouldPromptForTicker(ticker)) return
+                if (!translationService.hasEnoughStorage(TRANSLATION_STORAGE_BYTES)) {
+                    Log.w(TAG, "Not enough storage to download Play services translation model.")
+                    _uiState.update {
+                        it.copy(
+                            translationMessage = "Not enough storage for the translation model.",
+                            showTranslationPrompt = false,
+                            showTranslationRetry = false
+                        )
+                    }
+                    return
+                }
+                pendingTranslation = PendingTranslation(
+                    ticker = ticker,
+                    news = news,
+                    promptType = TranslationPromptType.PLAY_SERVICES
+                )
+                _uiState.update {
+                    it.copy(
+                        showTranslationPrompt = true,
+                        translationPromptTitle = "Download translation model",
+                        translationPromptMessage = "Download the Play services translation model to translate headlines.",
+                        translationPromptType = TranslationPromptType.PLAY_SERVICES,
+                        translationDownloadProgress = null,
+                        translationDownloadInProgress = false,
+                        showTranslationRetry = false
+                    )
+                }
+            }
+            ModelAvailability.UNAVAILABLE -> {
+                Log.w(TAG, "Play services translation model unavailable on this device.")
+                if (localUsable) {
+                    Log.d(TAG, "Local model available; translating with local model for $ticker.")
+                    translateNewsSerially(ticker, news, translationService::translateWithLocalModel, "local_model")
+                    return
+                }
+                if (translationService.isLocalModelIncompatible()) {
+                    Log.w(TAG, "Local model incompatible; falling back to cloud translation.")
+                    val detailMessage = translationService.getLocalModelIncompatibilityMessage()
+                        ?: "Offline model incompatible with this app version."
+                    _uiState.update {
+                        it.copy(
+                            translationMessage = detailMessage,
+                            showTranslationRetry = true,
+                            localModelIncompatible = true
+                        )
+                    }
+                    // Fallback to cloud MLKit translation
+                    translateNewsSerially(ticker, news, translationService::translateWithMlkit, "mlkit_cloud")
+                    return
+                }
+                if (!offlineEnabled) {
+                    Log.w(TAG, "Offline translation disabled; cannot offer local model.")
+                    if (allowPrompt) {
+                        _uiState.update {
+                            it.copy(
+                                translationMessage = "Play services model unavailable. " +
+                                    "Enable offline translation in Settings to download a model.",
+                                showTranslationPrompt = false,
+                                translationPromptTitle = null,
+                                translationPromptMessage = null,
+                                translationPromptType = null,
+                                translationDownloadProgress = null,
+                                translationDownloadInProgress = false,
+                                showTranslationRetry = false
+                            )
+                        }
+                    }
+                    return
+                }
+                if (!allowPrompt) return
+                showLocalModelPrompt(ticker, news, forcePrompt = false)
+            }
+        }
+    }
+
+    private suspend fun resolveOfflineTranslationEnabled(): Boolean {
+        val settings = settingsRepository.settingsFlow.first()
+        if (settings.offlineTranslationEnabled) return true
+        if (settingsRepository.isOfflineTranslationPreferenceSet()) return false
+        val localUsable = translationService.isLocalModelUsable()
+        if (!localUsable) return false
+        return try {
+            settingsRepository.setOfflineTranslationEnabled(true)
+            Log.i(TAG, "Auto-enabled offline translation because a local model is present.")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to auto-enable offline translation", e)
+            false
+        }
+    }
+
+    private suspend fun translateNewsSerially(
+        ticker: String,
+        news: List<StockNewsItem>,
+        translator: suspend (String) -> String?,
+        providerLabel: String
+    ) {
+        val updated = news.toMutableList()
+        Log.d(TAG, "Translating news for $ticker using $providerLabel.")
+        if (_uiState.value.ticker == ticker) {
+            _uiState.update { it.copy(translationMessage = null, showTranslationRetry = false) }
+        }
+        if (providerLabel == "local_model" && translationService.isLocalModelIncompatible()) {
+            Log.w(TAG, "Local model already marked incompatible; falling back to cloud.")
+            if (_uiState.value.ticker == ticker) {
+                val detailMessage = translationService.getLocalModelIncompatibilityMessage()
+                    ?: "Offline model incompatible."
+                _uiState.update {
+                    it.copy(
+                        translationMessage = "$detailMessage Using cloud translation.",
+                        showTranslationRetry = false,
+                        localModelIncompatible = true
+                    )
+                }
+            }
+            // Fallback to cloud MLKit translation
+            translateNewsSerially(ticker, news, translationService::translateWithMlkit, "mlkit_cloud")
+            return
+        }
+        for (index in updated.indices) {
+            val item = updated[index]
+            if (!shouldTranslate(item)) continue
+            val input = buildTranslationInput(item)
+            if (input.isBlank()) continue
+            val translated = translateWithRetry(input, translator, providerLabel)
+            if (providerLabel == "local_model" && translationService.isLocalModelIncompatible()) {
+                // Local model became incompatible mid-translation; fallback to cloud
+                Log.w(TAG, "Local model became incompatible during translation; falling back to cloud.")
+                if (_uiState.value.ticker == ticker) {
+                    val detailMessage = translationService.getLocalModelIncompatibilityMessage()
+                        ?: "Offline model incompatible."
+                    _uiState.update {
+                        it.copy(
+                            translationMessage = "$detailMessage Using cloud translation.",
+                            showTranslationRetry = false,
+                            localModelIncompatible = true
+                        )
+                    }
+                }
+                // Continue with remaining items using cloud translation
+                val remainingNews = updated.subList(index, updated.size).toList()
+                translateNewsSerially(ticker, remainingNews, translationService::translateWithMlkit, "mlkit_cloud")
+                return
+            }
+            if (translated == null) continue
+            val updatedItem = item.copy(
+                translatedTitle = translated,
+                translatedPublishedAtText = null
+            )
+            updated[index] = updatedItem
+            if (_uiState.value.ticker == ticker) {
+                _uiState.update { it.copy(news = updated.toList()) }
+                stockRepository.updateOverviewNews(ticker, updated.toList())
+            }
+        }
+    }
+
+    private suspend fun translateWithRetry(
+        input: String,
+        translator: suspend (String) -> String?,
+        providerLabel: String
+    ): String? {
+        repeat(2) { attempt ->
+            val translated = translator(input) ?: return@repeat
+            if (isTranslationAcceptable(input, translated)) {
+                return translated.trim()
+            }
+            if (attempt == 0) {
+                Log.w(TAG, "Translation matched input via $providerLabel, retrying once.")
+            }
+        }
+        Log.w(TAG, "Translation failed or unchanged after retry via $providerLabel.")
+        return null
+    }
+
+    private fun shouldTranslate(item: StockNewsItem): Boolean {
+        return item.translatedTitle.isNullOrBlank() && item.title.isNotBlank()
+    }
+
+    private fun buildTranslationInput(item: StockNewsItem): String {
+        val title = item.title.trim()
+        val date = item.publishedAtText.trim()
+        val source = item.source?.trim().orEmpty()
+        return when {
+            date.isNotBlank() && source.isNotBlank() -> "$title. $date * $source"
+            date.isNotBlank() -> "$title. $date"
+            source.isNotBlank() -> "$title. $source"
+            else -> title
+        }
+    }
+
+    private fun isTranslationAcceptable(input: String, translated: String): Boolean {
+        val cleaned = translated.trim()
+        return cleaned.isNotEmpty() && cleaned != input.trim()
     }
 
     private fun observeWatchlist() {
@@ -434,11 +1013,24 @@ class StockDetailViewModel @Inject constructor(
         return existing + newTag
     }
 
+    private data class PendingTranslation(
+        val ticker: String,
+        val news: List<StockNewsItem>,
+        val promptType: TranslationPromptType
+    )
+
     companion object {
         const val ARG_TICKER = "ticker"
         const val ARG_EVENT_ID = "eventId"
         const val ARG_OPEN_ALERTS = "openAlerts"
+        private const val TRANSLATION_STORAGE_BYTES = 300L * 1024 * 1024
+        private const val TAG = "StockDetailViewModel"
     }
+}
+
+enum class TranslationPromptType {
+    PLAY_SERVICES,
+    LOCAL_MODEL
 }
 
 data class StockDetailUiState(
@@ -464,5 +1056,17 @@ data class StockDetailUiState(
     val dividend: Double? = null,
     val week52High: Double? = null,
     val week52Low: Double? = null,
+    val news: List<StockNewsItem> = emptyList(),
+    val translationMessage: String? = null,
+    val showTranslationPrompt: Boolean = false,
+    val translationPromptTitle: String? = null,
+    val translationPromptMessage: String? = null,
+    val translationPromptType: TranslationPromptType? = null,
+    val translationDownloadProgress: Int? = null,
+    val translationDownloadInProgress: Boolean = false,
+    val showTranslationRetry: Boolean = false,
+    val offlineTranslationEnabled: Boolean = false,
+    val localModelAvailable: Boolean = false,
+    val localModelIncompatible: Boolean = false,
     val overviewError: String? = null
 )

@@ -15,10 +15,12 @@ import com.example.stocksignal.data.settings.ScheduleWindowType
 import com.example.stocksignal.data.settings.SettingsRepository
 import com.example.stocksignal.data.settings.SignalSensitivity
 import com.example.stocksignal.data.settings.SnoozeDurationOption
+import com.example.stocksignal.data.translation.NewsTranslationService
 import com.example.stocksignal.domain.model.ChartRange
 import com.example.stocksignal.notifications.NotificationScheduler
 import com.example.stocksignal.notifications.NotificationTestSender
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -26,6 +28,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.DayOfWeek
 import javax.inject.Inject
 
@@ -34,26 +37,44 @@ class SettingsViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val notificationTestSender: NotificationTestSender,
     private val notificationScheduler: NotificationScheduler,
-    private val workManager: WorkManager
+    private val workManager: WorkManager,
+    private val translationService: NewsTranslationService
 ) : ViewModel() {
 
     private val _errorMessage = MutableStateFlow<String?>(null)
+    private val _toastMessage = MutableStateFlow<String?>(null)
 
     val uiState: StateFlow<SettingsUiState> = combine(
         settingsRepository.settingsFlow,
-        _errorMessage
-    ) { settings, error ->
-        SettingsUiState(settings = settings, errorMessage = error)
+        _errorMessage,
+        _toastMessage
+    ) { settings, error, toast ->
+        SettingsUiState(settings = settings, errorMessage = error, toastMessage = toast)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState(settings = defaultSettings()))
+
+    init {
+        viewModelScope.launch {
+            autoEnableOfflineTranslationIfLocalModelPresent()
+        }
+    }
 
     fun clearError() {
         _errorMessage.value = null
+    }
+
+    fun clearToast() {
+        _toastMessage.value = null
+    }
+
+    private fun showToast(message: String) {
+        _toastMessage.value = message
     }
 
     fun setHoldingPeriod(period: HoldingPeriod) {
         viewModelScope.launch {
             try {
                 settingsRepository.setHoldingPeriod(period)
+                showToast("Holding period updated")
             } catch (e: Exception) {
                 Log.e(TAG, "Error setting holding period to $period", e)
                 _errorMessage.value = "Failed to save holding period: ${e.message}"
@@ -63,7 +84,24 @@ class SettingsViewModel @Inject constructor(
 
     fun setFrequency(frequency: NotificationFrequency) {
         viewModelScope.launch {
-            settingsRepository.setFrequency(frequency)
+            try {
+                settingsRepository.setFrequency(frequency)
+                // Also reschedule workers when frequency changes
+                val settings = settingsRepository.settingsFlow.first()
+                notificationScheduler.schedule(settings)
+                val label = when (frequency) {
+                    NotificationFrequency.THREE_PER_DAY -> "3x/day"
+                    NotificationFrequency.ONE_PER_DAY -> "1x/day"
+                    NotificationFrequency.ONE_PER_WEEK -> "1x/week"
+                    NotificationFrequency.ONLY_WHEN_OPEN -> "Only when open"
+                    NotificationFrequency.DEV_ONE_MINUTE -> "DEV mode (15min)"
+                }
+                showToast("Frequency: $label - workers rescheduled")
+                Log.d(TAG, "Frequency changed to $frequency, workers rescheduled")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error setting frequency to $frequency", e)
+                _errorMessage.value = "Failed to save frequency: ${e.message}"
+            }
         }
     }
 
@@ -71,7 +109,14 @@ class SettingsViewModel @Inject constructor(
         val current = uiState.value.settings.notificationTypes
         val updated = if (enabled) current + type else current - type
         viewModelScope.launch {
-            settingsRepository.setNotificationTypes(updated)
+            try {
+                settingsRepository.setNotificationTypes(updated)
+                val action = if (enabled) "enabled" else "disabled"
+                showToast("${type.name.lowercase().replaceFirstChar { it.uppercase() }} $action")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error toggling notification type $type", e)
+                _errorMessage.value = "Failed to save: ${e.message}"
+            }
         }
     }
 
@@ -81,6 +126,7 @@ class SettingsViewModel @Inject constructor(
             try {
                 settingsRepository.setQuietHours(current.copy(enabled = enabled))
                 _errorMessage.value = null
+                showToast("Quiet hours ${if (enabled) "enabled" else "disabled"}")
             } catch (e: Exception) {
                 Log.e(TAG, "Error setting quiet hours enabled to $enabled", e)
                 _errorMessage.value = "Failed to save quiet hours setting: ${e.message}"
@@ -94,6 +140,7 @@ class SettingsViewModel @Inject constructor(
             try {
                 settingsRepository.setQuietHours(current.copy(start = start, end = end))
                 _errorMessage.value = null
+                showToast("Quiet hours: $start - $end")
             } catch (e: Exception) {
                 Log.e(TAG, "Error setting quiet hours to $start - $end", e)
                 _errorMessage.value = "Failed to save quiet hours: ${e.message}"
@@ -108,6 +155,7 @@ class SettingsViewModel @Inject constructor(
             try {
                 settingsRepository.setScheduleWindows(next)
                 _errorMessage.value = null
+                showToast("Schedule window updated")
             } catch (e: Exception) {
                 Log.e(TAG, "Error updating schedule window ${updated.id}", e)
                 _errorMessage.value = "Failed to save schedule window: ${e.message}"
@@ -120,6 +168,7 @@ class SettingsViewModel @Inject constructor(
             try {
                 settingsRepository.setSignalSensitivity(sensitivity)
                 _errorMessage.value = null
+                showToast("Signal sensitivity updated")
             } catch (e: Exception) {
                 Log.e(TAG, "Error setting signal sensitivity to $sensitivity", e)
                 _errorMessage.value = "Failed to save signal sensitivity: ${e.message}"
@@ -160,6 +209,47 @@ class SettingsViewModel @Inject constructor(
                 Log.e(TAG, "Error setting immediate posts enabled to $enabled", e)
                 _errorMessage.value = "Failed to save immediate posts setting: ${e.message}"
             }
+        }
+    }
+
+    fun deleteOfflineTranslationModel() {
+        viewModelScope.launch {
+            val success = withContext(Dispatchers.IO) {
+                translationService.deleteLocalModel()
+            }
+            if (!success) {
+                _errorMessage.value = "Failed to delete offline translation model."
+            } else {
+                Log.i(TAG, "Offline translation model deleted.")
+            }
+        }
+    }
+
+    fun setOfflineTranslationEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            try {
+                settingsRepository.setOfflineTranslationEnabled(enabled)
+                _errorMessage.value = null
+            } catch (e: Exception) {
+                Log.e(TAG, "Error setting offline translation enabled to $enabled", e)
+                _errorMessage.value = "Failed to save offline translation setting: ${e.message}"
+            }
+        }
+    }
+
+    private suspend fun autoEnableOfflineTranslationIfLocalModelPresent() {
+        val settings = settingsRepository.settingsFlow.first()
+        if (settings.offlineTranslationEnabled) return
+        if (settingsRepository.isOfflineTranslationPreferenceSet()) return
+        val localUsable = withContext(Dispatchers.IO) {
+            translationService.isLocalModelUsable()
+        }
+        if (!localUsable) return
+        try {
+            settingsRepository.setOfflineTranslationEnabled(true)
+            Log.i(TAG, "Auto-enabled offline translation because a local model is present.")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to auto-enable offline translation", e)
         }
     }
 
@@ -287,6 +377,7 @@ class SettingsViewModel @Inject constructor(
             selectedChartRange = ChartRange.SIX_MONTH,
             holdingPeriod = HoldingPeriod.MONTHS,
             immediatePostsEnabled = false,
+            offlineTranslationEnabled = false,
             onboardingCompleted = false
         )
     }
@@ -298,5 +389,6 @@ class SettingsViewModel @Inject constructor(
 
 data class SettingsUiState(
     val settings: AppSettings,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val toastMessage: String? = null
 )

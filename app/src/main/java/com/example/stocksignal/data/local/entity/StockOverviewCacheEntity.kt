@@ -5,7 +5,7 @@ import androidx.room.PrimaryKey
 
 /**
  * Room entity for caching stock overview/fundamental data.
- * TTL: 24 hours (fundamentals change infrequently).
+ * TTL: 10 minutes.
  */
 @Entity(tableName = "stock_overview_cache")
 data class StockOverviewCacheEntity(
@@ -15,5 +15,6 @@ data class StockOverviewCacheEntity(
     val dividend: Double?,
     val week52High: Double?,
     val week52Low: Double?,
+    val newsJson: String?,
     val fetchedAt: String // ISO-8601 LocalDateTime string
 )

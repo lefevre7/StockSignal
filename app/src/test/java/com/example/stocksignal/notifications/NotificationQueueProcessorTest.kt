@@ -231,6 +231,7 @@ class NotificationQueueProcessorTest {
             selectedChartRange = ChartRange.ONE_DAY,
             holdingPeriod = HoldingPeriod.MONTHS,
             immediatePostsEnabled = false,
+            offlineTranslationEnabled = false,
             onboardingCompleted = true
         )
     }

@@ -7,7 +7,8 @@ enum class NotificationFrequency {
     THREE_PER_DAY,
     ONE_PER_DAY,
     ONE_PER_WEEK,
-    ONLY_WHEN_OPEN
+    ONLY_WHEN_OPEN,
+    DEV_ONE_MINUTE // Development/testing only - runs every minute
 }
 
 enum class NotificationType {
@@ -71,6 +72,7 @@ data class AppSettings(
     val signalSensitivity: SignalSensitivity,
     val selectedChartRange: ChartRange,
     val immediatePostsEnabled: Boolean,
+    val offlineTranslationEnabled: Boolean,
     val onboardingCompleted: Boolean,
     val holdingPeriod: HoldingPeriod
 )

@@ -74,6 +74,7 @@ class NotificationSchedulerTest {
             ),
             selectedChartRange = ChartRange.ONE_DAY,
             immediatePostsEnabled = false,
+            offlineTranslationEnabled = false,
             onboardingCompleted = true,
             holdingPeriod = HoldingPeriod.DAYS
         )

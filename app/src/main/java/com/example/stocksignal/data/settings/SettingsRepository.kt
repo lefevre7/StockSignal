@@ -29,6 +29,16 @@ class SettingsRepository @Inject constructor(
             emit(createDefaultSettings())
         }
 
+    suspend fun isOfflineTranslationPreferenceSet(): Boolean {
+        return try {
+            val prefs = dataStore.data.first()
+            prefs.asMap().containsKey(SettingsKeys.offlineTranslationEnabled)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error checking offline translation preference state", e)
+            false
+        }
+    }
+
     suspend fun setFrequency(frequency: NotificationFrequency) {
         try {
             dataStore.edit { prefs ->
@@ -132,6 +142,17 @@ class SettingsRepository @Inject constructor(
         }
     }
 
+    suspend fun setOfflineTranslationEnabled(enabled: Boolean) {
+        try {
+            dataStore.edit { prefs ->
+                prefs[SettingsKeys.offlineTranslationEnabled] = enabled
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting offline translation enabled: $enabled", e)
+            throw e
+        }
+    }
+
     suspend fun setOnboardingCompleted(completed: Boolean) {
         try {
             dataStore.edit { prefs ->
@@ -218,6 +239,7 @@ class SettingsRepository @Inject constructor(
             ChartRange.valueOf(this[SettingsKeys.selectedChartRange] ?: ChartRange.ONE_DAY.name)
         }.getOrDefault(ChartRange.ONE_DAY)
         val immediatePostsEnabled = this[SettingsKeys.immediatePostsEnabled] ?: false
+        val offlineTranslationEnabled = this[SettingsKeys.offlineTranslationEnabled] ?: false
         val onboardingCompleted = this[SettingsKeys.onboardingCompleted] ?: false
         val holdingPeriod = runCatching {
             HoldingPeriod.valueOf(this[SettingsKeys.holdingPeriod] ?: HoldingPeriod.MONTHS.name)
@@ -233,6 +255,7 @@ class SettingsRepository @Inject constructor(
             signalSensitivity = sensitivity,
             selectedChartRange = selectedChartRange,
             immediatePostsEnabled = immediatePostsEnabled,
+            offlineTranslationEnabled = offlineTranslationEnabled,
             onboardingCompleted = onboardingCompleted,
             holdingPeriod = holdingPeriod
         )
@@ -300,6 +323,7 @@ class SettingsRepository @Inject constructor(
                 ),
                 selectedChartRange = defaultChartRange,
                 immediatePostsEnabled = false,
+                offlineTranslationEnabled = false,
                 onboardingCompleted = false,
                 holdingPeriod = defaultHoldingPeriod
             )
@@ -321,6 +345,7 @@ private object SettingsKeys {
     val strongSellThreshold = intPreferencesKey("strong_sell_threshold")
     val selectedChartRange = stringPreferencesKey("selected_chart_range")
     val immediatePostsEnabled = booleanPreferencesKey("immediate_posts_enabled")
+    val offlineTranslationEnabled = booleanPreferencesKey("offline_translation_enabled")
     val onboardingCompleted = booleanPreferencesKey("onboarding_completed")
     val holdingPeriod = stringPreferencesKey("holding_period")
     val lastRobotsTxtCheckDate = stringPreferencesKey("last_robots_txt_check_date")

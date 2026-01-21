@@ -3,6 +3,9 @@ package com.example.stocksignal.data.stooq.parser
 import com.example.stocksignal.domain.model.StockOverview
 import org.junit.Assert.*
 import org.junit.Test
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.ZoneId
 
 class StockOverviewParserTest {
 
@@ -242,5 +245,60 @@ class StockOverviewParserTest {
 
         assertEquals(50_000_000.0, result.marketCap!!, 0.01)
         assertEquals(12.5, result.peRatio!!, 0.01)
+    }
+
+    @Test
+    fun `parse extracts news items from wiadomosci table`() {
+        val year = LocalDate.now(ZoneId.of("America/New_York")).year
+        val html = """
+            <html>
+            <body>
+                <table>
+                    <tr>
+                        <td>
+                            <table>
+                                <tr><td><b>Wiadomości</b></td></tr>
+                            </table>
+                            <table>
+                                <tr>
+                                    <td><b>·</b></td>
+                                    <td>
+                                        <font id="f14"><a href="n/?f=1">Alpha <b>Bold</b> Beta</a></font><br>
+                                        <font id="a">17 sty, 5:20 - <b>Reuters</b></font>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td><b>·</b></td>
+                                    <td>
+                                        <font id="f14"><a href="/n/?f=2">Second Title</a></font><br>
+                                        <font id="a">16 sty, 21:29 - <b>PAP</b></font>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td colspan="2"><a href="rss/">RSS</a></td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+                </table>
+            </body>
+            </html>
+        """.trimIndent()
+
+        val result = StockOverviewParser.parse(html, "TEST.US")
+
+        assertEquals(2, result.news.size)
+        val first = result.news[0]
+        assertEquals("Alpha Beta", first.title)
+        assertEquals("17 sty, 5:20", first.publishedAtText)
+        assertEquals(LocalDateTime.of(year, 1, 17, 5, 20), first.publishedAt)
+        assertEquals("Reuters", first.source)
+        assertEquals("https://stooq.com/n/?f=1", first.url)
+        val second = result.news[1]
+        assertEquals("Second Title", second.title)
+        assertEquals("16 sty, 21:29", second.publishedAtText)
+        assertEquals(LocalDateTime.of(year, 1, 16, 21, 29), second.publishedAt)
+        assertEquals("PAP", second.source)
+        assertEquals("https://stooq.com/n/?f=2", second.url)
     }
 }

@@ -57,16 +57,7 @@ class NotificationWindowWorkerTest {
         every { settingsRepository.settingsFlow } returns flowOf(defaultSettings())
         coEvery { watchlistRepository.getAll() } returns listOf(sampleWatchlistItem("AAPL", now))
         coEvery { stockRepository.getSeries(any(), any(), any(), any()) } returns StooqResult.Success(
-            listOf(
-                PriceCandle(
-                    time = now.minusMinutes(5),
-                    open = 100.0,
-                    high = 105.0,
-                    low = 99.0,
-                    close = 104.0,
-                    volume = 1_000
-                )
-            )
+            sampleCandles(now, 25) // Need at least 20 candles for signal computation
         )
         coEvery { signalsRepository.computeSignal(any(), any()) } returns sampleSignal(now)
         coEvery { signalsRepository.isInCooldown(any(), any(), any()) } returns false
@@ -91,16 +82,7 @@ class NotificationWindowWorkerTest {
             sampleWatchlistItem("MSFT", now)
         )
         coEvery { stockRepository.getSeries(any(), any(), any(), any()) } returns StooqResult.Success(
-            listOf(
-                PriceCandle(
-                    time = now.minusMinutes(5),
-                    open = 100.0,
-                    high = 105.0,
-                    low = 99.0,
-                    close = 104.0,
-                    volume = 1_000
-                )
-            )
+            sampleCandles(now, 25) // Need at least 20 candles for signal computation
         )
         coEvery { signalsRepository.computeSignal(any(), any()) } returns sampleSignal(now)
         coEvery { signalsRepository.isInCooldown(any(), any(), any()) } returns false
@@ -178,6 +160,19 @@ class NotificationWindowWorkerTest {
         )
     }
 
+    private fun sampleCandles(now: LocalDateTime, count: Int): List<PriceCandle> {
+        return (0 until count).map { i ->
+            PriceCandle(
+                time = now.minusMinutes((count - i) * 5L),
+                open = 100.0 + i,
+                high = 105.0 + i,
+                low = 99.0 + i,
+                close = 104.0 + i,
+                volume = 1_000L + i
+            )
+        }
+    }
+
     private fun defaultSettings(): AppSettings {
         return AppSettings(
             frequency = NotificationFrequency.THREE_PER_DAY,
@@ -197,6 +192,7 @@ class NotificationWindowWorkerTest {
             ),
             selectedChartRange = ChartRange.ONE_DAY,
             immediatePostsEnabled = false,
+            offlineTranslationEnabled = false,
             onboardingCompleted = true,
             holdingPeriod = HoldingPeriod.DAYS
         )

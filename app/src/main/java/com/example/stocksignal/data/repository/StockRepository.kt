@@ -13,8 +13,9 @@ import com.example.stocksignal.data.stooq.model.StockData
 import com.example.stocksignal.data.stooq.repository.StooqRepository
 import com.example.stocksignal.domain.model.ChartRange
 import com.example.stocksignal.domain.model.PriceCandle
-import com.example.stocksignal.domain.model.StockOverview
 import com.example.stocksignal.domain.model.NotificationEventType
+import com.example.stocksignal.domain.model.StockOverview
+import com.example.stocksignal.domain.model.StockNewsItem
 import java.time.DayOfWeek
 import java.time.Duration
 import java.time.LocalDate
@@ -649,7 +650,7 @@ class StockRepository @Inject constructor(
     }
 
     /**
-     * Fetches stock overview/fundamental data with 24-hour caching.
+     * Fetches stock overview/fundamental data with 10-minute caching.
      * 
      * @param symbol Stock ticker symbol (e.g., "TSLA.US")
      * @param forceRefresh If true, bypass cache and fetch fresh data
@@ -671,7 +672,8 @@ class StockRepository @Inject constructor(
                         peRatio = cached.peRatio,
                         dividend = cached.dividend,
                         week52High = cached.week52High,
-                        week52Low = cached.week52Low
+                        week52Low = cached.week52Low,
+                        news = StockNewsJson.fromJson(cached.newsJson)
                     )
                 )
             }
@@ -691,6 +693,7 @@ class StockRepository @Inject constructor(
                             dividend = overview.dividend,
                             week52High = overview.week52High,
                             week52Low = overview.week52Low,
+                            newsJson = StockNewsJson.toJson(overview.news),
                             fetchedAt = LocalDateTime.now().toString()
                         )
                     )
@@ -706,8 +709,15 @@ class StockRepository @Inject constructor(
     private fun isOverviewStale(cache: StockOverviewCacheEntity): Boolean {
         val fetchedAt = LocalDateTime.parse(cache.fetchedAt)
         val age = Duration.between(fetchedAt, LocalDateTime.now())
-        val ttl = Duration.ofHours(24)
+        val ttl = Duration.ofMinutes(10)
         return age > ttl
+    }
+
+    suspend fun updateOverviewNews(symbol: String, news: List<StockNewsItem>) {
+        val cached = overviewCacheRepository.getCache(symbol) ?: return
+        overviewCacheRepository.upsert(
+            cached.copy(newsJson = StockNewsJson.toJson(news))
+        )
     }
 
     companion object {

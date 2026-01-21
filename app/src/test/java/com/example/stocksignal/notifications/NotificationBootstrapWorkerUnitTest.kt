@@ -201,6 +201,7 @@ class NotificationBootstrapWorkerUnitTest {
             selectedChartRange = ChartRange.SIX_MONTH,
             holdingPeriod = HoldingPeriod.MONTHS,
             immediatePostsEnabled = false,
+            offlineTranslationEnabled = false,
             onboardingCompleted = true
         )
     }

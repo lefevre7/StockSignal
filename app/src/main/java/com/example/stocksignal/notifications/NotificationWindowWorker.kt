@@ -26,6 +26,7 @@ import com.example.stocksignal.domain.model.PriceCandle
 import com.example.stocksignal.domain.model.SignalReason
 import com.example.stocksignal.domain.model.SignalResult
 import com.example.stocksignal.domain.signal.IndicatorAlertEvaluator
+import com.example.stocksignal.util.DebugConfig
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.flow.first
@@ -49,25 +50,42 @@ class NotificationWindowWorker @AssistedInject constructor(
 
     override suspend fun doWork(): Result {
         val windowId = inputData.getString(KEY_WINDOW_ID)
+        if (DebugConfig.ENABLE_DEV_MODE) {
+            Log.i(TAG, "═══════════════════════════════════════════════════════════════")
+            Log.i(TAG, "🔔 NotificationWindowWorker STARTED")
+            Log.i(TAG, "   Window ID: $windowId")
+            Log.i(TAG, "   Time: ${LocalDateTime.now()}")
+            Log.i(TAG, "   Run Attempt: $runAttemptCount")
+            Log.i(TAG, "═══════════════════════════════════════════════════════════════")
+        } else {
+            Log.d(TAG, "NotificationWindowWorker started - window: $windowId, attempt: $runAttemptCount")
+        }
+        
         if (windowId == null) {
-            Log.e(TAG, "Missing window ID in worker input")
+            Log.e(TAG, "❌ Missing window ID in worker input")
             return Result.failure()
         }
 
         return try {
             val settings = settingsRepository.settingsFlow.first()
+            Log.d(TAG, "📋 Settings loaded:")
+            Log.d(TAG, "   Frequency: ${settings.frequency}")
+            Log.d(TAG, "   NotificationTypes: ${settings.notificationTypes}")
+            Log.d(TAG, "   MinScoreForNotify: ${settings.signalSensitivity.minScoreForNotify}")
+            
             val watchlistEnabled = settings.notificationTypes.contains(NotificationType.WATCHLIST)
             val moversEnabled = settings.notificationTypes.contains(NotificationType.MARKET_MOVERS)
             if (!watchlistEnabled && !moversEnabled) {
-                Log.d(TAG, "Skipping window $windowId because no notification sources are enabled")
+                Log.w(TAG, "⚠️ Skipping window $windowId - no notification sources enabled")
                 return Result.success()
             }
             if (settings.frequency == NotificationFrequency.ONLY_WHEN_OPEN) {
-                Log.d(TAG, "Skipping window $windowId because frequency is only when open")
+                Log.d(TAG, "⏭️ Skipping window $windowId - frequency is only when open")
                 return Result.success()
             }
 
-            Log.d(TAG, "Running notification window worker for $windowId (watchlist=$watchlistEnabled movers=$moversEnabled)")
+            Log.i(TAG, "▶️ Processing notification window $windowId")
+            Log.i(TAG, "   Watchlist: $watchlistEnabled, MarketMovers: $moversEnabled")
             val candidates = mutableListOf<NotificationEvent>()
             val now = LocalDateTime.now()
             val premarketWindow = PremarketWindowUtils.resolvePremarketWindow(
@@ -89,33 +107,39 @@ class NotificationWindowWorker @AssistedInject constructor(
             val moversChartRange = chartRangeForMarketRange(moversRange)
 
             val watchlist = watchlistRepository.getAll()
+            Log.i(TAG, "📊 Watchlist contains ${watchlist.size} items")
 
             if (watchlistEnabled) {
+                Log.i(TAG, "🔍 Processing watchlist items...")
                 if (watchlist.isEmpty()) {
-                    Log.d(TAG, "No watchlist items to evaluate for window $windowId")
+                    Log.w(TAG, "⚠️ No watchlist items to evaluate for window $windowId")
                 }
                 for (item in watchlist) {
+                    Log.d(TAG, "   → Processing: ${item.symbol} (${item.companyName})")
                     try {
                         if (!item.alertEnabled) {
-                            Log.d(TAG, "Watchlist ${item.symbol} alerts disabled")
+                            Log.d(TAG, "   ⏭️ ${item.symbol} - alerts disabled")
                             continue
                         }
                         if (item.snoozedUntil != null && item.snoozedUntil.isAfter(now)) {
-                            Log.d(TAG, "Watchlist ${item.symbol} snoozed until ${item.snoozedUntil}")
+                            Log.d(TAG, "   ⏭️ ${item.symbol} - snoozed until ${item.snoozedUntil}")
                             continue
                         }
                         val minScore = item.minScoreForNotify ?: settings.signalSensitivity.minScoreForNotify
+                        Log.d(TAG, "   📈 ${item.symbol}: minScore=$minScore, range=$watchlistRange")
                         
                         // NOTE: This call to stockRepository.getSeries() automatically triggers
                         // passive accumulation of intraday data via StockRepository.accumulateIntradayData()
                         // Data is stored in IntradayDataCache for up to 1 year
                         val result = if (usePremarketData) {
+                            Log.d(TAG, "   🌅 ${item.symbol}: Using premarket data")
                             stockRepository.getSeriesForPremarket(
                                 item.symbol,
                                 watchlistRange,
                                 eventType = null
                             )
                         } else {
+                            Log.d(TAG, "   📊 ${item.symbol}: Fetching regular series")
                             stockRepository.getSeries(
                                 item.symbol,
                                 watchlistRange,
@@ -125,21 +149,44 @@ class NotificationWindowWorker @AssistedInject constructor(
                         }
                         if (result is StooqResult.Success) {
                             val series = result.data
+                            Log.d(TAG, "   ✓ ${item.symbol}: Got ${series.size} candles")
                             if (!isFresh(series, now)) {
-                                Log.d(TAG, "Watchlist ${item.symbol} data stale; skipping")
+                                Log.d(TAG, "   ⏭️ ${item.symbol}: Data stale (last candle too old)")
                                 continue
                             }
-                            val signal = signalsRepository.computeSignal(series, watchlistRange)
+                            
+                            // If intraday data doesn't have enough candles for signal computation (need 20+),
+                            // fall back to daily data which will have more history
+                            val signalSeries = if (series.size < MIN_CANDLES_FOR_SIGNAL) {
+                                Log.i(TAG, "   🔄 ${item.symbol}: Insufficient candles (${series.size}), fetching daily fallback")
+                                when (val fallback = stockRepository.getDailySeriesFallback(item.symbol, ChartRange.SIX_MONTH)) {
+                                    is StooqResult.Success -> {
+                                        Log.i(TAG, "   ✓ ${item.symbol}: Daily fallback got ${fallback.data.size} candles")
+                                        fallback.data
+                                    }
+                                    is StooqResult.Error -> {
+                                        Log.w(TAG, "   ❌ ${item.symbol}: Daily fallback failed, using limited intraday")
+                                        series
+                                    }
+                                }
+                            } else {
+                                Log.d(TAG, "   ✓ ${item.symbol}: Sufficient candles for signal computation")
+                                series
+                            }
+                            
+                            Log.d(TAG, "   🧮 ${item.symbol}: Computing signal with ${signalSeries.size} candles...")
+                            val signal = signalsRepository.computeSignal(signalSeries, watchlistRange)
                             if (signal == null) {
-                                Log.d(TAG, "Watchlist ${item.symbol} no signal generated")
+                                Log.d(TAG, "   ⚠️ ${item.symbol}: No signal generated")
                                 continue
                             }
+                            Log.i(TAG, "   📈 ${item.symbol}: Signal computed - score=${signal.score}, tier=${signal.tier.label}")
                             if (signal.score < minScore && signal.score > -minScore) {
-                                Log.d(TAG, "Watchlist ${item.symbol} signal score ${signal.score} below threshold $minScore")
+                                Log.d(TAG, "   ⏭️ ${item.symbol}: Score ${signal.score} below threshold $minScore")
                                 continue
                             }
                             if (signalsRepository.isInCooldown(item.symbol, signal.tier.label, signal.generatedAt)) {
-                                Log.d(TAG, "Watchlist ${item.symbol} signal ${signal.tier.label} in cooldown")
+                                Log.d(TAG, "   ⏭️ ${item.symbol}: Signal ${signal.tier.label} in cooldown")
                                 continue
                             }
                             val event = buildEvent(
@@ -153,9 +200,10 @@ class NotificationWindowWorker @AssistedInject constructor(
                             signalsRepository.recordEvent(event)
                             candidates.add(event)
                             watchlistCandidates += 1
-                            Log.d(TAG, "Watchlist candidate ${item.symbol} ${signal.tier.label} score=${signal.score}")
+                            Log.i(TAG, "   ✅ ${item.symbol}: CANDIDATE ADDED - ${signal.tier.label} score=${signal.score}")
                         } else {
-                            Log.w(TAG, "Watchlist ${item.symbol} failed to fetch series; skipping")
+                            val errorResult = result as? StooqResult.Error
+                            Log.w(TAG, "   ❌ ${item.symbol}: Failed to fetch series - ${errorResult?.message}")
                         }
                         evaluateIndicatorAlerts(
                             item = item,
@@ -163,7 +211,7 @@ class NotificationWindowWorker @AssistedInject constructor(
                             candidates = candidates
                         )
                     } catch (e: Exception) {
-                        Log.w(TAG, "Error processing watchlist item ${item.symbol}, skipping", e)
+                        Log.e(TAG, "   ❌ ${item.symbol}: Exception during processing", e)
                     }
                 }
             }
@@ -222,7 +270,23 @@ class NotificationWindowWorker @AssistedInject constructor(
                                 Log.d(TAG, "Market mover ${mover.ticker} data stale; skipping")
                                 return@forEach
                             }
-                            val signal = signalsRepository.computeSignal(series, moversChartRange)
+                            
+                            // If intraday data doesn't have enough candles for signal computation (need 20+),
+                            // fall back to daily data which will have more history
+                            val signalSeries = if (series.size < MIN_CANDLES_FOR_SIGNAL) {
+                                Log.d(TAG, "Market mover ${mover.ticker}: insufficient candles (${series.size}), fetching daily fallback")
+                                when (val fallback = stockRepository.getDailySeriesFallback(mover.ticker, ChartRange.SIX_MONTH)) {
+                                    is StooqResult.Success -> fallback.data
+                                    is StooqResult.Error -> {
+                                        Log.w(TAG, "Daily fallback failed for ${mover.ticker}, using limited intraday")
+                                        series
+                                    }
+                                }
+                            } else {
+                                series
+                            }
+                            
+                            val signal = signalsRepository.computeSignal(signalSeries, moversChartRange)
                             if (signal == null) {
                                 Log.d(TAG, "Market mover ${mover.ticker} no signal generated")
                                 return@forEach
@@ -258,28 +322,45 @@ class NotificationWindowWorker @AssistedInject constructor(
                 }
             }
 
+            Log.i(TAG, "═══════════════════════════════════════════════════════════════")
+            Log.i(TAG, "📊 PROCESSING SUMMARY for window $windowId")
+            Log.i(TAG, "   Watchlist candidates: $watchlistCandidates")
+            Log.i(TAG, "   Market mover candidates: $moverCandidates")
+            Log.i(TAG, "   Total candidates: ${candidates.size}")
+            Log.i(TAG, "═══════════════════════════════════════════════════════════════")
+            
             if (candidates.isEmpty()) {
-                Log.d(TAG, "No candidates generated for window $windowId, processing queued events")
+                Log.i(TAG, "📭 No candidates generated, processing queued events...")
                 notificationQueueProcessor.processQueued(settings)
             } else {
+                Log.i(TAG, "📬 Processing ${candidates.size} candidate(s)...")
+                candidates.forEachIndexed { idx, event ->
+                    Log.i(TAG, "   ${idx + 1}. ${event.ticker}: ${event.tier.label} (score=${event.score})")
+                }
                 notificationQueueProcessor.processCandidates(candidates, settings)
             }
-            Log.d(
-                TAG,
-                "Successfully processed window $windowId with watchlist=$watchlistCandidates movers=$moverCandidates total=${candidates.size}"
-            )
+            
+            if (DebugConfig.ENABLE_DEV_MODE) {
+                Log.i(TAG, "═══════════════════════════════════════════════════════════════")
+                Log.i(TAG, "✅ NotificationWindowWorker COMPLETED SUCCESSFULLY")
+                Log.i(TAG, "   Window: $windowId")
+                Log.i(TAG, "   Time: ${LocalDateTime.now()}")
+                Log.i(TAG, "═══════════════════════════════════════════════════════════════")
+            } else {
+                Log.d(TAG, "NotificationWindowWorker completed successfully - window: $windowId")
+            }
             Result.success()
         } catch (e: java.io.IOException) {
-            Log.e(TAG, "Network error in window $windowId, will retry", e)
+            Log.e(TAG, "❌ Network error in window $windowId, will retry", e)
             Result.retry()
         } catch (e: android.database.sqlite.SQLiteException) {
-            Log.e(TAG, "Database error in window $windowId, will retry", e)
+            Log.e(TAG, "❌ Database error in window $windowId, will retry", e)
             Result.retry()
         } catch (e: kotlinx.coroutines.CancellationException) {
-            Log.w(TAG, "Worker cancelled for window $windowId", e)
+            Log.w(TAG, "⚠️ Worker cancelled for window $windowId", e)
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "Unexpected error in window $windowId, will not retry", e)
+            Log.e(TAG, "❌ Unexpected error in window $windowId, will not retry", e)
             Result.failure()
         }
     }
@@ -464,6 +545,7 @@ class NotificationWindowWorker @AssistedInject constructor(
         const val KEY_WINDOW_ID = "window_id"
         private const val TAG = "NotificationWindowWorker"
         private const val MAX_MOVERS = 3
+        private const val MIN_CANDLES_FOR_SIGNAL = 20
         private val STALE_THRESHOLD = Duration.ofDays(7)
     }
 }

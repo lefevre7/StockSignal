@@ -56,12 +56,22 @@ import com.example.stocksignal.data.settings.SignalSensitivity
 import com.example.stocksignal.data.settings.SnoozeDurationOption
 import com.example.stocksignal.ui.components.StockCard
 import com.example.stocksignal.ui.theme.StockSignalDimens
+import com.example.stocksignal.util.DebugConfig
 import java.time.DayOfWeek
+import android.widget.Toast
 import kotlin.math.roundToInt
 
 @Composable
 fun SettingsRoute(viewModel: SettingsViewModel = hiltViewModel()) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    
+    // Show toast when toastMessage changes
+    state.toastMessage?.let { message ->
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        viewModel.clearToast()
+    }
+    
     SettingsScreen(
         settings = state.settings,
         errorMessage = state.errorMessage,
@@ -76,6 +86,8 @@ fun SettingsRoute(viewModel: SettingsViewModel = hiltViewModel()) {
         onSnoozeDurationChange = viewModel::setSnoozeDuration,
         onSignalSensitivityChange = viewModel::setSignalSensitivity,
         onImmediatePostsToggle = viewModel::setImmediatePostsEnabled,
+        onOfflineTranslationToggle = viewModel::setOfflineTranslationEnabled,
+        onDeleteOfflineTranslationModel = viewModel::deleteOfflineTranslationModel,
         onSendTestNotification = viewModel::sendTestNotification,
         onCheckWorkerStatus = viewModel::checkWorkerStatus,
         onForceScheduleWorkers = viewModel::forceScheduleWorkers
@@ -98,6 +110,8 @@ fun SettingsScreen(
     onSnoozeDurationChange: (SnoozeDurationOption) -> Unit,
     onSignalSensitivityChange: (SignalSensitivity) -> Unit,
     onImmediatePostsToggle: (Boolean) -> Unit,
+    onOfflineTranslationToggle: (Boolean) -> Unit,
+    onDeleteOfflineTranslationModel: () -> Unit,
     onSendTestNotification: () -> Unit,
     onCheckWorkerStatus: () -> Unit,
     onForceScheduleWorkers: () -> Unit,
@@ -121,6 +135,7 @@ fun SettingsScreen(
             settings.scheduleWindows.filter { it.type == ScheduleWindowType.MARKET_OPEN_MINUS }
         NotificationFrequency.ONE_PER_WEEK -> emptyList()
         NotificationFrequency.ONLY_WHEN_OPEN -> settings.scheduleWindows
+        NotificationFrequency.DEV_ONE_MINUTE -> settings.scheduleWindows.take(1) // Dev mode: just first window
     }
 
     LazyColumn(
@@ -185,7 +200,12 @@ fun SettingsScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    NotificationFrequency.values().forEach { option ->
+                    val availableFrequencies = if (DebugConfig.ENABLE_DEV_MODE) {
+                        NotificationFrequency.values().toList()
+                    } else {
+                        NotificationFrequency.values().filter { it != NotificationFrequency.DEV_ONE_MINUTE }
+                    }
+                    availableFrequencies.forEach { option ->
                         FilterChip(
                             selected = settings.frequency == option,
                             onClick = { onFrequencyChange(option) },
@@ -220,6 +240,33 @@ fun SettingsScreen(
                     enabled = settings.notificationTypes.contains(NotificationType.DIGESTS),
                     onToggle = { onNotificationTypeToggle(NotificationType.DIGESTS, it) }
                 )
+            }
+        }
+
+        item {
+            StockCard {
+                Text(text = "Translation", style = MaterialTheme.typography.headlineMedium)
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "Enable the 270M offline model for translations. Wi-Fi required; uses ~304MB.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(text = "Offline translation model", style = MaterialTheme.typography.bodyMedium)
+                    Switch(
+                        checked = settings.offlineTranslationEnabled,
+                        onCheckedChange = onOfflineTranslationToggle
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                TextButton(onClick = onDeleteOfflineTranslationModel) {
+                    Text("Delete offline model")
+                }
             }
         }
 
@@ -651,6 +698,8 @@ private fun scheduleDescription(frequency: NotificationFrequency): String {
             "Weekly notifications use market open offset on the selected day."
         NotificationFrequency.ONLY_WHEN_OPEN ->
             "Background windows are disabled when notifications only run on open."
+        NotificationFrequency.DEV_ONE_MINUTE ->
+            "⚡ DEV MODE: Runs immediately + every 15min. Check Logcat for 'NotificationWindowWorker'."
     }
 }
 
@@ -687,6 +736,7 @@ private fun frequencyLabel(option: NotificationFrequency): String {
         NotificationFrequency.ONE_PER_DAY -> "1x/day"
         NotificationFrequency.ONE_PER_WEEK -> "1x/week"
         NotificationFrequency.ONLY_WHEN_OPEN -> "Only when app is open"
+        NotificationFrequency.DEV_ONE_MINUTE -> "⚡ 1min (DEV)"
     }
 }
 

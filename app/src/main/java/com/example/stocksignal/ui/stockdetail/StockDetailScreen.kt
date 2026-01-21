@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -35,9 +36,11 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.InputChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.TabRow
@@ -61,6 +64,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
@@ -85,6 +89,7 @@ import com.example.stocksignal.domain.model.PriceCandle
 import com.example.stocksignal.domain.model.SignalReason
 import com.example.stocksignal.domain.model.SignalResult
 import com.example.stocksignal.domain.model.SignalTier
+import com.example.stocksignal.domain.model.StockNewsItem
 import com.example.stocksignal.domain.model.TechnicalIndicators
 import com.example.stocksignal.ui.components.ChartFrame
 import com.example.stocksignal.ui.components.SignalBadge
@@ -96,7 +101,9 @@ import com.example.stocksignal.ui.components.CompanyExchangeText
 import com.example.stocksignal.ui.components.HtmlText
 import com.example.stocksignal.ui.theme.StockSignalDimens
 import java.time.format.DateTimeFormatter
+import java.net.URLEncoder
 import java.util.Locale
+import java.nio.charset.StandardCharsets
 import kotlin.math.abs
 
 @Composable
@@ -129,6 +136,10 @@ fun StockDetailRoute(
         onRemoveTag = viewModel::removeTag,
         onAddNote = onAddNote,
         onShare = onShare,
+        onConfirmTranslationDownload = viewModel::confirmTranslationDownload,
+        onRetryTranslationDownload = viewModel::retryTranslationDownload,
+        onDownloadOfflineModel = viewModel::requestOfflineModelDownload,
+        onDismissTranslationPrompt = viewModel::dismissTranslationPrompt,
         onExportData = {
             // Create export file in Downloads directory
             val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(
@@ -156,6 +167,10 @@ fun StockDetailScreen(
     onRemoveTag: (String) -> Unit,
     onAddNote: (String) -> Unit,
     onShare: (String, String?) -> Unit,
+    onConfirmTranslationDownload: () -> Unit,
+    onRetryTranslationDownload: () -> Unit,
+    onDownloadOfflineModel: () -> Unit,
+    onDismissTranslationPrompt: () -> Unit,
     onExportData: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -256,7 +271,14 @@ fun StockDetailScreen(
             when (selectedTab) {
                 StockDetailTab.OVERVIEW -> OverviewTab(state = state)
                 StockDetailTab.METRICS -> MetricsTab(indicators = state.indicators, range = state.range)
-                StockDetailTab.NEWS -> NewsTab()
+                StockDetailTab.NEWS -> NewsTab(
+                    news = state.news,
+                    translationMessage = state.translationMessage,
+                    showTranslationRetry = state.showTranslationRetry,
+                    showDownloadOfflineModel = !state.localModelAvailable,
+                    onRetryTranslationDownload = onRetryTranslationDownload,
+                    onDownloadOfflineModel = onDownloadOfflineModel
+                )
                 StockDetailTab.SIGNALS -> SignalsTab(signal = state.signal, range = state.range)
                 StockDetailTab.HISTORY -> HistoryTab(
                     history = state.history,
@@ -306,6 +328,53 @@ fun StockDetailScreen(
             onAddTag = onAddTag,
             onRemoveTag = onRemoveTag,
             onDismiss = { showTagSheet = false }
+        )
+    }
+
+    if (state.showTranslationPrompt) {
+        val promptTitle = state.translationPromptTitle ?: "Download translation model"
+        val promptMessage = state.translationPromptMessage
+            ?: "Download the 270M offline model to translate headlines?"
+        val isDownloading = state.translationDownloadInProgress
+        AlertDialog(
+            onDismissRequest = onDismissTranslationPrompt,
+            title = { Text(promptTitle) },
+            text = {
+                Column {
+                    Text(promptMessage)
+                    if (isDownloading) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        if (state.translationPromptType == TranslationPromptType.LOCAL_MODEL) {
+                            val percent = state.translationDownloadProgress ?: 0
+                            LinearProgressIndicator(progress = (percent / 100f).coerceIn(0f, 1f))
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(text = "$percent%")
+                        } else {
+                            LinearProgressIndicator()
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                when (state.translationPromptType) {
+                    TranslationPromptType.PLAY_SERVICES -> {
+                        TextButton(
+                            onClick = onConfirmTranslationDownload,
+                            enabled = !isDownloading
+                        ) { Text("Download") }
+                    }
+                    TranslationPromptType.LOCAL_MODEL -> {
+                        if (!isDownloading) {
+                            TextButton(onClick = onRetryTranslationDownload) { Text("Download") }
+                        }
+                    }
+                    null -> Unit
+                }
+            },
+            dismissButton = {
+                val dismissLabel = if (isDownloading) "Hide" else "Not now"
+                TextButton(onClick = onDismissTranslationPrompt) { Text(dismissLabel) }
+            }
         )
     }
 }
@@ -591,12 +660,99 @@ private fun MetricsTab(indicators: TechnicalIndicators?, range: ChartRange) {
 }
 
 @Composable
-private fun NewsTab() {
+private fun NewsTab(
+    news: List<StockNewsItem>,
+    translationMessage: String?,
+    showTranslationRetry: Boolean,
+    showDownloadOfflineModel: Boolean,
+    onRetryTranslationDownload: () -> Unit,
+    onDownloadOfflineModel: () -> Unit
+) {
+    val uriHandler = LocalUriHandler.current
     StockCard {
         Text(text = "News", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(8.dp))
-        Text(text = "Feature Coming Soon. No news yet. We'll surface headlines here.", style = MaterialTheme.typography.bodySmall)
+        
+        // Show translation error/warning message prominently
+        translationMessage?.let { message ->
+            val isError = message.contains("incompatible", ignoreCase = true) || 
+                         message.contains("failed", ignoreCase = true)
+            Surface(
+                color = if (isError) {
+                    MaterialTheme.colorScheme.errorContainer
+                } else {
+                    MaterialTheme.colorScheme.surfaceVariant
+                },
+                shape = MaterialTheme.shapes.small,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (isError) {
+                        MaterialTheme.colorScheme.onErrorContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    modifier = Modifier.padding(8.dp)
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+        
+        if (showDownloadOfflineModel || showTranslationRetry) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (showDownloadOfflineModel) {
+                    TextButton(onClick = onDownloadOfflineModel) { Text("Download offline model") }
+                }
+                if (showTranslationRetry) {
+                    TextButton(onClick = onRetryTranslationDownload) { Text("Try download again") }
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+        if (news.isEmpty()) {
+            Text(text = "No recent headlines available.", style = MaterialTheme.typography.bodySmall)
+            return@StockCard
+        }
+        news.forEachIndexed { index, item ->
+            val displayTitle = item.translatedTitle?.takeIf { it.isNotBlank() } ?: item.title
+            val searchUrl = buildGoogleSearchUrl(displayTitle)
+            if (index > 0) {
+                Spacer(modifier = Modifier.height(10.dp))
+            }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { uriHandler.openUri(searchUrl) }
+            ) {
+                Text(text = displayTitle, style = MaterialTheme.typography.bodyMedium)
+                if (item.translatedTitle.isNullOrBlank()) {
+                    val meta = buildString {
+                        if (item.publishedAtText.isNotBlank()) {
+                            append(item.publishedAtText)
+                        }
+                        if (!item.source.isNullOrBlank()) {
+                            if (isNotEmpty()) append(" • ")
+                            append(item.source)
+                        }
+                    }
+                    if (meta.isNotBlank()) {
+                        Text(
+                            text = meta,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        )
+                    }
+                }
+            }
+        }
     }
+}
+
+private fun buildGoogleSearchUrl(title: String): String {
+    val query = URLEncoder.encode(title, StandardCharsets.UTF_8.toString())
+    return "https://www.google.com/search?q=$query"
 }
 
 @OptIn(ExperimentalLayoutApi::class)

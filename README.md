@@ -83,3 +83,9 @@ Lint:
 ```sh
 ./gradlew lintDebug
 ```
+
+## Using git lfs to upload large files
+If simply using it like it's intended doesn't work (because no authentication gets to git lfs and therefore there is the error: " % git push
+error: Authentication error: Authentication required: You must have push access to verify locks
+error: failed to push some refs to 'https://github.com/lefevre7/StockSignal.git'"), then disable locksverify with "git config lfs.locksverify false" and maybe even remove the Remove the LFS push hook
+rm -f .git/hooks/pre-push, and then push again: git push origin main
