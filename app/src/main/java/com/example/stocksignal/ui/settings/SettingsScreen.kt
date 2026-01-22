@@ -98,8 +98,6 @@ fun SettingsRoute(viewModel: SettingsViewModel = hiltViewModel()) {
 @Composable
 fun SettingsScreen(
     settings: AppSettings,
-    errorMessage: String? = null,
-    onClearError: () -> Unit = {},
     onHoldingPeriodChange: (HoldingPeriod) -> Unit,
     onFrequencyChange: (NotificationFrequency) -> Unit,
     onNotificationTypeToggle: (NotificationType, Boolean) -> Unit,
@@ -115,7 +113,9 @@ fun SettingsScreen(
     onSendTestNotification: () -> Unit,
     onCheckWorkerStatus: () -> Unit,
     onForceScheduleWorkers: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    errorMessage: String? = null,
+    onClearError: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val notificationsEnabled = NotificationManagerCompat.from(context).areNotificationsEnabled()
@@ -248,7 +248,7 @@ fun SettingsScreen(
                 Text(text = "Translation", style = MaterialTheme.typography.headlineMedium)
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
-                    text = "Enable the 270M offline model for translations. Wi-Fi required; uses ~304MB.",
+                    text = "Enable the 1B offline model for translations. Wi-Fi required; uses ~555MB.",
                     style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(modifier = Modifier.height(8.dp))

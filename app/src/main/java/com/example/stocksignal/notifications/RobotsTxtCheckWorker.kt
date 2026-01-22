@@ -4,7 +4,6 @@ import android.app.ActivityManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
-import android.os.Build
 import android.util.Log
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
@@ -101,18 +100,14 @@ class RobotsTxtCheckWorker @AssistedInject constructor(
 
     private fun showNotification() {
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        
-        // Create notification channel for Android O and above
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "System Alerts",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "Important system alerts and warnings"
-            }
-            notificationManager.createNotificationChannel(channel)
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            "System Alerts",
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "Important system alerts and warnings"
         }
+        notificationManager.createNotificationChannel(channel)
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)

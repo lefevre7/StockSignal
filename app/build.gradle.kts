@@ -56,7 +56,7 @@ android {
             excludes += "/META-INF/LICENSE-notice.md"
         }
     }
-    assetPacks += listOf(":gemma3_270m_model")
+    assetPacks += listOf(":gemma3_1b_model")
 }
 
 dependencies {
@@ -149,12 +149,12 @@ kapt {
 }
 
 // Updated to Gemma-3 1B for better translation quality
-val localModelFile = rootProject.file("gemma3-1b-it-int4-kv1280.task")
-val localModelDevicePath = "files/llm/gemma3-1b-it-int4-kv1280.task"
-val localModelTempPath = "/data/local/tmp/gemma3-1b-it-int4-kv1280.task"
-val localModelExpectedBytes = 657_000_000L
-val localModelAssetDir = rootProject.file("gemma3_270m_model/src/main/assets")
-val localModelAssetFile = rootProject.file("gemma3_270m_model/src/main/assets/gemma3-1b-it-int4-kv1280.task")
+val localModelFile = rootProject.file("gemma3-1b-it-int4.task")
+val localModelDevicePath = "files/llm/gemma3-1b-it-int4.task"
+val localModelTempPath = "/data/local/tmp/gemma3-1b-it-int4.task"
+val localModelExpectedBytes = 554_661_243L
+val localModelAssetDir = rootProject.file("gemma3_1b_model/src/main/assets")
+val localModelAssetFile = rootProject.file("gemma3_1b_model/src/main/assets/gemma3-1b-it-int4.task")
 val appPackageName = "com.example.stocksignal"
 val adbExecutable = run {
     val propsFile = rootProject.file("local.properties")
@@ -194,8 +194,8 @@ tasks.register("pushLocalTranslationModel") {
     doLast {
         if (!localModelFile.exists()) {
             throw GradleException(
-                "Local model file not found at ${localModelFile.absolutePath}. " +
-                    "Place gemma3-1b-it-int4-kv1280.task at repo root or let the app download it."
+                    "Local model file not found at ${localModelFile.absolutePath}. " +
+                    "Place gemma3-1b-it-int4.task at repo root or let the app download it."
             )
         }
 

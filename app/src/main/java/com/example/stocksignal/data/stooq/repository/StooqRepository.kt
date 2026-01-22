@@ -1,8 +1,6 @@
 package com.example.stocksignal.data.stooq.repository
 
-import android.os.Build
 import android.util.Log
-import androidx.annotation.RequiresApi
 import com.example.stocksignal.data.stooq.model.EnrichedIntradayResponse
 import com.example.stocksignal.data.stooq.model.IntradayStockData
 import com.example.stocksignal.data.stooq.model.IntradayStockDataMap
@@ -32,7 +30,6 @@ class StooqRepository(private val api: StooqApi) {
 
     companion object {
         private const val TAG = "StooqRepository"
-        @RequiresApi(Build.VERSION_CODES.O)
         private val DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd")
         private val CSV_DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd")
         private val INTRADAY_TIME_FORMATTER = DateTimeFormatter.ofPattern("HHmmss")
@@ -47,7 +44,6 @@ class StooqRepository(private val api: StooqApi) {
      * @param endDate End date for data range
      * @return Result containing StockDataMap or Error
      */
-    @RequiresApi(Build.VERSION_CODES.O)
     suspend fun getData(
         tickers: List<String>,
         startDate: LocalDate,
@@ -126,7 +122,6 @@ class StooqRepository(private val api: StooqApi) {
      * @param end Optional inclusive end timestamp filter (applied after fetch)
      * @return Result containing IntradayStockDataMap or Error
      */
-    @RequiresApi(Build.VERSION_CODES.O)
     suspend fun getIntradayData(
         tickers: List<String>,
         intervalMinutes: Int = 10,
@@ -200,7 +195,6 @@ class StooqRepository(private val api: StooqApi) {
      * @param endDate End date in YYYYMMDD format
      * @return Result containing map of LocalDate to StockData or Error
      */
-    @RequiresApi(Build.VERSION_CODES.O)
     private suspend fun fetchDataForTicker(
         ticker: String,
         startDate: String,
@@ -225,7 +219,6 @@ class StooqRepository(private val api: StooqApi) {
      * @param end Optional inclusive end timestamp filter (applied after fetch)
      * @return Result containing map of LocalDateTime to IntradayStockData or Error
      */
-    @RequiresApi(Build.VERSION_CODES.O)
     private suspend fun fetchIntradayDataForTicker(
         ticker: String,
         intervalMinutes: Int,
@@ -265,7 +258,6 @@ class StooqRepository(private val api: StooqApi) {
     /**
      * Fetches enriched intraday data (with exchange info) for a single ticker.
      */
-    @RequiresApi(Build.VERSION_CODES.O)
     suspend fun getEnrichedIntradayData(
         ticker: String,
         intervalMinutes: Int = 10,
@@ -304,7 +296,6 @@ class StooqRepository(private val api: StooqApi) {
      * @param csvData Raw CSV string from API
      * @return Map of LocalDate to StockData
      */
-    @RequiresApi(Build.VERSION_CODES.O)
     private fun parseCsvData(ticker: String, csvData: String): Map<LocalDate, StockData> {
         val dataMap = mutableMapOf<LocalDate, StockData>()
 
@@ -347,7 +338,6 @@ class StooqRepository(private val api: StooqApi) {
         return dataMap
     }
 
-    @RequiresApi(Build.VERSION_CODES.O)
     private fun filterIntradayByRange(
         data: Map<LocalDateTime, IntradayStockData>,
         start: LocalDateTime?,
@@ -405,7 +395,6 @@ class StooqRepository(private val api: StooqApi) {
      * 
      * Example line: 20260106,154000,446.3800,448.2500,438.4100,439.3908,5400955
      */
-    @RequiresApi(Build.VERSION_CODES.O)
     private fun parseIntradayResponseEnriched(
         ticker: String,
         rawResponse: String
@@ -416,7 +405,6 @@ class StooqRepository(private val api: StooqApi) {
         return EnrichedIntradayResponse(data, exchange)
     }
 
-    @RequiresApi(Build.VERSION_CODES.O)
     private fun extractExchangeFromResponse(rawResponse: String): String? {
         return try {
             // Look for pattern: <a href=...>EXCHANGE_NAME</a>: TICKER
@@ -429,7 +417,6 @@ class StooqRepository(private val api: StooqApi) {
         }
     }
 
-    @RequiresApi(Build.VERSION_CODES.O)
     private fun parseIntradayData(
         ticker: String,
         rawResponse: String

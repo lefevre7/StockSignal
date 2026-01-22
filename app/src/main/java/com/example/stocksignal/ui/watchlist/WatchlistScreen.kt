@@ -70,6 +70,7 @@ import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 import kotlin.math.abs
 
 @Composable
@@ -115,9 +116,9 @@ private fun <T> MutableList<T>.move(from: Int, to: Int) {
 @Composable
 fun WatchlistScreen(
     items: List<WatchlistCardState>,
+    modifier: Modifier = Modifier,
     errorMessage: String? = null,
     onClearError: () -> Unit = {},
-    modifier: Modifier = Modifier,
     onReorder: (List<WatchlistItem>) -> Unit = {},
     onRemove: (String) -> Unit = {},
     onSnooze: (String) -> Unit = {},
@@ -622,7 +623,7 @@ private fun formatPrice(price: Double?): String {
     return if (price == null) {
         "—"
     } else {
-        "$" + String.format("%.2f", price)
+        "$" + String.format(Locale.getDefault(), "%.2f", price)
     }
 }
 
@@ -632,7 +633,7 @@ private fun formatPercentChange(change: Double?): String {
     } else {
         val sign = if (change > 0) "+" else if (change < 0) "-" else ""
         val magnitude = abs(change)
-        sign + String.format("%.2f", magnitude) + "%"
+        sign + String.format(Locale.getDefault(), "%.2f", magnitude) + "%"
     }
 }
 

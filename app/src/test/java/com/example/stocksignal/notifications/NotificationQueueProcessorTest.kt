@@ -2,6 +2,7 @@ package com.example.stocksignal.notifications
 
 import android.app.NotificationManager
 import android.content.Context
+import android.service.notification.StatusBarNotification
 import com.example.stocksignal.data.local.entity.NotificationStateEntity
 import com.example.stocksignal.data.local.entity.WatchlistItemEntity
 import com.example.stocksignal.data.local.repository.NotificationStateRepository
@@ -52,7 +53,7 @@ class NotificationQueueProcessorTest {
 
     @Test
     fun `queues when active notification present`() = runTest {
-        stubNotificationManager()
+        stubNotificationManager(activeIds = listOf(42))
         val now = LocalDateTime.now()
         val state = NotificationStateEntity(
             lastActiveNotificationId = 42,
@@ -288,9 +289,14 @@ class NotificationQueueProcessorTest {
         )
     }
 
-    private fun stubNotificationManager() {
+    private fun stubNotificationManager(activeIds: List<Int> = emptyList()) {
         val manager = mockk<NotificationManager>()
         every { context.getSystemService(Context.NOTIFICATION_SERVICE) } returns manager
-        every { manager.activeNotifications } returns emptyArray()
+        val notifications = activeIds.map { id ->
+            mockk<StatusBarNotification>().also { notification ->
+                every { notification.id } returns id
+            }
+        }.toTypedArray()
+        every { manager.activeNotifications } returns notifications
     }
 }

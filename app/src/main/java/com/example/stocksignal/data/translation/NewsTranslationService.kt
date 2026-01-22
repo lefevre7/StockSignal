@@ -57,22 +57,41 @@ class NewsTranslationService @Inject constructor(
             .build()
     }
     private val localModelDir: File by lazy { File(context.filesDir, LOCAL_MODEL_DIR_NAME) }
-    private val localModelFile: File by lazy { File(localModelDir, LOCAL_MODEL_FILE_NAME) }
+    private val primaryModelFile: File by lazy { File(localModelDir, PRIMARY_MODEL_FILE_NAME) }
+    private val legacyModelFile: File by lazy { File(localModelDir, LEGACY_MODEL_FILE_NAME) }
     private val localDownloadMutex = Mutex()
     private var localInference: LlmInference? = null
-    @Volatile private var cachedModelLastModified: Long = -1L
-    @Volatile private var cachedModelSize: Long = -1L
-    @Volatile private var cachedModelValid: Boolean? = null
-    @Volatile private var localModelIncompatible: Boolean = false
+    private var localInferenceSpec: LocalModelSpec? = null
+    @Volatile private var cachedPrimaryModelLastModified: Long = -1L
+    @Volatile private var cachedPrimaryModelSize: Long = -1L
+    @Volatile private var cachedPrimaryModelValid: Boolean? = null
+    @Volatile private var cachedLegacyModelLastModified: Long = -1L
+    @Volatile private var cachedLegacyModelSize: Long = -1L
+    @Volatile private var cachedLegacyModelValid: Boolean? = null
+    @Volatile private var primaryModelIncompatible: Boolean = false
+    @Volatile private var legacyModelIncompatible: Boolean = false
     @Volatile private var localModelIncompatibilityMessage: String? = null
+    @Volatile private var warnedGpuFallback: Boolean = false
+    @Volatile private var warnedLegacyFallback: Boolean = false
+    @Volatile private var pendingWarningMessage: String? = null
+    private val warningLock = Any()
     private val assetPackManager by lazy { AssetPackManagerFactory.getInstance(context) }
+    private val primaryModelSpec = LocalModelSpec(
+        label = "Gemma 3 1B int4",
+        fileName = PRIMARY_MODEL_FILE_NAME,
+        sha256 = PRIMARY_MODEL_SHA256,
+        expectedBytes = PRIMARY_MODEL_EXPECTED_BYTES,
+        isLegacy = false
+    )
+    private val legacyModelSpec = LocalModelSpec(
+        label = "Gemma 3 270M q8",
+        fileName = LEGACY_MODEL_FILE_NAME,
+        sha256 = LEGACY_MODEL_SHA256,
+        expectedBytes = LEGACY_MODEL_EXPECTED_BYTES,
+        isLegacy = true
+    )
 
     suspend fun getModelAvailability(): ModelAvailability {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-            Log.w(TAG, "Translation not supported below API 31.")
-            // TODO: Consider offering a tiny model or keeping Polish headlines.
-            return ModelAvailability.UNAVAILABLE
-        }
         return try {
             val status = model.checkStatus()
             Log.d(TAG, "Play services model status: $status")
@@ -88,55 +107,50 @@ class NewsTranslationService @Inject constructor(
     }
 
     suspend fun isLocalModelAvailable(): Boolean {
-        if (!localModelFile.exists()) {
-            Log.d(TAG, "Local model missing at ${localModelFile.absolutePath}.")
-            return false
-        }
-        val size = localModelFile.length()
-        if (size != LOCAL_MODEL_EXPECTED_BYTES) {
-            Log.w(TAG, "Local model size mismatch. Expected $LOCAL_MODEL_EXPECTED_BYTES, got $size.")
-            return false
-        }
-        val lastModified = localModelFile.lastModified()
-        val cachedValid = cachedModelValid
-        if (cachedValid != null &&
-            cachedModelSize == size &&
-            cachedModelLastModified == lastModified
-        ) {
-            return cachedValid
-        }
-        return withContext(Dispatchers.IO) {
-            val hash = computeSha256(localModelFile)
-            val matches = hash != null && hash.equals(LOCAL_MODEL_SHA256, ignoreCase = true)
-            if (!matches) {
-                Log.w(TAG, "Local model hash mismatch. Expected $LOCAL_MODEL_SHA256, got $hash.")
-            }
-            cachedModelSize = size
-            cachedModelLastModified = lastModified
-            cachedModelValid = matches
-            matches
-        }
+        val primaryAvailable = isModelAvailable(
+            spec = primaryModelSpec,
+            file = primaryModelFile,
+            expectedBytes = PRIMARY_MODEL_EXPECTED_BYTES,
+            expectedSha = PRIMARY_MODEL_SHA256,
+            cache = ModelCache.PRIMARY
+        )
+        if (primaryAvailable) return true
+        return isModelAvailable(
+            spec = legacyModelSpec,
+            file = legacyModelFile,
+            expectedBytes = LEGACY_MODEL_EXPECTED_BYTES,
+            expectedSha = LEGACY_MODEL_SHA256,
+            cache = ModelCache.LEGACY
+        )
     }
 
     suspend fun isLocalModelUsable(): Boolean {
-        if (localModelIncompatible) {
-            Log.w(TAG, "Local model flagged as incompatible; treating as unusable.")
+        if (isLocalModelIncompatible()) {
+            Log.w(TAG, "Local models flagged as incompatible; treating as unusable.")
             return false
         }
-        return isLocalModelAvailable()
+        return resolveUsableModelSpec() != null
     }
 
-    fun getLocalModelRequiredBytes(): Long = LOCAL_MODEL_REQUIRED_BYTES
+    fun getLocalModelRequiredBytes(): Long = PRIMARY_MODEL_REQUIRED_BYTES
 
-    fun getLocalModelExpectedBytes(): Long = LOCAL_MODEL_EXPECTED_BYTES
+    fun getLocalModelExpectedBytes(): Long = PRIMARY_MODEL_EXPECTED_BYTES
 
-    fun getLocalModelSha256(): String = LOCAL_MODEL_SHA256
+    fun getLocalModelSha256(): String = PRIMARY_MODEL_SHA256
 
-    fun getLocalModelFilePath(): String = localModelFile.absolutePath
+    fun getLocalModelFilePath(): String = primaryModelFile.absolutePath
 
-    fun isLocalModelIncompatible(): Boolean = localModelIncompatible
+    fun isLocalModelIncompatible(): Boolean = primaryModelIncompatible && legacyModelIncompatible
 
     fun getLocalModelIncompatibilityMessage(): String? = localModelIncompatibilityMessage
+
+    fun consumeWarningMessage(): String? {
+        synchronized(warningLock) {
+            val message = pendingWarningMessage
+            pendingWarningMessage = null
+            return message
+        }
+    }
 
     fun hasEnoughStorage(minBytes: Long): Boolean {
         return try {
@@ -180,8 +194,16 @@ class NewsTranslationService @Inject constructor(
     suspend fun downloadLocalModel(onProgress: (Int) -> Unit): Boolean {
         return withContext(Dispatchers.IO) {
             localDownloadMutex.withLock {
-                if (!localModelIncompatible && isLocalModelAvailable()) {
-                    Log.i(TAG, "Local model already downloaded.")
+                if (!primaryModelIncompatible &&
+                    isModelAvailable(
+                        spec = primaryModelSpec,
+                        file = primaryModelFile,
+                        expectedBytes = PRIMARY_MODEL_EXPECTED_BYTES,
+                        expectedSha = PRIMARY_MODEL_SHA256,
+                        cache = ModelCache.PRIMARY
+                    )
+                ) {
+                    Log.i(TAG, "Primary local model already downloaded.")
                     onProgress(100)
                     return@withLock true
                 }
@@ -190,12 +212,12 @@ class NewsTranslationService @Inject constructor(
                     Log.e(TAG, "Failed to create local model directory at ${localModelDir.absolutePath}.")
                     return@withLock false
                 }
-                val tempFile = File(localModelDir, "$LOCAL_MODEL_FILE_NAME.part")
+                val tempFile = File(localModelDir, "$PRIMARY_MODEL_FILE_NAME.part")
                 if (tempFile.exists()) {
                     tempFile.delete()
                 }
-                Log.i(TAG, "Downloading local model from $LOCAL_MODEL_URL.")
-                val request = Request.Builder().url(LOCAL_MODEL_URL).build()
+                Log.i(TAG, "Downloading local model from $PRIMARY_MODEL_URL.")
+                val request = Request.Builder().url(PRIMARY_MODEL_URL).build()
                 downloadClient.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) {
                         Log.e(TAG, "Local model download failed: HTTP ${response.code}.")
@@ -206,11 +228,11 @@ class NewsTranslationService @Inject constructor(
                         return@withLock false
                     }
                     val contentLength = body.contentLength()
-                    if (contentLength > 0 && contentLength != LOCAL_MODEL_EXPECTED_BYTES) {
+                    if (contentLength > 0 && contentLength != PRIMARY_MODEL_EXPECTED_BYTES) {
                         Log.w(
                             TAG,
                             "Local model content length mismatch. " +
-                                "Expected $LOCAL_MODEL_EXPECTED_BYTES, got $contentLength."
+                                "Expected $PRIMARY_MODEL_EXPECTED_BYTES, got $contentLength."
                         )
                     }
                     onProgress(0)
@@ -229,7 +251,7 @@ class NewsTranslationService @Inject constructor(
                                 val totalBytes = if (contentLength > 0) {
                                     contentLength
                                 } else {
-                                    LOCAL_MODEL_EXPECTED_BYTES
+                                    PRIMARY_MODEL_EXPECTED_BYTES
                                 }
                                 val percent = ((totalRead * 100) / totalBytes)
                                     .toInt()
@@ -243,34 +265,35 @@ class NewsTranslationService @Inject constructor(
                         }
                     }
                     val finalSize = tempFile.length()
-                    if (finalSize != LOCAL_MODEL_EXPECTED_BYTES) {
+                    if (finalSize != PRIMARY_MODEL_EXPECTED_BYTES) {
                         Log.e(TAG, "Local model size mismatch after download: $finalSize bytes.")
                         tempFile.delete()
                         return@withLock false
                     }
                     val downloadedHash = digest.digest().toHexString()
-                    if (!downloadedHash.equals(LOCAL_MODEL_SHA256, ignoreCase = true)) {
+                    if (!downloadedHash.equals(PRIMARY_MODEL_SHA256, ignoreCase = true)) {
                         Log.e(
                             TAG,
                             "Local model hash mismatch after download. " +
-                                "Expected $LOCAL_MODEL_SHA256, got $downloadedHash."
+                                "Expected $PRIMARY_MODEL_SHA256, got $downloadedHash."
                         )
                         tempFile.delete()
                         return@withLock false
                     }
-                    if (localModelFile.exists() && !localModelFile.delete()) {
+                    if (primaryModelFile.exists() && !primaryModelFile.delete()) {
                         Log.w(TAG, "Failed to delete existing local model before rename.")
                     }
-                    if (!tempFile.renameTo(localModelFile)) {
+                    if (!tempFile.renameTo(primaryModelFile)) {
                         Log.e(TAG, "Failed to move local model into place.")
                         tempFile.delete()
                         return@withLock false
                     }
                     localInference = null
-                    cachedModelSize = localModelFile.length()
-                    cachedModelLastModified = localModelFile.lastModified()
-                    cachedModelValid = true
-                    Log.i(TAG, "Local model download complete: ${localModelFile.absolutePath}.")
+                    localInferenceSpec = null
+                    cachedPrimaryModelSize = primaryModelFile.length()
+                    cachedPrimaryModelLastModified = primaryModelFile.lastModified()
+                    cachedPrimaryModelValid = true
+                    Log.i(TAG, "Local model download complete: ${primaryModelFile.absolutePath}.")
                     onProgress(100)
                     true
                 }
@@ -282,11 +305,11 @@ class NewsTranslationService @Inject constructor(
         return withContext(Dispatchers.IO) {
             try {
                 clearLocalModelIncompatibility()
-                val packName = LOCAL_MODEL_ASSET_PACK
+                val packName = PRIMARY_MODEL_ASSET_PACK
                 val current = assetPackManager.getPackLocation(packName)
                 if (current != null) {
                     Log.i(TAG, "Local model asset pack already installed.")
-                    return@withContext copyFromAssetPack(current)
+                    return@withContext copyFromAssetPack(current, primaryModelSpec)
                 }
                 val result = suspendCancellableCoroutine<Boolean> { cont ->
                     lateinit var listener: AssetPackStateUpdateListener
@@ -325,7 +348,7 @@ class NewsTranslationService @Inject constructor(
                     Log.w(TAG, "Asset pack location not found after fetch.")
                     return@withContext false
                 }
-                copyFromAssetPack(location)
+                copyFromAssetPack(location, primaryModelSpec)
             } catch (e: Exception) {
                 Log.e(TAG, "Asset pack fetch failed.", e)
                 false
@@ -337,23 +360,26 @@ class NewsTranslationService @Inject constructor(
         return try {
             localInference?.close()
             localInference = null
+            localInferenceSpec = null
             clearLocalModelIncompatibility()
-            val tempFile = File(localModelDir, "$LOCAL_MODEL_FILE_NAME.part")
-            if (tempFile.exists()) {
-                tempFile.delete()
+            val tempFiles = listOf(
+                File(localModelDir, "$PRIMARY_MODEL_FILE_NAME.part"),
+                File(localModelDir, "$LEGACY_MODEL_FILE_NAME.part")
+            )
+            tempFiles.forEach { temp ->
+                if (temp.exists()) {
+                    temp.delete()
+                }
             }
-            if (!localModelFile.exists()) {
-                cachedModelValid = null
-                cachedModelSize = -1L
-                cachedModelLastModified = -1L
-                true
-            } else {
-                val deleted = localModelFile.delete()
-                cachedModelValid = null
-                cachedModelSize = -1L
-                cachedModelLastModified = -1L
-                deleted
-            }
+            val deletedPrimary = if (primaryModelFile.exists()) primaryModelFile.delete() else true
+            val deletedLegacy = if (legacyModelFile.exists()) legacyModelFile.delete() else true
+            cachedPrimaryModelValid = null
+            cachedPrimaryModelSize = -1L
+            cachedPrimaryModelLastModified = -1L
+            cachedLegacyModelValid = null
+            cachedLegacyModelSize = -1L
+            cachedLegacyModelLastModified = -1L
+            deletedPrimary && deletedLegacy
         } catch (e: Exception) {
             Log.e(TAG, "Failed to delete local translation model.", e)
             false
@@ -372,8 +398,8 @@ class NewsTranslationService @Inject constructor(
     }
 
     suspend fun translateWithLocalModel(input: String): String? {
-        if (localModelIncompatible) {
-            Log.w(TAG, "Local model incompatible; skipping local translation.")
+        if (isLocalModelIncompatible()) {
+            Log.w(TAG, "Local models incompatible; skipping local translation.")
             return null
         }
         val prompt = buildPrompt(input)
@@ -418,7 +444,7 @@ class NewsTranslationService @Inject constructor(
                         // Last attempt failed
                         Log.e(TAG, "All local model session configurations failed.", e)
                         if (isCompatibilityError(e)) {
-                            markLocalModelIncompatible(e)
+                            markModelIncompatible(localInferenceSpec ?: primaryModelSpec, e)
                         }
                     }
                 }
@@ -433,9 +459,9 @@ class NewsTranslationService @Inject constructor(
             "single line): $input"
     }
 
-    private fun copyFromAssetPack(location: AssetPackLocation): Boolean {
+    private fun copyFromAssetPack(location: AssetPackLocation, spec: LocalModelSpec): Boolean {
         val assetPath = location.assetsPath()
-        val sourceFile = File(assetPath, LOCAL_MODEL_FILE_NAME)
+        val sourceFile = File(assetPath, spec.fileName)
         if (!sourceFile.exists()) {
             Log.w(TAG, "Local model not found in asset pack at ${sourceFile.absolutePath}.")
             return false
@@ -444,20 +470,19 @@ class NewsTranslationService @Inject constructor(
             Log.e(TAG, "Failed to create local model directory at ${localModelDir.absolutePath}.")
             return false
         }
+        val targetFile = modelFileFor(spec)
         return try {
             sourceFile.inputStream().use { input ->
-                FileOutputStream(localModelFile).use { output ->
+                FileOutputStream(targetFile).use { output ->
                     input.copyTo(output)
                 }
             }
-            val valid = verifyLocalModelFile(localModelFile)
+            val valid = verifyLocalModelFile(targetFile, spec, cacheForSpec(spec))
             if (!valid) {
-                localModelFile.delete()
+                targetFile.delete()
                 return false
             }
-            cachedModelSize = localModelFile.length()
-            cachedModelLastModified = localModelFile.lastModified()
-            cachedModelValid = true
+            updateCache(cacheForSpec(spec), targetFile.length(), targetFile.lastModified(), true)
             true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to copy local model from asset pack.", e)
@@ -465,25 +490,107 @@ class NewsTranslationService @Inject constructor(
         }
     }
 
-    private fun verifyLocalModelFile(file: File): Boolean {
+    private fun verifyLocalModelFile(file: File, spec: LocalModelSpec, cache: ModelCache): Boolean {
         if (!file.exists()) return false
         val size = file.length()
-        if (size != LOCAL_MODEL_EXPECTED_BYTES) {
-            Log.w(TAG, "Local model size mismatch. Expected $LOCAL_MODEL_EXPECTED_BYTES, got $size.")
+        if (size != spec.expectedBytes) {
+            Log.w(
+                TAG,
+                "Local model size mismatch for ${spec.label}. Expected ${spec.expectedBytes}, got $size."
+            )
             return false
         }
         val hash = computeSha256(file)
-        val matches = hash != null && hash.equals(LOCAL_MODEL_SHA256, ignoreCase = true)
+        val matches = hash != null && hash.equals(spec.sha256, ignoreCase = true)
         if (!matches) {
-            Log.w(TAG, "Local model hash mismatch. Expected $LOCAL_MODEL_SHA256, got $hash.")
-            cachedModelValid = false
+            Log.w(
+                TAG,
+                "Local model hash mismatch for ${spec.label}. Expected ${spec.sha256}, got $hash."
+            )
+            updateCache(cache, size, file.lastModified(), false)
         }
         if (matches) {
-            cachedModelSize = size
-            cachedModelLastModified = file.lastModified()
-            cachedModelValid = true
+            updateCache(cache, size, file.lastModified(), true)
         }
         return matches
+    }
+
+    private suspend fun isModelAvailable(
+        spec: LocalModelSpec,
+        file: File,
+        expectedBytes: Long,
+        expectedSha: String,
+        cache: ModelCache
+    ): Boolean {
+        if (!file.exists()) {
+            Log.d(TAG, "Local model ${spec.label} missing at ${file.absolutePath}.")
+            return false
+        }
+        val size = file.length()
+        if (size != expectedBytes) {
+            Log.w(
+                TAG,
+                "Local model size mismatch for ${spec.label}. Expected $expectedBytes, got $size."
+            )
+            return false
+        }
+        val lastModified = file.lastModified()
+        val cachedValid = cacheValid(cache)
+        if (cachedValid != null &&
+            cacheSize(cache) == size &&
+            cacheLastModified(cache) == lastModified
+        ) {
+            return cachedValid
+        }
+        return withContext(Dispatchers.IO) {
+            val hash = computeSha256(file)
+            val matches = hash != null && hash.equals(expectedSha, ignoreCase = true)
+            if (!matches) {
+                Log.w(
+                    TAG,
+                    "Local model hash mismatch for ${spec.label}. " +
+                        "Expected $expectedSha, got $hash."
+                )
+            }
+            updateCache(cache, size, lastModified, matches)
+            matches
+        }
+    }
+
+    private fun cacheValid(cache: ModelCache): Boolean? {
+        return when (cache) {
+            ModelCache.PRIMARY -> cachedPrimaryModelValid
+            ModelCache.LEGACY -> cachedLegacyModelValid
+        }
+    }
+
+    private fun cacheSize(cache: ModelCache): Long {
+        return when (cache) {
+            ModelCache.PRIMARY -> cachedPrimaryModelSize
+            ModelCache.LEGACY -> cachedLegacyModelSize
+        }
+    }
+
+    private fun cacheLastModified(cache: ModelCache): Long {
+        return when (cache) {
+            ModelCache.PRIMARY -> cachedPrimaryModelLastModified
+            ModelCache.LEGACY -> cachedLegacyModelLastModified
+        }
+    }
+
+    private fun updateCache(cache: ModelCache, size: Long, lastModified: Long, valid: Boolean) {
+        when (cache) {
+            ModelCache.PRIMARY -> {
+                cachedPrimaryModelSize = size
+                cachedPrimaryModelLastModified = lastModified
+                cachedPrimaryModelValid = valid
+            }
+            ModelCache.LEGACY -> {
+                cachedLegacyModelSize = size
+                cachedLegacyModelLastModified = lastModified
+                cachedLegacyModelValid = valid
+            }
+        }
     }
 
     private fun computeSha256(file: File): String? {
@@ -508,57 +615,167 @@ class NewsTranslationService @Inject constructor(
         return joinToString("") { "%02x".format(it) }
     }
 
-    private fun getOrCreateLocalInference(): LlmInference? {
-        if (localModelIncompatible) {
-            Log.w(TAG, "Local model incompatible; not initializing inference.")
+    private suspend fun getOrCreateLocalInference(): LlmInference? {
+        if (isLocalModelIncompatible()) {
+            Log.w(TAG, "Local models incompatible; not initializing inference.")
             return null
         }
-        if (!verifyLocalModelFile(localModelFile)) {
-            Log.w(TAG, "Local model is not available for inference.")
-            return null
-        }
-        val existing = localInference
-        if (existing != null) return existing
-        
-        // Validate model compatibility before creating inference
-        if (!validateModelCompatibility()) {
-            Log.w(TAG, "Model failed compatibility validation.")
-            return null
-        }
-        
-        return try {
-            val options = LlmInference.LlmInferenceOptions.builder()
-                .setModelPath(localModelFile.absolutePath)
-                .setMaxTokens(128)
-                .setMaxTopK(40)
-                .build()
-            LlmInference.createFromOptions(context, options).also { localInference = it }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to initialize local LLM inference.", e)
-            if (isCompatibilityError(e)) {
-                markLocalModelIncompatible(e)
-            }
-            null
+        val attempted = mutableSetOf<LocalModelSpec>()
+        while (true) {
+            val spec = resolveUsableModelSpec() ?: return null
+            if (!attempted.add(spec)) return null
+            val inference = createInferenceForSpec(spec)
+            if (inference != null) return inference
         }
     }
-    
-    private fun validateModelCompatibility(): Boolean {
+
+    private suspend fun resolveUsableModelSpec(): LocalModelSpec? {
+        val primaryUsable = !primaryModelIncompatible &&
+            isModelAvailable(
+                spec = primaryModelSpec,
+                file = primaryModelFile,
+                expectedBytes = PRIMARY_MODEL_EXPECTED_BYTES,
+                expectedSha = PRIMARY_MODEL_SHA256,
+                cache = ModelCache.PRIMARY
+            )
+        if (primaryUsable) return primaryModelSpec
+        val legacyUsable = !legacyModelIncompatible &&
+            isModelAvailable(
+                spec = legacyModelSpec,
+                file = legacyModelFile,
+                expectedBytes = LEGACY_MODEL_EXPECTED_BYTES,
+                expectedSha = LEGACY_MODEL_SHA256,
+                cache = ModelCache.LEGACY
+            )
+        return if (legacyUsable) legacyModelSpec else null
+    }
+
+    private fun modelFileFor(spec: LocalModelSpec): File {
+        return if (spec.isLegacy) legacyModelFile else primaryModelFile
+    }
+
+    private fun cacheForSpec(spec: LocalModelSpec): ModelCache {
+        return if (spec.isLegacy) ModelCache.LEGACY else ModelCache.PRIMARY
+    }
+
+    private fun resolvePreferredBackend(): LlmInference.Backend {
+        if (isProbablyEmulator()) {
+            Log.w(TAG, "Emulator detected; forcing CPU backend for local model.")
+            notifyGpuFallbackOnce()
+            return LlmInference.Backend.CPU
+        }
+        return LlmInference.Backend.GPU
+    }
+
+    private fun isProbablyEmulator(): Boolean {
+        val fingerprint = Build.FINGERPRINT
+        val model = Build.MODEL
+        val brand = Build.BRAND
+        val device = Build.DEVICE
+        val product = Build.PRODUCT
+        val manufacturer = Build.MANUFACTURER
+        val hardware = Build.HARDWARE
+        val abis = Build.SUPPORTED_ABIS
+        return fingerprint.startsWith("generic") ||
+            fingerprint.startsWith("unknown") ||
+            model.contains("google_sdk", ignoreCase = true) ||
+            model.contains("emulator", ignoreCase = true) ||
+            model.contains("android sdk built for x86", ignoreCase = true) ||
+            manufacturer.contains("genymotion", ignoreCase = true) ||
+            (brand.startsWith("generic") && device.startsWith("generic")) ||
+            product.contains("sdk_gphone", ignoreCase = true) ||
+            product.contains("emulator", ignoreCase = true) ||
+            hardware.contains("ranchu", ignoreCase = true) ||
+            hardware.contains("goldfish", ignoreCase = true) ||
+            abis.any { it.startsWith("x86") }
+    }
+
+    private fun createInferenceForSpec(spec: LocalModelSpec): LlmInference? {
+        val modelFile = modelFileFor(spec)
+        val cache = cacheForSpec(spec)
+        val existing = localInference
+        if (existing != null && localInferenceSpec == spec) return existing
+        if (existing != null && localInferenceSpec != spec) {
+            existing.close()
+            localInference = null
+            localInferenceSpec = null
+        }
+        if (!verifyLocalModelFile(modelFile, spec, cache)) {
+            Log.w(TAG, "Local model ${spec.label} is not available for inference.")
+            markModelIncompatible(spec, IllegalStateException("Local model validation failed."))
+            return null
+        }
+        // Validate model compatibility before creating inference
+        if (!validateModelCompatibility(modelFile, spec)) {
+            Log.w(TAG, "Model ${spec.label} failed compatibility validation.")
+            markModelIncompatible(spec, IllegalStateException("Model compatibility validation failed."))
+            return null
+        }
+        val preferredBackend = resolvePreferredBackend()
+        val baseOptions = LlmInference.LlmInferenceOptions.builder()
+            .setModelPath(modelFile.absolutePath)
+            .setMaxTokens(512)
+            .setMaxTopK(40)
+            .setPreferredBackend(preferredBackend)
+            .build()
+        fun recordInference(inference: LlmInference): LlmInference {
+            localInference = inference
+            localInferenceSpec = spec
+            if (spec.isLegacy) {
+                Log.e(TAG, "Falling back to legacy ${spec.label} model.")
+                notifyLegacyFallbackOnce()
+            }
+            return inference
+        }
+        if (preferredBackend == LlmInference.Backend.CPU) {
+            return try {
+                recordInference(LlmInference.createFromOptions(context, baseOptions))
+            } catch (cpuError: Exception) {
+                Log.e(TAG, "Failed to initialize local LLM inference.", cpuError)
+                markModelIncompatible(spec, cpuError)
+                null
+            }
+        }
+        return try {
+            recordInference(LlmInference.createFromOptions(context, baseOptions))
+        } catch (gpuError: Exception) {
+            if (isCompatibilityError(gpuError)) {
+                markModelIncompatible(spec, gpuError)
+                return null
+            }
+            Log.e(TAG, "GPU inference init failed; falling back to CPU.", gpuError)
+            val cpuOptions = baseOptions.toBuilder()
+                .setPreferredBackend(LlmInference.Backend.CPU)
+                .build()
+            try {
+                recordInference(LlmInference.createFromOptions(context, cpuOptions)).also {
+                    notifyGpuFallbackOnce()
+                }
+            } catch (cpuError: Exception) {
+                Log.e(TAG, "Failed to initialize local LLM inference.", cpuError)
+                markModelIncompatible(spec, cpuError)
+                null
+            }
+        }
+    }
+
+    private fun validateModelCompatibility(file: File, spec: LocalModelSpec): Boolean {
         // Basic validation: check file is a valid TFLite model
         return try {
-            localModelFile.inputStream().use { input ->
+            file.inputStream().use { input ->
                 val header = ByteArray(8)
                 val read = input.read(header)
                 if (read < 8) {
-                    Log.w(TAG, "Model file too small (${read} bytes)")
+                    Log.w(TAG, "Model file too small for ${spec.label} (${read} bytes)")
                     return false
                 }
                 // TFLite models typically start with specific magic bytes
                 // This is a basic check - model may still be incompatible
-                Log.d(TAG, "Model file header validated")
+                Log.d(TAG, "Model file header validated for ${spec.label}")
                 true
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Model validation failed", e)
+            Log.e(TAG, "Model validation failed for ${spec.label}", e)
             false
         }
     }
@@ -570,34 +787,73 @@ class NewsTranslationService @Inject constructor(
             message.contains("signature_keys", ignoreCase = true)
     }
 
-    private fun markLocalModelIncompatible(e: Exception) {
-        if (localModelIncompatible) return
-        localModelIncompatible = true
-        localModelIncompatibilityMessage = 
-            "Local model format incompatible with MediaPipe 0.10.20. " +
-            "Model needs reconversion with proper prefill/decode signatures. " +
-            "Using cloud translation instead."
-        Log.w(TAG, "Local model marked incompatible. ${e.message}", e)
+    private fun markModelIncompatible(spec: LocalModelSpec, e: Exception) {
+        if (spec.isLegacy) {
+            if (legacyModelIncompatible) return
+            legacyModelIncompatible = true
+        } else {
+            if (primaryModelIncompatible) return
+            primaryModelIncompatible = true
+        }
+        localModelIncompatibilityMessage =
+            "Local translation model ${spec.label} is not usable on this device."
+        Log.e(TAG, "Local model ${spec.label} marked incompatible. ${e.message}", e)
     }
 
     private fun clearLocalModelIncompatibility() {
-        localModelIncompatible = false
+        primaryModelIncompatible = false
+        legacyModelIncompatible = false
         localModelIncompatibilityMessage = null
+    }
+
+    private fun notifyGpuFallbackOnce() {
+        if (warnedGpuFallback) return
+        warnedGpuFallback = true
+        enqueueWarning("GPU unavailable; using CPU for offline translations.")
+    }
+
+    private fun notifyLegacyFallbackOnce() {
+        if (warnedLegacyFallback) return
+        warnedLegacyFallback = true
+        enqueueWarning("Falling back to the legacy 270M offline model for translations.")
+    }
+
+    private fun enqueueWarning(message: String) {
+        synchronized(warningLock) {
+            pendingWarningMessage = message
+        }
+    }
+
+    private data class LocalModelSpec(
+        val label: String,
+        val fileName: String,
+        val sha256: String,
+        val expectedBytes: Long,
+        val isLegacy: Boolean
+    )
+
+    private enum class ModelCache {
+        PRIMARY,
+        LEGACY
     }
 
     companion object {
         private const val TAG = "NewsTranslationService"
         private const val LOCAL_MODEL_DIR_NAME = "llm"
-        private const val LOCAL_MODEL_FILE_NAME = "gemma3-270m-it-q8.task"
-        private const val LOCAL_MODEL_ASSET_PACK = "gemma3_270m_model"
-        // Original working model from GitHub LFS
-        private const val LOCAL_MODEL_URL =
+        private const val PRIMARY_MODEL_FILE_NAME = "gemma3-1b-it-int4.task"
+        private const val PRIMARY_MODEL_ASSET_PACK = "gemma3_1b_model"
+        // Primary model from GitHub LFS
+        private const val PRIMARY_MODEL_URL =
             "https://media.githubusercontent.com/media/lefevre7/StockSignal/refs/heads/main/" +
-                "gemma3-270m-it-q8.task?download=true"
-        private const val LOCAL_MODEL_SHA256 =
+                "gemma3-1b-it-int4.task?download=true"
+        private const val PRIMARY_MODEL_SHA256 =
+            "e3d981c01aeaaac69a84ffa0d4be13281b3176731063f1bea1c9fe6887bd9dee"
+        private const val PRIMARY_MODEL_EXPECTED_BYTES = 554_661_243L
+        private const val PRIMARY_MODEL_REQUIRED_BYTES =
+            PRIMARY_MODEL_EXPECTED_BYTES * 12 / 10
+        private const val LEGACY_MODEL_FILE_NAME = "gemma3-270m-it-q8.task"
+        private const val LEGACY_MODEL_SHA256 =
             "0f7147f1c22eaf758b819bbf7841793e4c90096c9352cde7fbe5c631f2265ef5"
-        private const val LOCAL_MODEL_EXPECTED_BYTES = 303_950_933L
-        private const val LOCAL_MODEL_REQUIRED_BYTES =
-            LOCAL_MODEL_EXPECTED_BYTES * 12 / 10
+        private const val LEGACY_MODEL_EXPECTED_BYTES = 303_950_933L
     }
 }

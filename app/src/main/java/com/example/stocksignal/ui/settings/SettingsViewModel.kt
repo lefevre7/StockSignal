@@ -54,7 +54,7 @@ class SettingsViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            autoEnableOfflineTranslationIfLocalModelPresent()
+            forceEnableOfflineTranslation()
         }
     }
 
@@ -237,19 +237,14 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    private suspend fun autoEnableOfflineTranslationIfLocalModelPresent() {
+    private suspend fun forceEnableOfflineTranslation() {
         val settings = settingsRepository.settingsFlow.first()
         if (settings.offlineTranslationEnabled) return
-        if (settingsRepository.isOfflineTranslationPreferenceSet()) return
-        val localUsable = withContext(Dispatchers.IO) {
-            translationService.isLocalModelUsable()
-        }
-        if (!localUsable) return
         try {
             settingsRepository.setOfflineTranslationEnabled(true)
-            Log.i(TAG, "Auto-enabled offline translation because a local model is present.")
+            Log.i(TAG, "Forced offline translation enabled by default.")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to auto-enable offline translation", e)
+            Log.e(TAG, "Failed to force-enable offline translation", e)
         }
     }
 
@@ -276,6 +271,7 @@ class SettingsViewModel @Inject constructor(
             try {
                 val windowWorkers = workManager.getWorkInfosByTag("notification_window").get()
                 val bootstrapWorkers = workManager.getWorkInfosByTag("notification_bootstrap").get()
+                val nowMillis = System.currentTimeMillis()
                 
                 val status = buildString {
                     appendLine("📊 Worker Status:")
@@ -287,7 +283,7 @@ class SettingsViewModel @Inject constructor(
                         appendLine("✓ ${windowWorkers.size} notification window worker(s) scheduled")
                         windowWorkers.forEachIndexed { idx, info ->
                             val state = when (info.state) {
-                                WorkInfo.State.ENQUEUED -> "⏳ Waiting"
+                                WorkInfo.State.ENQUEUED -> formatEnqueuedState(info, nowMillis)
                                 WorkInfo.State.RUNNING -> "▶️ Running"
                                 WorkInfo.State.SUCCEEDED -> "✓ Success"
                                 WorkInfo.State.FAILED -> "❌ Failed"
@@ -326,6 +322,17 @@ class SettingsViewModel @Inject constructor(
                 _errorMessage.value = "Failed to schedule workers: ${e.message}"
             }
         }
+    }
+
+    private fun formatEnqueuedState(info: WorkInfo, nowMillis: Long): String {
+        val nextSchedule = info.nextScheduleTimeMillis
+        if (nextSchedule == Long.MAX_VALUE) {
+            return "⏳ Waiting for Time Unavailable"
+        }
+        val diffMillis = nextSchedule - nowMillis
+        val minutes = if (diffMillis <= 0) 0 else (diffMillis + 59_999) / 60_000
+        val unit = if (minutes == 1L) "minute" else "minutes"
+        return "⏳ Waiting for $minutes $unit"
     }
 
     private fun defaultSettings(): AppSettings {
@@ -377,7 +384,7 @@ class SettingsViewModel @Inject constructor(
             selectedChartRange = ChartRange.SIX_MONTH,
             holdingPeriod = HoldingPeriod.MONTHS,
             immediatePostsEnabled = false,
-            offlineTranslationEnabled = false,
+            offlineTranslationEnabled = true,
             onboardingCompleted = false
         )
     }

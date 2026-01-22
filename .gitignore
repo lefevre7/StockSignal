@@ -43,3 +43,4 @@ replay_pid*
 
 # Gemma model files
 gemma3_270m_model/src/main/assets/gemma3-270m-it-q8.task
+gemma3_1b_model/src/main/assets/gemma3-1b-it-int4.task

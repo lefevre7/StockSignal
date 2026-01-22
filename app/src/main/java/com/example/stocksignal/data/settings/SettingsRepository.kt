@@ -239,7 +239,7 @@ class SettingsRepository @Inject constructor(
             ChartRange.valueOf(this[SettingsKeys.selectedChartRange] ?: ChartRange.ONE_DAY.name)
         }.getOrDefault(ChartRange.ONE_DAY)
         val immediatePostsEnabled = this[SettingsKeys.immediatePostsEnabled] ?: false
-        val offlineTranslationEnabled = this[SettingsKeys.offlineTranslationEnabled] ?: false
+        val offlineTranslationEnabled = this[SettingsKeys.offlineTranslationEnabled] ?: true
         val onboardingCompleted = this[SettingsKeys.onboardingCompleted] ?: false
         val holdingPeriod = runCatching {
             HoldingPeriod.valueOf(this[SettingsKeys.holdingPeriod] ?: HoldingPeriod.MONTHS.name)
@@ -323,7 +323,7 @@ class SettingsRepository @Inject constructor(
                 ),
                 selectedChartRange = defaultChartRange,
                 immediatePostsEnabled = false,
-                offlineTranslationEnabled = false,
+                offlineTranslationEnabled = true,
                 onboardingCompleted = false,
                 holdingPeriod = defaultHoldingPeriod
             )

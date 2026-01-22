@@ -122,6 +122,12 @@ fun StockDetailRoute(
             android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_LONG).show()
         }
     }
+    LaunchedEffect(state.translationToastMessage) {
+        state.translationToastMessage?.let { message ->
+            android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_LONG).show()
+            viewModel.clearTranslationToast()
+        }
+    }
 
     StockDetailScreen(
         state = state,
@@ -334,7 +340,7 @@ fun StockDetailScreen(
     if (state.showTranslationPrompt) {
         val promptTitle = state.translationPromptTitle ?: "Download translation model"
         val promptMessage = state.translationPromptMessage
-            ?: "Download the 270M offline model to translate headlines?"
+            ?: "Download the 1B offline model to translate headlines?"
         val isDownloading = state.translationDownloadInProgress
         AlertDialog(
             onDismissRequest = onDismissTranslationPrompt,

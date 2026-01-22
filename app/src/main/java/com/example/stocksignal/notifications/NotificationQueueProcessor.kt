@@ -2,7 +2,6 @@ package com.example.stocksignal.notifications
 
 import android.app.NotificationManager
 import android.content.Context
-import android.os.Build
 import android.service.notification.StatusBarNotification
 import android.util.Log
 import com.example.stocksignal.data.local.entity.NotificationStateEntity
@@ -241,7 +240,6 @@ class NotificationQueueProcessor @Inject constructor(
     }
 
     private fun isNotificationActive(notificationId: Int): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val active: Array<StatusBarNotification> = manager.activeNotifications
         return active.any { it.id == notificationId }
