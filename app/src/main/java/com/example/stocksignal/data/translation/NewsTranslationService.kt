@@ -64,7 +64,9 @@ class NewsTranslationService @Inject constructor(
     @Volatile private var warnedGpuFallback: Boolean = false
     @Volatile private var warnedLegacyFallback: Boolean = false
     @Volatile private var pendingWarningMessage: String? = null
+    @Volatile private var loggedModelPresence: Boolean = false
     private val warningLock = Any()
+    private val modelPresenceLock = Any()
     private val assetPackManager by lazy { AssetPackManagerFactory.getInstance(context) }
     private val primaryModelSpec = LocalModelSpec(
         label = "Gemma 3 1B int4",
@@ -403,6 +405,11 @@ class NewsTranslationService @Inject constructor(
             Log.w(TAG, "Local models incompatible; skipping local generation.")
             return null
         }
+        Log.d(
+            TAG,
+            "Local generation requested (promptChars=${prompt.length}, temp=$temperature, " +
+                "topK=$topK, topP=$topP)."
+        )
         
         // Token estimation based on observed data: ~1.8 chars per token for stock market descriptions.
         // Max tokens is 1024 total (input + output). Reserve 150 tokens for output.
@@ -416,7 +423,9 @@ class NewsTranslationService @Inject constructor(
         }
         
         return withContext(Dispatchers.Default) {
+            logModelPresenceOnce()
             val runtime = getOrCreateLocalRuntime() ?: return@withContext null
+            Log.d(TAG, "Local model runtime ready (model=${localRuntimeSpec?.label ?: "unknown"}).")
             val normalizedTopK = topK.coerceAtLeast(1).coerceAtMost(MAX_TOP_K)
             val normalizedTopP = topP.coerceIn(0.0f, 1.0f)
             val sampling = LlmSamplingConfig(
@@ -426,6 +435,14 @@ class NewsTranslationService @Inject constructor(
             )
             try {
                 val response = runtime.generate(truncatedPrompt, sampling)
+                if (response.isBlank()) {
+                    Log.w(TAG, "Local model returned an empty response.")
+                } else {
+                    Log.d(TAG, "Local model response chars=${response.length}.")
+                    if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                        Log.v(TAG, "Local model response preview: ${response.take(200)}")
+                    }
+                }
                 response.trim()
             } catch (e: IllegalArgumentException) {
                 Log.w(TAG, "Local model input validation failed: ${e.message}")
@@ -845,6 +862,23 @@ class NewsTranslationService @Inject constructor(
     private fun enqueueWarning(message: String) {
         synchronized(warningLock) {
             pendingWarningMessage = message
+        }
+    }
+
+    private fun logModelPresenceOnce() {
+        if (loggedModelPresence) return
+        synchronized(modelPresenceLock) {
+            if (loggedModelPresence) return
+            loggedModelPresence = true
+            val primaryExists = primaryModelFile.exists()
+            val legacyExists = legacyModelFile.exists()
+            val primarySize = primaryModelFile.takeIf { primaryExists }?.length() ?: 0L
+            val legacySize = legacyModelFile.takeIf { legacyExists }?.length() ?: 0L
+            Log.i(
+                TAG,
+                "Local model presence: primaryExists=$primaryExists primaryBytes=$primarySize, " +
+                    "legacyExists=$legacyExists legacyBytes=$legacySize."
+            )
         }
     }
 

@@ -91,25 +91,28 @@ class AiSignalScorer @Inject constructor(
     private suspend fun generateResponse(prompt: String): String? {
         Log.d(TAG, "=== LLM REQUEST ===")
         Log.d(TAG, "Prompt length: ${prompt.length} chars")
+        Log.d(TAG, "Sampling params: temp=$AI_TEMPERATURE, topK=$AI_TOP_K, topP=$AI_TOP_P")
         if (Log.isLoggable(TAG, Log.VERBOSE)) {
             Log.v(TAG, "Full prompt:\n$prompt")
         }
-        
+        val startNs = System.nanoTime()
         val local = translationService.generateLocalResponse(
             prompt = prompt,
             temperature = AI_TEMPERATURE,
             topK = AI_TOP_K,
             topP = AI_TOP_P
         )
+        val elapsedMs = (System.nanoTime() - startNs) / 1_000_000
         if (!local.isNullOrBlank()) {
             Log.d(TAG, "=== LLM RESPONSE (Local) ===")
             Log.d(TAG, "Response length: ${local.length} chars")
+            Log.d(TAG, "Local LLM generation took ${elapsedMs}ms")
             if (Log.isLoggable(TAG, Log.VERBOSE)) {
                 Log.v(TAG, "Full response:\n$local")
             }
             return local.trim()
         }
-        Log.w(TAG, "Local LLM response unavailable; no cloud fallback configured.")
+        Log.w(TAG, "Local LLM response unavailable after ${elapsedMs}ms; no cloud fallback configured.")
         return null
     }
 
