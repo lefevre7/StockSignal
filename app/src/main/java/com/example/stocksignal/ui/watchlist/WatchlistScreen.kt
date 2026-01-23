@@ -145,9 +145,9 @@ fun WatchlistScreen(
     val sorted = remember(items, sortMode) {
         when (sortMode) {
             SortMode.STRONG_BUY_FIRST ->
-                items.sortedByDescending { it.displaySignal()?.aiScore ?: Int.MIN_VALUE }
+                items.sortedByDescending { it.displaySignal()?.displayScore ?: Int.MIN_VALUE }
             SortMode.STRONG_SELL_FIRST ->
-                items.sortedBy { it.displaySignal()?.aiScore ?: Int.MAX_VALUE }
+                items.sortedBy { it.displaySignal()?.displayScore ?: Int.MAX_VALUE }
             SortMode.ALPHABETICAL -> items.sortedBy { it.item.symbol }
             SortMode.PRICE_CHANGE -> items.sortedByDescending { it.percentChange ?: Double.NEGATIVE_INFINITY }
             SortMode.CUSTOM -> items.sortedBy { it.item.sortOrder ?: Int.MAX_VALUE }
@@ -361,12 +361,12 @@ private fun WatchlistTopBar(onSearchClick: () -> Unit) {
 @Composable
 private fun WatchlistSummary(items: List<WatchlistCardState>) {
     val activeSignals = items.count { card ->
-        card.displaySignal()?.aiScore?.let { score -> abs(score) >= 30 } == true
+        card.displaySignal()?.displayScore?.let { score -> abs(score) >= 30 } == true
     }
     val today = LocalDate.now()
     val newBuysToday = items.count {
         val signal = it.displaySignal() ?: return@count false
-        signal.aiScore >= 60 && signal.generatedAt.toLocalDate() == today
+        signal.displayScore >= 60 && signal.generatedAt.toLocalDate() == today
     }
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -396,9 +396,11 @@ private fun WatchlistCard(
     onSnooze: () -> Unit
 ) {
     val displaySignal = item.displaySignal()
-    val aiScore = displaySignal?.aiScore ?: 0
+    val displayScore = displaySignal?.displayScore ?: 0
+    val displayConfidence = displaySignal?.displayConfidence
+    val aiScore = displaySignal?.aiScore
     val aiConfidence = displaySignal?.aiConfidence
-    val tier = SignalTier.fromScore(aiScore)
+    val tier = SignalTier.fromScore(displayScore)
     val ruleAvg = displaySignal?.averageScore ?: displaySignal?.ruleScore
     val ruleMode = displaySignal?.modeScore ?: ruleAvg
     val ruleConfidence = displaySignal?.ruleConfidence
@@ -441,8 +443,8 @@ private fun WatchlistCard(
                 }
                 SignalBadge(
                     tier = tier,
-                    score = aiScore,
-                    confidence = aiConfidence,
+                    score = displayScore,
+                    confidence = displayConfidence,
                     ticker = item.item.symbol
                 )
             }
@@ -616,7 +618,9 @@ private fun EmptyWatchlist() {
 }
 
 private data class DisplaySignal(
-    val aiScore: Int,
+    val displayScore: Int,
+    val displayConfidence: Int?,
+    val aiScore: Int?,
     val aiConfidence: Int?,
     val ruleScore: Int,
     val ruleConfidence: Int,
@@ -629,8 +633,10 @@ private fun WatchlistCardState.displaySignal(): DisplaySignal? {
     val computed = signal
     return if (computed != null) {
         DisplaySignal(
-            aiScore = computed.aiScore ?: computed.score,
-            aiConfidence = computed.aiConfidence ?: computed.confidence,
+            displayScore = computed.displayScore,
+            displayConfidence = computed.displayConfidence,
+            aiScore = computed.aiScore,
+            aiConfidence = computed.aiConfidence,
             ruleScore = computed.score,
             ruleConfidence = computed.confidence,
             averageScore = computed.averageScore,

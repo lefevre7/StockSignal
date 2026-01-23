@@ -24,6 +24,7 @@ import com.example.stocksignal.domain.model.StockOverview
 import com.example.stocksignal.domain.model.SignalResult
 import com.example.stocksignal.domain.model.TechnicalIndicators
 import com.example.stocksignal.domain.signal.IndicatorCalculator
+import com.example.stocksignal.domain.signal.SignalEngine
 import com.example.stocksignal.domain.export.IntradayDataExporter
 import com.example.stocksignal.domain.export.ExportResult
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -54,6 +55,9 @@ class StockDetailViewModel @Inject constructor(
 
     private var watchlistSnapshot: List<WatchlistItemEntity> = emptyList()
     private var historyJob: Job? = null
+    private var aiSignalJob: Job? = null
+    private var aiSignalKey: AiSignalKey? = null
+    private var aiSignalAppliedKey: AiSignalKey? = null
     private var localModelDownloadJob: Job? = null
     private var pendingTranslation: PendingTranslation? = null
     private val promptedTranslationTickers = mutableSetOf<String>()
@@ -927,16 +931,100 @@ class StockDetailViewModel @Inject constructor(
         } else {
             null
         }
-        val signal = signalsRepository.computeSignal(state.ticker, series, range, overview)
         val indicators = computeIndicators(series)
+        val ticker = state.ticker
+        val baseSignal = try {
+            val settings = settingsRepository.settingsFlow.first()
+            SignalEngine.computeSignal(series, range, settings.holdingPeriod)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to compute base signal for $ticker", e)
+            null
+        }
         _uiState.update {
             it.copy(
                 isLoading = false,
                 errorMessage = null,
                 series = series,
-                signal = signal,
+                signal = baseSignal,
                 indicators = indicators
             )
+        }
+        val aiKey = AiSignalKey(
+            ticker = ticker,
+            range = range,
+            lastCandleTime = series.last().time,
+            candleCount = series.size
+        )
+        if (baseSignal == null) {
+            aiSignalKey = null
+            return
+        }
+        if (aiSignalAppliedKey == aiKey) {
+            Log.d(TAG, "AI signal already applied for $ticker/$range; skipping.")
+            return
+        }
+        if (aiSignalJob?.isActive == true && aiSignalKey == aiKey) {
+            Log.d(TAG, "AI signal already in progress for $ticker/$range; skipping.")
+            return
+        }
+        if (aiSignalKey != null && aiSignalKey != aiKey) {
+            aiSignalJob?.cancel()
+        }
+        aiSignalKey = aiKey
+
+        // Launch async job that first checks cache, updates UI if found, then generates fresh score
+        aiSignalJob = viewModelScope.launch {
+            // First check cache synchronously and update UI immediately if available
+            val cachedSignal = try {
+                signalsRepository.checkCachedSignal(ticker, series, range)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to check cached signal for $ticker", e)
+                null
+            }
+            
+            if (cachedSignal != null) {
+                Log.d(TAG, "Cache hit for $ticker: immediately updating UI with aiScore=${cachedSignal.aiScore}")
+                _uiState.update { current ->
+                    if (current.ticker == ticker && current.range == range) {
+                        aiSignalAppliedKey = aiKey
+                        current.copy(signal = cachedSignal)
+                    } else {
+                        current
+                    }
+                }
+            }
+
+            // Now generate fresh AI score (will update cache and UI when complete)
+            Log.d(TAG, "Starting AI signal computation for $ticker/$range")
+            val aiSignal = try {
+                signalsRepository.computeSignal(ticker, series, range, overview)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                Log.d(TAG, "AI signal computation cancelled for $ticker")
+                throw e // Re-throw to properly cancel the coroutine
+            } catch (e: Exception) {
+                Log.e(TAG, "AI signal computation failed for $ticker", e)
+                null
+            }
+            if (aiSignal != null) {
+                Log.d(TAG, "AI signal ready for $ticker: aiScore=${aiSignal.aiScore}, aiConf=${aiSignal.aiConfidence}")
+                _uiState.update { current ->
+                    // Only apply if still viewing the same ticker and range, and not already applied from cache
+                    if (current.ticker != ticker || current.range != range) {
+                        Log.d(TAG, "Skipping AI signal update: context changed (ticker=${current.ticker}/$ticker, range=${current.range}/$range)")
+                        current
+                    } else if (aiSignalAppliedKey == aiKey) {
+                        // Already applied from cache, but update anyway in case AI generated a fresher result
+                        Log.d(TAG, "Updating AI signal (cache was already applied) for $ticker")
+                        current.copy(signal = aiSignal)
+                    } else {
+                        Log.d(TAG, "Applying AI signal to UI for $ticker")
+                        aiSignalAppliedKey = aiKey
+                        current.copy(signal = aiSignal)
+                    }
+                }
+            } else {
+                Log.w(TAG, "AI signal returned null for $ticker")
+            }
         }
     }
 
@@ -996,6 +1084,13 @@ class StockDetailViewModel @Inject constructor(
         val ticker: String,
         val news: List<StockNewsItem>,
         val promptType: TranslationPromptType
+    )
+
+    private data class AiSignalKey(
+        val ticker: String,
+        val range: ChartRange,
+        val lastCandleTime: LocalDateTime,
+        val candleCount: Int
     )
 
     companion object {

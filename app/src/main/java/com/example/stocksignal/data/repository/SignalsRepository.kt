@@ -5,7 +5,6 @@ import com.example.stocksignal.data.ai.AiScoreReasonJson
 import com.example.stocksignal.data.ai.AiSignalScorer
 import com.example.stocksignal.data.local.entity.GlobalSignalEventEntity
 import com.example.stocksignal.data.local.repository.SignalEventsRepository
-import com.example.stocksignal.domain.model.AiScoreReason
 import com.example.stocksignal.domain.model.ChartRange
 import com.example.stocksignal.domain.model.NotificationEvent
 import com.example.stocksignal.domain.model.NotificationEventType
@@ -62,12 +61,40 @@ class SignalsRepository @Inject constructor(
         return age < COOLDOWN
     }
 
+    /**
+     * Check if there's a cached AI signal for the given ticker and range.
+     * Returns a complete SignalResult with AI scores if cached, null otherwise.
+     * This is a non-blocking operation that only checks the cache.
+     */
+    suspend fun checkCachedSignal(
+        ticker: String,
+        candles: List<PriceCandle>,
+        range: ChartRange
+    ): SignalResult? {
+        val settings = settingsRepository.settingsFlow.first()
+        val base = SignalEngine.computeSignal(candles, range, settings.holdingPeriod) ?: return null
+        val aiResult = aiSignalScorer.checkCache(ticker, candles, range)
+        return if (aiResult != null) {
+            Log.d(TAG, "[$ticker] Cache hit: returning signal with AI score=${aiResult.score}")
+            base.copy(
+                aiScore = aiResult.score,
+                aiConfidence = aiResult.confidence,
+                aiSummary = aiResult.summary,
+                aiReasons = aiResult.reasons
+            )
+        } else {
+            null // No cached AI result
+        }
+    }
+
     suspend fun computeSignal(
         ticker: String,
         candles: List<PriceCandle>,
         range: ChartRange,
-        overview: StockOverview? = null
+        overview: StockOverview? = null,
+        skipAiGeneration: Boolean = false
     ): SignalResult? {
+        Log.d(TAG, "[$ticker] Computing signal with AI scoring (skipGeneration=$skipAiGeneration)")
         val settings = settingsRepository.settingsFlow.first()
         val base = SignalEngine.computeSignal(candles, range, settings.holdingPeriod) ?: return null
         val aiResult = aiSignalScorer.score(
@@ -76,9 +103,11 @@ class SignalsRepository @Inject constructor(
             range = range,
             holdingPeriod = settings.holdingPeriod,
             ruleSignal = base,
-            overview = overview
+            overview = overview,
+            cacheOnly = skipAiGeneration
         )
         return if (aiResult != null) {
+            Log.d(TAG, "[$ticker] AI scoring successful: score=${aiResult.score}, confidence=${aiResult.confidence}")
             base.copy(
                 aiScore = aiResult.score,
                 aiConfidence = aiResult.confidence,
@@ -86,16 +115,12 @@ class SignalsRepository @Inject constructor(
                 aiReasons = aiResult.reasons
             )
         } else {
+            Log.d(TAG, "[$ticker] AI scoring returned null; leaving AI fields empty.")
             base.copy(
-                aiScore = base.score,
-                aiConfidence = base.confidence,
-                aiSummary = "AI scoring unavailable; using rule-based score and confidence.",
-                aiReasons = listOf(
-                    AiScoreReason(
-                        title = "AI fallback",
-                        detail = "AI scoring did not return valid output. Rule-based score and confidence were used."
-                    )
-                )
+                aiScore = null,
+                aiConfidence = null,
+                aiSummary = null,
+                aiReasons = emptyList()
             )
         }
     }
@@ -127,15 +152,10 @@ class SignalsRepository @Inject constructor(
                 )
             } else {
                 result.copy(
-                    aiScore = result.score,
-                    aiConfidence = result.confidence,
-                    aiSummary = "AI scoring unavailable; using rule-based score and confidence.",
-                    aiReasons = listOf(
-                        AiScoreReason(
-                            title = "AI fallback",
-                            detail = "AI scoring did not return valid output. Rule-based score and confidence were used."
-                        )
-                    )
+                    aiScore = null,
+                    aiConfidence = null,
+                    aiSummary = null,
+                    aiReasons = emptyList()
                 )
             }
             val label = merged.tier.label

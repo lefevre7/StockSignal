@@ -131,8 +131,10 @@ private fun SignalEventCard(
     val formatter = remember { DateTimeFormatter.ofPattern("MMM d, HH:mm") }
     val avg = event.averageScore ?: event.score
     val mode = event.modeScore ?: avg
-    val aiScore = event.displayScore
-    val aiConfidence = event.displayConfidence
+    val aiScore = event.aiScore
+    val aiConfidence = event.aiConfidence
+    val aiScoreLabel = aiScore?.toString() ?: "--"
+    val aiConfidenceLabel = aiConfidence?.let { "${it}%" } ?: "--"
 
     StockCard(
         modifier = Modifier.clickable { onOpenDetail() }
@@ -152,10 +154,8 @@ private fun SignalEventCard(
         Spacer(modifier = Modifier.height(8.dp))
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             TagChip(label = if (event.type == NotificationEventType.MARKET_MOVER) "Market mover" else "Watchlist")
-            TagChip(label = "AI Score $aiScore")
-            if (aiConfidence != null && aiConfidence > 0) {
-                TagChip(label = "AI Conf ${aiConfidence}%")
-            }
+            TagChip(label = "AI Score $aiScoreLabel")
+            TagChip(label = "AI Conf $aiConfidenceLabel")
         }
 
         Spacer(modifier = Modifier.height(8.dp))

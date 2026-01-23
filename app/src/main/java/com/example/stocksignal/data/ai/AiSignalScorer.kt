@@ -38,7 +38,8 @@ class AiSignalScorer @Inject constructor(
         range: ChartRange,
         holdingPeriod: HoldingPeriod,
         ruleSignal: SignalResult,
-        overview: StockOverview?
+        overview: StockOverview?,
+        cacheOnly: Boolean = false
     ): AiScoreResult? {
         if (candles.isEmpty()) return null
         val sortedCandles = candles.sortedBy { it.time }
@@ -48,19 +49,36 @@ class AiSignalScorer @Inject constructor(
             lastCandleTime = sortedCandles.last().time,
             candleCount = sortedCandles.size
         )
-        readCache(cacheKey)?.let { return it }
+        readCache(cacheKey)?.let { 
+            Log.d(TAG, "[$ticker] Cache hit, returning cached result")
+            return it 
+        }
+        
+        // If cacheOnly is true, don't generate new AI score - return null to use fallback
+        if (cacheOnly) {
+            Log.d(TAG, "[$ticker] Cache miss, but cacheOnly=true, skipping AI generation")
+            return null
+        }
+        
+        Log.d(TAG, "[$ticker] Cache miss, generating AI score")
         val prompt = buildPrompt(ticker, sortedCandles, range, holdingPeriod, ruleSignal, overview)
         return try {
             val result = withTimeout(AI_TIMEOUT_MS) {
                 generateWithRetry(prompt)
             }
             if (result != null) {
+                Log.d(TAG, "[$ticker] AI scoring complete: score=${result.score}, confidence=${result.confidence}")
                 writeCache(cacheKey, result)
+            } else {
+                Log.w(TAG, "[$ticker] AI scoring returned null result")
             }
             result
         } catch (e: TimeoutCancellationException) {
             Log.w(TAG, "AI scoring timed out for $ticker", e)
             null
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            Log.d(TAG, "AI scoring cancelled for $ticker")
+            throw e // Re-throw to propagate cancellation
         }
     }
 
@@ -74,13 +92,13 @@ class AiSignalScorer @Inject constructor(
                 Log.d(TAG, "LLM response received: ${raw.length} chars")
                 val parsed = parseAiResult(raw)
                 if (parsed != null) {
-                    Log.d(TAG, "LLM response parsed successfully: score=${parsed.score}, confidence=${parsed.confidence}")
+                    Log.d(TAG, "LLM response parsed successfully on attempt ${attempt + 1}: score=${parsed.score}, confidence=${parsed.confidence}")
                     return parsed
                 }
-                Log.w(TAG, "LLM response parse failed: malformed JSON")
+                Log.w(TAG, "LLM response parse failed on attempt ${attempt + 1}: malformed JSON")
                 lastError = "Malformed JSON response."
             } else {
-                Log.w(TAG, "LLM response empty or null")
+                Log.w(TAG, "LLM response empty or null on attempt ${attempt + 1}")
                 lastError = "Empty response."
             }
         }
@@ -425,6 +443,27 @@ class AiSignalScorer @Inject constructor(
         return "%.2f".format(value)
     }
 
+    /**
+     * Check if a cached AI score exists for the given parameters.
+     * Returns the cached result if valid, null otherwise.
+     * This is a non-blocking, synchronous operation.
+     */
+    fun checkCache(
+        ticker: String,
+        candles: List<PriceCandle>,
+        range: ChartRange
+    ): AiScoreResult? {
+        if (candles.isEmpty()) return null
+        val sortedCandles = candles.sortedBy { it.time }
+        val cacheKey = AiCacheKey(
+            ticker = ticker,
+            range = range,
+            lastCandleTime = sortedCandles.last().time,
+            candleCount = sortedCandles.size
+        )
+        return readCache(cacheKey)
+    }
+
     private fun readCache(key: AiCacheKey): AiScoreResult? {
         val now = System.currentTimeMillis()
         synchronized(cacheLock) {
@@ -479,9 +518,9 @@ class AiSignalScorer @Inject constructor(
     companion object {
         private const val TAG = "AiSignalScorer"
         private const val MAX_ATTEMPTS = 2
-        private const val AI_TEMPERATURE = 0.1f
-        private const val AI_TOP_K = 40
-        private const val AI_TOP_P = 0.95f
+        private const val AI_TEMPERATURE = 0.0f
+        private const val AI_TOP_K = 20
+        private const val AI_TOP_P = 0.9f
         private const val MAX_NEWS_ITEMS = 10
         private const val RECENT_CANDLE_COUNT = 20
         private const val LOW_MEMORY_CANDLE_COUNT = 5

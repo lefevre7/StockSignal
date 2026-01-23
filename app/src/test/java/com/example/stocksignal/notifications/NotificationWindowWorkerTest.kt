@@ -60,7 +60,7 @@ class NotificationWindowWorkerTest {
             sampleCandles(now, 25) // Need at least 20 candles for signal computation
         )
         coEvery { stockRepository.getStockOverview(any()) } returns StooqResult.Error(Exception("no overview"))
-        coEvery { signalsRepository.computeSignal(any(), any(), any(), any()) } returns sampleSignal(now)
+        coEvery { signalsRepository.computeSignal(any(), any(), any(), any(), any()) } returns sampleSignal(now)
         coEvery { signalsRepository.isInCooldown(any(), any(), any()) } returns false
         coEvery { signalsRepository.recordEvent(any()) } just runs
         val candidatesSlot = slot<List<com.example.stocksignal.domain.model.NotificationEvent>>()
@@ -86,7 +86,7 @@ class NotificationWindowWorkerTest {
             sampleCandles(now, 25) // Need at least 20 candles for signal computation
         )
         coEvery { stockRepository.getStockOverview(any()) } returns StooqResult.Error(Exception("no overview"))
-        coEvery { signalsRepository.computeSignal(any(), any(), any(), any()) } returns sampleSignal(now)
+        coEvery { signalsRepository.computeSignal(any(), any(), any(), any(), any()) } returns sampleSignal(now)
         coEvery { signalsRepository.isInCooldown(any(), any(), any()) } returns false
         coEvery { signalsRepository.recordEvent(any()) } just runs
         val candidatesSlot = slot<List<com.example.stocksignal.domain.model.NotificationEvent>>()
@@ -109,7 +109,7 @@ class NotificationWindowWorkerTest {
             sampleCandles(now, 25)
         )
         coEvery { stockRepository.getStockOverview(any()) } returns StooqResult.Error(Exception("no overview"))
-        coEvery { signalsRepository.computeSignal(any(), any(), any(), any()) } returns sampleSignal(
+        coEvery { signalsRepository.computeSignal(any(), any(), any(), any(), any()) } returns sampleSignal(
             now,
             score = 10,
             aiScore = 80,

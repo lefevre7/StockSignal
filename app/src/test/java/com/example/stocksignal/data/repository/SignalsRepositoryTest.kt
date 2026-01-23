@@ -23,6 +23,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.flow.flowOf
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -104,13 +105,10 @@ class SignalsRepositoryTest {
         val result = repository.computeSignal("MSFT", candles, ChartRange.ONE_DAY, null)
 
         assertNotNull(result)
-        assertEquals(result!!.score, result.aiScore)
-        assertEquals(result.confidence, result.aiConfidence)
-        assertEquals(
-            "AI scoring unavailable; using rule-based score and confidence.",
-            result.aiSummary
-        )
-        assertTrue(result.aiReasons.any { it.title == "AI fallback" })
+        assertNull(result!!.aiScore)
+        assertNull(result.aiConfidence)
+        assertNull(result.aiSummary)
+        assertTrue(result.aiReasons.isEmpty())
     }
 
     private fun sampleEvent(time: LocalDateTime): GlobalSignalEventEntity {

@@ -188,7 +188,9 @@ class WatchlistViewModel @Inject constructor(
             is Result.Success -> overviewResult.data
             is Result.Error -> null
         }
-        val signal = signalsRepository.computeSignal(symbol, signalSeries, range, overview)
+        // Use skipAiGeneration=true to avoid blocking on LLM generation
+        // Watchlist will use cached AI scores or rule-based fallback for fast loading
+        val signal = signalsRepository.computeSignal(symbol, signalSeries, range, overview, skipAiGeneration = false)
         
         val price = displaySeries.lastOrNull()?.close
         val prev = displaySeries.getOrNull(displaySeries.lastIndex - 1)

@@ -478,8 +478,10 @@ private fun PriceSignalSection(
     }
     val updatedAt = last?.time?.format(DateTimeFormatter.ofPattern("HH:mm")) ?: "—"
     val signalTier = signal?.tier ?: SignalTier.NEUTRAL
-    val aiScore = signal?.aiScore ?: signal?.score ?: 0
-    val aiConfidence = signal?.aiConfidence ?: signal?.confidence
+    val displayScore = signal?.displayScore ?: 0
+    val displayConfidence = signal?.displayConfidence
+    val aiScore = signal?.aiScore
+    val aiConfidence = signal?.aiConfidence
 
     StockCard {
         Row(
@@ -511,12 +513,12 @@ private fun PriceSignalSection(
                 )
             }
             Spacer(modifier = Modifier.width(12.dp))
-            SignalBadge(
-                tier = signalTier,
-                score = aiScore,
-                confidence = aiConfidence,
-                ticker = null
-            )
+        SignalBadge(
+            tier = signalTier,
+            score = displayScore,
+            confidence = displayConfidence,
+            ticker = null
+        )
         }
 
         Spacer(modifier = Modifier.height(12.dp))
