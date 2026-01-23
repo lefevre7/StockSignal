@@ -10,7 +10,6 @@ import com.example.stocksignal.data.repository.SignalsRepository
 import com.example.stocksignal.data.repository.StockRepository
 import com.example.stocksignal.data.settings.SettingsRepository
 import com.example.stocksignal.data.stooq.model.Result
-import com.example.stocksignal.data.translation.ModelAvailability
 import com.example.stocksignal.data.translation.NewsTranslationService
 import com.example.stocksignal.domain.model.IndicatorAlertDefaults
 import com.example.stocksignal.domain.model.IndicatorAlertJson
@@ -21,6 +20,7 @@ import com.example.stocksignal.domain.model.ChartRange
 import com.example.stocksignal.domain.model.NotificationEvent
 import com.example.stocksignal.domain.model.PriceCandle
 import com.example.stocksignal.domain.model.StockNewsItem
+import com.example.stocksignal.domain.model.StockOverview
 import com.example.stocksignal.domain.model.SignalResult
 import com.example.stocksignal.domain.model.TechnicalIndicators
 import com.example.stocksignal.domain.signal.IndicatorCalculator
@@ -326,59 +326,6 @@ class StockDetailViewModel @Inject constructor(
         }
     }
 
-    fun confirmTranslationDownload() {
-        val pending = pendingTranslation ?: return
-        if (pending.promptType != TranslationPromptType.PLAY_SERVICES) {
-            Log.w(TAG, "confirmTranslationDownload called without Play services prompt.")
-            retryTranslationDownload()
-            return
-        }
-        _uiState.update {
-            it.copy(
-                translationPromptMessage = "Downloading Play services translation model.",
-                translationDownloadInProgress = true,
-                showTranslationPrompt = true
-            )
-        }
-        viewModelScope.launch {
-            if (!translationService.hasEnoughStorage(TRANSLATION_STORAGE_BYTES)) {
-                Log.w(TAG, "Not enough storage to download translation model.")
-                _uiState.update {
-                    it.copy(
-                        translationMessage = "Not enough storage for the translation model.",
-                        translationDownloadInProgress = false,
-                        showTranslationPrompt = false,
-                        translationPromptTitle = null,
-                        translationPromptMessage = null,
-                        translationPromptType = null,
-                        translationDownloadProgress = null,
-                        showTranslationRetry = false
-                    )
-                }
-                return@launch
-            }
-            val success = translationService.downloadModel()
-            _uiState.update {
-                it.copy(
-                    translationDownloadInProgress = false,
-                    showTranslationPrompt = false,
-                    translationPromptTitle = null,
-                    translationPromptMessage = null,
-                    translationPromptType = null,
-                    translationDownloadProgress = null
-                )
-            }
-            if (!success) {
-                Log.w(TAG, "Play services model download failed. Falling back to local model.")
-                pendingTranslation = null
-                showLocalModelPrompt(pending.ticker, pending.news, forcePrompt = true)
-                return@launch
-            }
-            pendingTranslation = null
-            translateNewsIfNeeded(pending.ticker, pending.news, allowPrompt = false)
-        }
-    }
-
     fun dismissTranslationPrompt() {
         val state = _uiState.value
         if (state.translationDownloadInProgress &&
@@ -515,12 +462,15 @@ class StockDetailViewModel @Inject constructor(
             promptType = TranslationPromptType.LOCAL_MODEL
         )
         Log.d(TAG, "Showing local model download prompt for $ticker.")
+        val expectedBytes = translationService.getLocalModelExpectedBytes()
+        val sizeMb = (expectedBytes / (1024 * 1024)).coerceAtLeast(0)
+        val sizeLabel = if (expectedBytes > 0) "~${sizeMb}MB" else "unknown size"
         _uiState.update {
             it.copy(
                 showTranslationPrompt = true,
                 translationPromptTitle = "Download 1B offline translation model",
                 translationPromptMessage = "Download the 1B offline model to translate headlines? " +
-                    "Wi-Fi required; uses ~555MB.",
+                    "Wi-Fi required; uses $sizeLabel.",
                 translationPromptType = TranslationPromptType.LOCAL_MODEL,
                 translationDownloadProgress = null,
                 translationDownloadInProgress = false,
@@ -617,10 +567,11 @@ class StockDetailViewModel @Inject constructor(
                 if (!assetPackSuccess) {
                     val modelPath = translationService.getLocalModelFilePath()
                     val modelHash = translationService.getLocalModelSha256()
+                    val hashLabel = if (modelHash.isNotBlank()) " (SHA-256: $modelHash)" else ""
                     _uiState.update {
                         it.copy(
                             translationMessage = "Offline model download failed. " +
-                                "Sideload to $modelPath (SHA-256: $modelHash) and retry.",
+                                "Sideload to $modelPath$hashLabel and retry.",
                             translationDownloadProgress = null,
                             translationDownloadInProgress = false,
                             showTranslationPrompt = false,
@@ -687,25 +638,15 @@ class StockDetailViewModel @Inject constructor(
             return
         }
         if (localIncompatible) {
-            Log.e(TAG, "Local models incompatible; falling back to cloud translation.")
+            Log.e(TAG, "Local models incompatible; offline translation unavailable.")
             val detailMessage = translationService.getLocalModelIncompatibilityMessage()
                 ?: "Offline model incompatible with this app version."
             postTranslationWarning(
                 ticker,
-                "$detailMessage Using cloud translation instead.",
+                "$detailMessage Offline translation unavailable.",
                 showRetry = true,
                 markIncompatible = true
             )
-            // TODO: Revisit Play services fallback/prompting once the local model rollout stabilizes.
-            if (translationService.getModelAvailability() == ModelAvailability.AVAILABLE) {
-                translateNewsSerially(
-                    ticker,
-                    news,
-                    translationService::translateWithMlkit,
-                    "mlkit_cloud",
-                    clearMessages = false
-                )
-            }
             return
         }
         if (!offlineEnabled) {
@@ -792,24 +733,16 @@ class StockDetailViewModel @Inject constructor(
             }
         }
         if (providerLabel == "local_model" && translationService.isLocalModelIncompatible()) {
-            Log.e(TAG, "Local models incompatible; falling back to cloud translation.")
+            Log.e(TAG, "Local models incompatible; stopping offline translation.")
             if (_uiState.value.ticker == ticker) {
                 val detailMessage = translationService.getLocalModelIncompatibilityMessage()
                     ?: "Offline model incompatible."
                 postTranslationWarning(
                     ticker,
-                    "$detailMessage Using cloud translation.",
+                    "$detailMessage Offline translation unavailable.",
                     markIncompatible = true
                 )
             }
-            // Fallback to cloud MLKit translation
-            translateNewsSerially(
-                ticker,
-                news,
-                translationService::translateWithMlkit,
-                "mlkit_cloud",
-                clearMessages = false
-            )
             return
         }
         for (index in updated.indices) {
@@ -822,46 +755,28 @@ class StockDetailViewModel @Inject constructor(
             if (providerLabel == "local_model" && translated == null) {
                 val localUsable = translationService.isLocalModelUsable()
                 if (!localUsable) {
-                    Log.e(TAG, "Local model became unusable; falling back to cloud translation.")
+                    Log.e(TAG, "Local model became unusable; stopping offline translation.")
                     val detailMessage = translationService.getLocalModelIncompatibilityMessage()
                         ?: "Offline model unavailable."
                     postTranslationWarning(
                         ticker,
-                        "$detailMessage Using cloud translation.",
+                        "$detailMessage Offline translation unavailable.",
                         markIncompatible = true
-                    )
-                    val remainingNews = updated.subList(index, updated.size).toList()
-                    translateNewsSerially(
-                        ticker,
-                        remainingNews,
-                        translationService::translateWithMlkit,
-                        "mlkit_cloud",
-                        clearMessages = false
                     )
                     return
                 }
             }
             if (providerLabel == "local_model" && translationService.isLocalModelIncompatible()) {
-                // Local model became incompatible mid-translation; fallback to cloud
-                Log.e(TAG, "Local model became incompatible during translation; falling back to cloud.")
+                Log.e(TAG, "Local model became incompatible during translation; stopping offline translation.")
                 if (_uiState.value.ticker == ticker) {
                     val detailMessage = translationService.getLocalModelIncompatibilityMessage()
                         ?: "Offline model incompatible."
                     postTranslationWarning(
                         ticker,
-                        "$detailMessage Using cloud translation.",
+                        "$detailMessage Offline translation unavailable.",
                         markIncompatible = true
                     )
                 }
-                // Continue with remaining items using cloud translation
-                val remainingNews = updated.subList(index, updated.size).toList()
-                translateNewsSerially(
-                    ticker,
-                    remainingNews,
-                    translationService::translateWithMlkit,
-                    "mlkit_cloud",
-                    clearMessages = false
-                )
                 return
             }
             if (translated == null) continue
@@ -991,7 +906,28 @@ class StockDetailViewModel @Inject constructor(
             return
         }
 
-        val signal = signalsRepository.computeSignal(series, range)
+        val state = _uiState.value
+        val overview = if (
+            state.marketCap != null ||
+            state.peRatio != null ||
+            state.dividend != null ||
+            state.week52High != null ||
+            state.week52Low != null ||
+            state.news.isNotEmpty()
+        ) {
+            StockOverview(
+                symbol = state.ticker,
+                marketCap = state.marketCap,
+                peRatio = state.peRatio,
+                dividend = state.dividend,
+                week52High = state.week52High,
+                week52Low = state.week52Low,
+                news = state.news
+            )
+        } else {
+            null
+        }
+        val signal = signalsRepository.computeSignal(state.ticker, series, range, overview)
         val indicators = computeIndicators(series)
         _uiState.update {
             it.copy(
@@ -1066,13 +1002,11 @@ class StockDetailViewModel @Inject constructor(
         const val ARG_TICKER = "ticker"
         const val ARG_EVENT_ID = "eventId"
         const val ARG_OPEN_ALERTS = "openAlerts"
-        private const val TRANSLATION_STORAGE_BYTES = 300L * 1024 * 1024
         private const val TAG = "StockDetailViewModel"
     }
 }
 
 enum class TranslationPromptType {
-    PLAY_SERVICES,
     LOCAL_MODEL
 }
 

@@ -145,9 +145,9 @@ fun WatchlistScreen(
     val sorted = remember(items, sortMode) {
         when (sortMode) {
             SortMode.STRONG_BUY_FIRST ->
-                items.sortedByDescending { it.displaySignal()?.score ?: Int.MIN_VALUE }
+                items.sortedByDescending { it.displaySignal()?.aiScore ?: Int.MIN_VALUE }
             SortMode.STRONG_SELL_FIRST ->
-                items.sortedBy { it.displaySignal()?.score ?: Int.MAX_VALUE }
+                items.sortedBy { it.displaySignal()?.aiScore ?: Int.MAX_VALUE }
             SortMode.ALPHABETICAL -> items.sortedBy { it.item.symbol }
             SortMode.PRICE_CHANGE -> items.sortedByDescending { it.percentChange ?: Double.NEGATIVE_INFINITY }
             SortMode.CUSTOM -> items.sortedBy { it.item.sortOrder ?: Int.MAX_VALUE }
@@ -361,12 +361,12 @@ private fun WatchlistTopBar(onSearchClick: () -> Unit) {
 @Composable
 private fun WatchlistSummary(items: List<WatchlistCardState>) {
     val activeSignals = items.count { card ->
-        card.displaySignal()?.score?.let { score -> abs(score) >= 30 } == true
+        card.displaySignal()?.aiScore?.let { score -> abs(score) >= 30 } == true
     }
     val today = LocalDate.now()
     val newBuysToday = items.count {
         val signal = it.displaySignal() ?: return@count false
-        signal.score >= 60 && signal.generatedAt.toLocalDate() == today
+        signal.aiScore >= 60 && signal.generatedAt.toLocalDate() == today
     }
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -396,8 +396,12 @@ private fun WatchlistCard(
     onSnooze: () -> Unit
 ) {
     val displaySignal = item.displaySignal()
-    val score = displaySignal?.score ?: 0
-    val tier = SignalTier.fromScore(score)
+    val aiScore = displaySignal?.aiScore ?: 0
+    val aiConfidence = displaySignal?.aiConfidence
+    val tier = SignalTier.fromScore(aiScore)
+    val ruleAvg = displaySignal?.averageScore ?: displaySignal?.ruleScore
+    val ruleMode = displaySignal?.modeScore ?: ruleAvg
+    val ruleConfidence = displaySignal?.ruleConfidence
     val timeFormatter = remember { DateTimeFormatter.ofPattern("HH:mm") }
     val price = item.price
     val percentChange = item.percentChange
@@ -437,8 +441,8 @@ private fun WatchlistCard(
                 }
                 SignalBadge(
                     tier = tier,
-                    score = score,
-                    confidence = displaySignal?.confidence,
+                    score = aiScore,
+                    confidence = aiConfidence,
                     ticker = item.item.symbol
                 )
             }
@@ -447,10 +451,21 @@ private fun WatchlistCard(
         Spacer(modifier = Modifier.height(12.dp))
         SignalScoreRow(
             tier = tier,
-            score = score,
-            confidence = displaySignal?.confidence,
-            compact = true
+            score = aiScore,
+            confidence = aiConfidence,
+            compact = true,
+            scoreLabel = "AI Score",
+            confidenceLabel = "AI Conf"
         )
+
+        if (displaySignal != null) {
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = "Avg ${ruleAvg ?: 0} • Mode ${ruleMode ?: 0} • Rule Conf ${ruleConfidence ?: 0}%",
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+            )
+        }
 
         Spacer(modifier = Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -601,8 +616,12 @@ private fun EmptyWatchlist() {
 }
 
 private data class DisplaySignal(
-    val score: Int,
-    val confidence: Int?,
+    val aiScore: Int,
+    val aiConfidence: Int?,
+    val ruleScore: Int,
+    val ruleConfidence: Int,
+    val averageScore: Int?,
+    val modeScore: Int?,
     val generatedAt: LocalDateTime
 )
 
@@ -610,8 +629,12 @@ private fun WatchlistCardState.displaySignal(): DisplaySignal? {
     val computed = signal
     return if (computed != null) {
         DisplaySignal(
-            score = computed.score,
-            confidence = computed.confidence,
+            aiScore = computed.aiScore ?: computed.score,
+            aiConfidence = computed.aiConfidence ?: computed.confidence,
+            ruleScore = computed.score,
+            ruleConfidence = computed.confidence,
+            averageScore = computed.averageScore,
+            modeScore = computed.modeScore,
             generatedAt = computed.generatedAt
         )
     } else {

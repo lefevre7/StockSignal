@@ -25,6 +25,7 @@ import com.example.stocksignal.domain.model.NotificationEventType
 import com.example.stocksignal.domain.model.PriceCandle
 import com.example.stocksignal.domain.model.SignalReason
 import com.example.stocksignal.domain.model.SignalResult
+import com.example.stocksignal.domain.model.StockOverview
 import com.example.stocksignal.domain.signal.IndicatorAlertEvaluator
 import com.example.stocksignal.util.DebugConfig
 import dagger.assisted.Assisted
@@ -47,6 +48,7 @@ class NotificationWindowWorker @AssistedInject constructor(
     private val signalsRepository: SignalsRepository,
     private val notificationQueueProcessor: NotificationQueueProcessor
 ) : CoroutineWorker(context, params) {
+    private val overviewCache = mutableMapOf<String, StockOverview?>()
 
     override suspend fun doWork(): Result {
         val windowId = inputData.getString(KEY_WINDOW_ID)
@@ -175,14 +177,16 @@ class NotificationWindowWorker @AssistedInject constructor(
                             }
                             
                             Log.d(TAG, "   🧮 ${item.symbol}: Computing signal with ${signalSeries.size} candles...")
-                            val signal = signalsRepository.computeSignal(signalSeries, watchlistRange)
+                            val overview = loadOverviewCached(item.symbol)
+                            val signal = signalsRepository.computeSignal(item.symbol, signalSeries, watchlistRange, overview)
                             if (signal == null) {
                                 Log.d(TAG, "   ⚠️ ${item.symbol}: No signal generated")
                                 continue
                             }
-                            Log.i(TAG, "   📈 ${item.symbol}: Signal computed - score=${signal.score}, tier=${signal.tier.label}")
-                            if (signal.score < minScore && signal.score > -minScore) {
-                                Log.d(TAG, "   ⏭️ ${item.symbol}: Score ${signal.score} below threshold $minScore")
+                            val displayScore = signal.displayScore
+                            Log.i(TAG, "   📈 ${item.symbol}: Signal computed - score=$displayScore, tier=${signal.tier.label}")
+                            if (displayScore < minScore && displayScore > -minScore) {
+                                Log.d(TAG, "   ⏭️ ${item.symbol}: Score $displayScore below threshold $minScore")
                                 continue
                             }
                             if (signalsRepository.isInCooldown(item.symbol, signal.tier.label, signal.generatedAt)) {
@@ -200,7 +204,7 @@ class NotificationWindowWorker @AssistedInject constructor(
                             signalsRepository.recordEvent(event)
                             candidates.add(event)
                             watchlistCandidates += 1
-                            Log.i(TAG, "   ✅ ${item.symbol}: CANDIDATE ADDED - ${signal.tier.label} score=${signal.score}")
+                            Log.i(TAG, "   ✅ ${item.symbol}: CANDIDATE ADDED - ${signal.tier.label} score=$displayScore")
                         } else {
                             val errorResult = result as? StooqResult.Error
                             Log.w(TAG, "   ❌ ${item.symbol}: Failed to fetch series - ${errorResult?.message}")
@@ -286,15 +290,17 @@ class NotificationWindowWorker @AssistedInject constructor(
                                 series
                             }
                             
-                            val signal = signalsRepository.computeSignal(signalSeries, moversChartRange)
+                            val overview = loadOverviewCached(mover.ticker)
+                            val signal = signalsRepository.computeSignal(mover.ticker, signalSeries, moversChartRange, overview)
                             if (signal == null) {
                                 Log.d(TAG, "Market mover ${mover.ticker} no signal generated")
                                 return@forEach
                             }
+                            val displayScore = signal.displayScore
                             val strongBuy = settings.signalSensitivity.strongBuyThreshold
                             val strongSell = settings.signalSensitivity.strongSellThreshold
-                            if (signal.score < strongBuy && signal.score > strongSell) {
-                                Log.d(TAG, "Market mover ${mover.ticker} score ${signal.score} below thresholds")
+                            if (displayScore < strongBuy && displayScore > strongSell) {
+                                Log.d(TAG, "Market mover ${mover.ticker} score $displayScore below thresholds")
                                 return@forEach
                             }
                             if (signalsRepository.isInCooldown(mover.ticker, signal.tier.label, signal.generatedAt)) {
@@ -312,7 +318,7 @@ class NotificationWindowWorker @AssistedInject constructor(
                             signalsRepository.recordEvent(event)
                             candidates.add(event)
                             moverCandidates += 1
-                            Log.d(TAG, "Market mover candidate ${mover.ticker} ${signal.tier.label} score=${signal.score}")
+                            Log.d(TAG, "Market mover candidate ${mover.ticker} ${signal.tier.label} score=$displayScore")
                         } else {
                             Log.w(TAG, "Market mover ${mover.ticker} failed to fetch series; skipping")
                         }
@@ -383,6 +389,10 @@ class NotificationWindowWorker @AssistedInject constructor(
             averageScore = signal.averageScore,
             modeScore = signal.modeScore,
             confidence = signal.confidence,
+            aiScore = signal.aiScore,
+            aiConfidence = signal.aiConfidence,
+            aiSummary = signal.aiSummary,
+            aiReasons = signal.aiReasons,
             price = price,
             percentChange = percentChange,
             generatedAt = signal.generatedAt,
@@ -420,7 +430,8 @@ class NotificationWindowWorker @AssistedInject constructor(
                     Log.d(TAG, "Indicator alerts: ${item.symbol} data stale for range $range")
                     continue
                 }
-                val signal = signalsRepository.computeSignal(series, range)
+                val overview = loadOverviewCached(item.symbol)
+                val signal = signalsRepository.computeSignal(item.symbol, series, range, overview)
                 for (alert in rangeAlerts) {
                     val evaluation = IndicatorAlertEvaluator.evaluate(alert, series) ?: continue
                     if (!evaluation.crossed) continue
@@ -466,6 +477,10 @@ class NotificationWindowWorker @AssistedInject constructor(
             averageScore = signal?.averageScore,
             modeScore = signal?.modeScore,
             confidence = signal?.confidence ?: 0,
+            aiScore = signal?.aiScore,
+            aiConfidence = signal?.aiConfidence,
+            aiSummary = signal?.aiSummary,
+            aiReasons = signal?.aiReasons ?: emptyList(),
             price = series.lastOrNull()?.close,
             percentChange = percentChange(series),
             generatedAt = generatedAt,
@@ -525,6 +540,19 @@ class NotificationWindowWorker @AssistedInject constructor(
             MarketMoverRange.ONE_YEAR -> ChartRange.ONE_YEAR
             MarketMoverRange.FIVE_YEAR -> ChartRange.FIVE_YEAR
         }
+    }
+
+    private suspend fun loadOverviewCached(symbol: String): StockOverview? {
+        val cached = overviewCache[symbol]
+        if (cached != null || overviewCache.containsKey(symbol)) {
+            return cached
+        }
+        val overview = when (val result = stockRepository.getStockOverview(symbol)) {
+            is StooqResult.Success -> result.data
+            is StooqResult.Error -> null
+        }
+        overviewCache[symbol] = overview
+        return overview
     }
 
     private fun percentChange(candles: List<PriceCandle>): Double? {

@@ -248,7 +248,7 @@ fun SettingsScreen(
                 Text(text = "Translation", style = MaterialTheme.typography.headlineMedium)
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
-                    text = "Enable the 1B offline model for translations. Wi-Fi required; uses ~555MB.",
+                    text = "Enable the 1B offline model for translations. Wi-Fi required; uses ~600MB.",
                     style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(modifier = Modifier.height(8.dp))

@@ -131,6 +131,8 @@ private fun SignalEventCard(
     val formatter = remember { DateTimeFormatter.ofPattern("MMM d, HH:mm") }
     val avg = event.averageScore ?: event.score
     val mode = event.modeScore ?: avg
+    val aiScore = event.displayScore
+    val aiConfidence = event.displayConfidence
 
     StockCard(
         modifier = Modifier.clickable { onOpenDetail() }
@@ -150,27 +152,46 @@ private fun SignalEventCard(
         Spacer(modifier = Modifier.height(8.dp))
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             TagChip(label = if (event.type == NotificationEventType.MARKET_MOVER) "Market mover" else "Watchlist")
-            TagChip(label = "Score ${event.score}")
-            if (event.confidence > 0) {
-                TagChip(label = "${event.confidence}%")
+            TagChip(label = "AI Score $aiScore")
+            if (aiConfidence != null && aiConfidence > 0) {
+                TagChip(label = "AI Conf ${aiConfidence}%")
             }
         }
 
         Spacer(modifier = Modifier.height(8.dp))
         SignalScoreRow(
             tier = event.tier,
-            score = event.score,
-            confidence = event.confidence
+            score = aiScore,
+            confidence = aiConfidence,
+            scoreLabel = "AI Score",
+            confidenceLabel = "AI Confidence"
         )
 
         Spacer(modifier = Modifier.height(6.dp))
         Text(
-            text = "Avg $avg • Mode $mode",
+            text = "Avg $avg • Mode $mode • Rule Conf ${event.confidence}%",
             style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
         )
 
         Spacer(modifier = Modifier.height(8.dp))
         MiniSparkline()
+
+        if (!event.aiSummary.isNullOrBlank() || event.aiReasons.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "AI reasoning",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+            )
+            if (!event.aiSummary.isNullOrBlank()) {
+                Text(text = event.aiSummary, style = MaterialTheme.typography.bodySmall)
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                event.aiReasons.take(2).forEach { reason ->
+                    Text(text = "• ${reason.title}", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
 
         Spacer(modifier = Modifier.height(8.dp))
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {

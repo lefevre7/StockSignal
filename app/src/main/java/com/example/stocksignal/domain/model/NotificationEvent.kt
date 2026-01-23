@@ -17,6 +17,10 @@ data class NotificationEvent(
     val averageScore: Int?,
     val modeScore: Int?,
     val confidence: Int,
+    val aiScore: Int? = null,
+    val aiConfidence: Int? = null,
+    val aiSummary: String? = null,
+    val aiReasons: List<AiScoreReason> = emptyList(),
     val price: Double?,
     val percentChange: Double?,
     val generatedAt: LocalDateTime,
@@ -26,6 +30,12 @@ data class NotificationEvent(
     val delivered: Boolean,
     val reasons: List<SignalReason>
 ) {
+    val displayScore: Int
+        get() = aiScore ?: score
+
+    val displayConfidence: Int?
+        get() = aiConfidence ?: confidence
+
     val tier: SignalTier
-        get() = SignalTier.fromScore(score)
+        get() = SignalTier.fromScore(displayScore)
 }

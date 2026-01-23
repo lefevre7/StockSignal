@@ -34,7 +34,7 @@ import com.example.stocksignal.data.local.entity.WatchlistItemEntity
         SearchHistoryEntity::class,
         IntradayDataCacheEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 @TypeConverters(Converters::class)

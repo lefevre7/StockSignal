@@ -8,6 +8,7 @@ import com.example.stocksignal.data.local.db.MIGRATION_1_2
 import com.example.stocksignal.data.local.db.MIGRATION_2_3
 import com.example.stocksignal.data.local.db.MIGRATION_3_4
 import com.example.stocksignal.data.local.db.MIGRATION_4_5
+import com.example.stocksignal.data.local.db.MIGRATION_5_6
 import com.example.stocksignal.data.local.dao.IntradayDataCacheDao
 import com.example.stocksignal.data.local.dao.MarketMoversCacheDao
 import com.example.stocksignal.data.local.dao.NotesDao
@@ -35,7 +36,7 @@ object LocalDataModule {
             context,
             StockSignalDatabase::class.java,
             "stocksignal.db"
-        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
             .build()
     }
 

@@ -18,6 +18,7 @@ import com.example.stocksignal.data.settings.SnoozeDurationOption
 import com.example.stocksignal.domain.model.ChartRange
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
@@ -85,7 +86,7 @@ class NotificationBootstrapWorkerTest {
 
     @Test
     fun bootstrapWorkerHandlesExceptionAndRetries() = runBlocking {
-        coEvery { settingsRepository.settingsFlow } throws Exception("Settings fetch failed")
+        every { settingsRepository.settingsFlow } throws Exception("Settings fetch failed")
 
         val worker = buildWorker()
         val result = worker.doWork()

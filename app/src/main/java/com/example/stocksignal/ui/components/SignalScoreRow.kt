@@ -29,14 +29,16 @@ fun SignalScoreRow(
     score: Int,
     confidence: Int?,
     modifier: Modifier = Modifier,
-    compact: Boolean = false
+    compact: Boolean = false,
+    scoreLabel: String = "Score",
+    confidenceLabel: String = "Confidence"
 ) {
     var showConfidenceDialog by remember { mutableStateOf(false) }
     val label = tier.label
     val colors = signalColors(tier)
     val desc = buildString {
-        append("$label, score $score")
-        if (confidence != null) append(", confidence $confidence percent")
+        append("$label, ${scoreLabel.lowercase()} $score")
+        if (confidence != null) append(", ${confidenceLabel.lowercase()} $confidence percent")
     }
     Row(
         modifier = modifier.semantics { contentDescription = desc },
@@ -48,14 +50,20 @@ fun SignalScoreRow(
             label = label
         )
         Text(
-            text = "Score $score/100",
+            text = "$scoreLabel $score/100",
             style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
             color = colors.primary
         )
         if (confidence != null) {
             Spacer(modifier = Modifier.width(2.dp))
+            val compactLabel = if (confidenceLabel.length <= 6) {
+                confidenceLabel
+            } else {
+                val parts = confidenceLabel.split(" ")
+                if (parts.size > 1) "${parts.first()} Conf" else "Conf"
+            }
             Text(
-                text = if (compact) "Conf: $confidence%" else "Confidence: $confidence%",
+                text = if (compact) "$compactLabel: $confidence%" else "$confidenceLabel: $confidence%",
                 style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                 color = colors.primary
             )

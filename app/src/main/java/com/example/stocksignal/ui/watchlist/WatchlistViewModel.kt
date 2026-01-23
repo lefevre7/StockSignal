@@ -184,7 +184,11 @@ class WatchlistViewModel @Inject constructor(
         }
         
         Log.d(TAG, "$symbol: display=${displaySeries.size}, signal=${signalSeries.size} candles")
-        val signal = signalsRepository.computeSignal(signalSeries, range)
+        val overview = when (val overviewResult = stockRepository.getStockOverview(symbol)) {
+            is Result.Success -> overviewResult.data
+            is Result.Error -> null
+        }
+        val signal = signalsRepository.computeSignal(symbol, signalSeries, range, overview)
         
         val price = displaySeries.lastOrNull()?.close
         val prev = displaySeries.getOrNull(displaySeries.lastIndex - 1)

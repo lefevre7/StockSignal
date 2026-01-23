@@ -45,25 +45,34 @@ class NotificationScheduler @Inject constructor(
             Log.w(TAG, "   Enable Watchlist or Market Movers in Settings to receive background notifications")
             return
         }
-        if (settings.frequency == NotificationFrequency.ONLY_WHEN_OPEN) {
+        
+        // Auto-fallback if DEV mode is set but debug flag is disabled
+        val effectiveFrequency = if (settings.frequency == NotificationFrequency.DEV_ONE_MINUTE && !DebugConfig.ENABLE_DEV_MODE) {
+            Log.w(TAG, "⚠️ DEV_ONE_MINUTE frequency set but debug mode disabled - falling back to THREE_PER_DAY")
+            NotificationFrequency.THREE_PER_DAY
+        } else {
+            settings.frequency
+        }
+        
+        if (effectiveFrequency == NotificationFrequency.ONLY_WHEN_OPEN) {
             Log.d(TAG, "Background scheduling disabled (only when open)")
             return
         }
 
-        val windows = windowsForFrequency(settings)
+        val windows = windowsForFrequency(settings.copy(frequency = effectiveFrequency))
         if (windows.isEmpty()) {
-            Log.w(TAG, "❌ No notification windows configured for frequency: ${settings.frequency}")
+            Log.w(TAG, "❌ No notification windows configured for frequency: $effectiveFrequency")
             return
         }
         
-        val interval = when (settings.frequency) {
+        val interval = when (effectiveFrequency) {
             NotificationFrequency.ONE_PER_WEEK -> Duration.ofDays(7)
             NotificationFrequency.DEV_ONE_MINUTE -> Duration.ofMinutes(15) // WorkManager minimum is 15 min
             else -> Duration.ofDays(1)
         }
         
         // For DEV mode, use expedited one-time work to run immediately, then periodic
-        val isDevMode = settings.frequency == NotificationFrequency.DEV_ONE_MINUTE && DebugConfig.ENABLE_DEV_MODE
+        val isDevMode = effectiveFrequency == NotificationFrequency.DEV_ONE_MINUTE && DebugConfig.ENABLE_DEV_MODE
 
         Log.d(TAG, "Scheduling ${windows.size} notification window(s) with ${interval.toMinutes()}min interval (devMode=$isDevMode)")
         windows.forEach { window ->

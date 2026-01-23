@@ -11,5 +11,5 @@ object DebugConfig {
      * - Verbose emoji-based logging in background workers
      * - Extended diagnostics in notification processing
      */
-    const val ENABLE_DEV_MODE = false
+    const val ENABLE_DEV_MODE = true
 }

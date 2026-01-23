@@ -3,12 +3,9 @@ package com.example.stocksignal.data.repository
 import com.example.stocksignal.domain.model.StockNewsItem
 import org.json.JSONArray
 import org.json.JSONObject
-import java.time.LocalDateTime
-import java.time.format.DateTimeFormatter
+import java.time.Instant
 
 object StockNewsJson {
-
-    private val formatter = DateTimeFormatter.ISO_LOCAL_DATE_TIME
 
     fun toJson(items: List<StockNewsItem>): String {
         val array = JSONArray()
@@ -16,7 +13,7 @@ object StockNewsJson {
             val json = JSONObject()
             json.put("title", item.title)
             json.put("publishedAtText", item.publishedAtText)
-            item.publishedAt?.let { json.put("publishedAt", it.format(formatter)) }
+            item.publishedAt?.let { json.put("publishedAt", it.toString()) }
             item.source?.let { json.put("source", it) }
             item.url?.let { json.put("url", it) }
             item.translatedTitle?.let { json.put("translatedTitle", it) }
@@ -32,7 +29,13 @@ object StockNewsJson {
         return List(array.length()) { index ->
             val json = array.getJSONObject(index)
             val publishedAtRaw = json.optString("publishedAt").takeIf { it.isNotBlank() }
-            val publishedAt = publishedAtRaw?.let { LocalDateTime.parse(it, formatter) }
+            val publishedAt = publishedAtRaw?.let { 
+                try {
+                    Instant.parse(it)
+                } catch (e: Exception) {
+                    null // Gracefully handle old LocalDateTime format
+                }
+            }
             StockNewsItem(
                 title = json.optString("title"),
                 publishedAtText = json.optString("publishedAtText"),

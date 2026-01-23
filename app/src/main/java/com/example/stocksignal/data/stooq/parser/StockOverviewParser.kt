@@ -6,6 +6,7 @@ import com.example.stocksignal.domain.model.StockNewsItem
 import com.example.stocksignal.domain.model.StockOverview
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
+import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -24,7 +25,8 @@ object StockOverviewParser {
 
     private const val TAG = "StockOverviewParser"
     private const val NEWS_HEADER = "Wiadomości"
-    private val newsTimeZone = ZoneId.of("America/New_York")
+    private val polandTimeZone = ZoneId.of("Europe/Warsaw")
+    private val displayTimeZone = ZoneId.systemDefault()
 
     // Regex to match numbers with optional thousands separators, decimals, and multipliers (M, B, T)
     private val numberRegex = Regex("([+-]?[\\d,]+(?:\\.\\d+)?)\\s*([MBTmbt])?")
@@ -173,7 +175,7 @@ object StockOverviewParser {
         return dateText to source
     }
 
-    private fun parseNewsDate(dateText: String): LocalDateTime? {
+    private fun parseNewsDate(dateText: String): Instant? {
         if (dateText.isBlank()) return null
         val parts = dateText.split(",")
         if (parts.size < 2) return null
@@ -191,8 +193,15 @@ object StockOverviewParser {
         val hour = timePieces[0].toIntOrNull() ?: return null
         val minute = timePieces[1].toIntOrNull() ?: return null
 
-        val year = LocalDate.now(newsTimeZone).year
-        return LocalDateTime.of(year, month, day, hour, minute)
+        // Use local phone timezone to determine the current year
+        val year = LocalDate.now(displayTimeZone).year
+        
+        // Parse as Poland time (the timezone from Stooq)
+        val polandDateTime = LocalDateTime.of(year, month, day, hour, minute)
+        val polandZoned = polandDateTime.atZone(polandTimeZone)
+        
+        // Convert to Instant (UTC)
+        return polandZoned.toInstant()
     }
 
     private fun resolveNewsUrl(raw: String): String? {

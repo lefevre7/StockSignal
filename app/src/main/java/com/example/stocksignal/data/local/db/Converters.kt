@@ -5,6 +5,7 @@ import com.example.stocksignal.data.local.model.MarketMoverItem
 import com.example.stocksignal.domain.model.PriceCandle
 import org.json.JSONArray
 import org.json.JSONObject
+import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -32,6 +33,16 @@ class Converters {
     @TypeConverter
     fun stringToLocalDateTime(value: String?): LocalDateTime? {
         return value?.let { LocalDateTime.parse(it, dateTimeFormatter) }
+    }
+
+    @TypeConverter
+    fun instantToString(value: Instant?): String? {
+        return value?.toString()
+    }
+
+    @TypeConverter
+    fun stringToInstant(value: String?): Instant? {
+        return value?.let { Instant.parse(it) }
     }
 
     @TypeConverter

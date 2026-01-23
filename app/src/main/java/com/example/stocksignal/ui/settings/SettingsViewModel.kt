@@ -291,6 +291,24 @@ class SettingsViewModel @Inject constructor(
                                 WorkInfo.State.CANCELLED -> "⛔ Cancelled"
                             }
                             appendLine("   Worker ${idx + 1}: $state")
+                            
+                            // Show run attempt count
+                            appendLine("     Run attempts: ${info.runAttemptCount}")
+                            
+                            // Show last run time if available (for periodic workers)
+                            if (info.state == WorkInfo.State.ENQUEUED) {
+                                val periodStartTime = info.outputData.getLong("lastRunTime", 0L)
+                                if (periodStartTime > 0) {
+                                    val elapsed = (nowMillis - periodStartTime) / 60000
+                                    appendLine("     Last ran: ${elapsed}min ago")
+                                }
+                            }
+                            
+                            // Show window ID if available
+                            val windowId = info.tags.find { it.startsWith("window_") }?.removePrefix("window_")
+                            if (windowId != null) {
+                                appendLine("     Window: $windowId")
+                            }
                         }
                     }
                     appendLine()
@@ -327,12 +345,21 @@ class SettingsViewModel @Inject constructor(
     private fun formatEnqueuedState(info: WorkInfo, nowMillis: Long): String {
         val nextSchedule = info.nextScheduleTimeMillis
         if (nextSchedule == Long.MAX_VALUE) {
-            return "⏳ Waiting for Time Unavailable"
+            return "⏳ Enqueued (time unknown)"
         }
         val diffMillis = nextSchedule - nowMillis
-        val minutes = if (diffMillis <= 0) 0 else (diffMillis + 59_999) / 60_000
-        val unit = if (minutes == 1L) "minute" else "minutes"
-        return "⏳ Waiting for $minutes $unit"
+        if (diffMillis <= 0) {
+            return "⏳ Ready to run (pending constraints)"
+        }
+        val minutes = (diffMillis + 59_999) / 60_000
+        val hours = minutes / 60
+        val mins = minutes % 60
+        return if (hours > 0) {
+            "⏳ Next run in ${hours}h ${mins}m"
+        } else {
+            val unit = if (minutes == 1L) "minute" else "minutes"
+            "⏳ Next run in $minutes $unit"
+        }
     }
 
     private fun defaultSettings(): AppSettings {

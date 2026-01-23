@@ -249,7 +249,7 @@ class StockOverviewParserTest {
 
     @Test
     fun `parse extracts news items from wiadomosci table`() {
-        val year = LocalDate.now(ZoneId.of("America/New_York")).year
+        val year = LocalDate.now(ZoneId.systemDefault()).year
         val html = """
             <html>
             <body>
@@ -291,13 +291,32 @@ class StockOverviewParserTest {
         val first = result.news[0]
         assertEquals("Alpha Beta", first.title)
         assertEquals("17 sty, 5:20", first.publishedAtText)
-        assertEquals(LocalDateTime.of(year, 1, 17, 5, 20), first.publishedAt)
+        
+        // Verify publishedAt is converted to Instant from Poland time
+        assertNotNull(first.publishedAt)
+        val firstPolandTime = first.publishedAt!!.atZone(ZoneId.of("Europe/Warsaw"))
+        assertEquals(year, firstPolandTime.year)
+        assertEquals(1, firstPolandTime.monthValue)
+        assertEquals(17, firstPolandTime.dayOfMonth)
+        assertEquals(5, firstPolandTime.hour)
+        assertEquals(20, firstPolandTime.minute)
+        
         assertEquals("Reuters", first.source)
         assertEquals("https://stooq.com/n/?f=1", first.url)
+        
         val second = result.news[1]
         assertEquals("Second Title", second.title)
         assertEquals("16 sty, 21:29", second.publishedAtText)
-        assertEquals(LocalDateTime.of(year, 1, 16, 21, 29), second.publishedAt)
+        
+        // Verify second news item
+        assertNotNull(second.publishedAt)
+        val secondPolandTime = second.publishedAt!!.atZone(ZoneId.of("Europe/Warsaw"))
+        assertEquals(year, secondPolandTime.year)
+        assertEquals(1, secondPolandTime.monthValue)
+        assertEquals(16, secondPolandTime.dayOfMonth)
+        assertEquals(21, secondPolandTime.hour)
+        assertEquals(29, secondPolandTime.minute)
+        
         assertEquals("PAP", second.source)
         assertEquals("https://stooq.com/n/?f=2", second.url)
     }

@@ -36,7 +36,7 @@ class NotificationPublisher @Inject constructor(
         val summary = notificationSummary(events)
         val inboxStyle = NotificationCompat.InboxStyle()
         events.take(MAX_LINES).forEach { event ->
-            inboxStyle.addLine("${event.ticker} ${event.tier.label} (${event.score})")
+            inboxStyle.addLine("${event.ticker} ${event.tier.label} (${event.displayScore})")
         }
         if (events.size > MAX_LINES) {
             inboxStyle.setSummaryText("+${events.size - MAX_LINES} more")
@@ -71,8 +71,8 @@ class NotificationPublisher @Inject constructor(
             ticker = ticker,
             company = events.first().companyName,
             signal = events.first().tier.label,
-            score = events.first().score,
-            confidence = events.first().confidence,
+            score = events.first().displayScore,
+            confidence = events.first().displayConfidence ?: events.first().confidence,
             price = events.first().price,
             percentChange = events.first().percentChange,
             time = events.first().generatedAt,
@@ -126,7 +126,7 @@ class NotificationPublisher @Inject constructor(
     private fun notificationSummary(events: List<NotificationEvent>): String {
         if (events.size == 1) {
             val event = events.first()
-            val score = event.score
+            val score = event.displayScore
             val sign = if (score > 0) "+" else if (score < 0) "-" else ""
             return "${event.tier.summary} • $sign${abs(score)}"
         }

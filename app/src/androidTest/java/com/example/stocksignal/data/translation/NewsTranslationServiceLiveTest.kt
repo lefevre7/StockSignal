@@ -19,22 +19,14 @@ class NewsTranslationServiceLiveTest {
     fun translatePolishHeadlineToEnglish() {
         runBlocking {
             val context = ApplicationProvider.getApplicationContext<Context>()
-            val service = NewsTranslationService(context)
-
-            when (service.getModelAvailability()) {
-                ModelAvailability.AVAILABLE -> Unit
-                ModelAvailability.NEEDS_DOWNLOAD -> {
-                    assertTrue("Model download failed", service.downloadModel())
-                }
-                ModelAvailability.UNAVAILABLE -> {
-                    assumeTrue("Play services translation model unavailable on this device.", false)
-                }
-            }
+            val service = NewsTranslationService(context, LiteRtLlmRuntimeFactory())
+            val localUsable = service.isLocalModelUsable()
+            assumeTrue("Local LiteRT-LM model not usable on this device.", localUsable)
 
             val input =
                 "Bank Pekao domaga się spłaty przez Grupę Azoty Polyolefins 3,952 mld zł zobowiązań. " +
                     "16 sty, 15:54 * DM BOS"
-            val translated = service.translateWithMlkit(input)
+            val translated = service.translateWithLocalModel(input)
             assertNotNull("Translation should not be null", translated)
             val cleaned = translated!!.trim()
             assertTrue("Translation should not be empty", cleaned.isNotEmpty())

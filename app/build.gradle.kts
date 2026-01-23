@@ -114,10 +114,11 @@ dependencies {
     // HTML parsing
     implementation(libs.jsoup)
 
-    // ML Kit GenAI (prompt)
-    implementation(libs.mlkit.genai.prompt)
-    // MediaPipe LLM Inference (local model)
-    implementation(libs.mediapipe.tasks.genai)
+    // LiteRT-LM (local model runtime)
+    implementation(libs.litertlm)
+    implementation(libs.tflite)
+    implementation(libs.tflite.gpu)
+    implementation(libs.tflite.support)
     // Play Asset Delivery for offline model fallback
     implementation(libs.play.asset.delivery)
     
@@ -149,12 +150,11 @@ kapt {
 }
 
 // Updated to Gemma-3 1B for better translation quality
-val localModelFile = rootProject.file("gemma3-1b-it-int4.task")
-val localModelDevicePath = "files/llm/gemma3-1b-it-int4.task"
-val localModelTempPath = "/data/local/tmp/gemma3-1b-it-int4.task"
-val localModelExpectedBytes = 554_661_243L
+val localModelFile = rootProject.file("gemma3-1b-it-int4.litertlm")
+val localModelDevicePath = "files/llm/${localModelFile.name}"
+val localModelTempPath = "/data/local/tmp/${localModelFile.name}"
 val localModelAssetDir = rootProject.file("gemma3_1b_model/src/main/assets")
-val localModelAssetFile = rootProject.file("gemma3_1b_model/src/main/assets/gemma3-1b-it-int4.task")
+val localModelAssetFile = rootProject.file("gemma3_1b_model/src/main/assets/${localModelFile.name}")
 val appPackageName = "com.example.stocksignal"
 val adbExecutable = run {
     val propsFile = rootProject.file("local.properties")
@@ -195,9 +195,10 @@ tasks.register("pushLocalTranslationModel") {
         if (!localModelFile.exists()) {
             throw GradleException(
                     "Local model file not found at ${localModelFile.absolutePath}. " +
-                    "Place gemma3-1b-it-int4.task at repo root or let the app download it."
+                    "Place gemma3-1b-it-int4.litertlm at repo root or let the app download it."
             )
         }
+        val localModelExpectedBytes = localModelFile.length()
 
         if (!localModelAssetDir.exists() && !localModelAssetDir.mkdirs()) {
             throw GradleException(

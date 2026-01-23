@@ -190,7 +190,8 @@ class StockRepository @Inject constructor(
                     accumulateIntradayData(symbol, map)
                     
                     if (eventType != null) {
-                        signalsRepository.evaluateAndStoreSignal(symbol, candles, range, eventType)
+                        val overview = loadOverviewOrNull(symbol)
+                        signalsRepository.evaluateAndStoreSignal(symbol, candles, range, overview, eventType)
                     }
                     cacheRepository.upsert(
                         StockDetailCacheEntity(
@@ -227,7 +228,8 @@ class StockRepository @Inject constructor(
                     val merged = mergePremarketCandles(symbol, candles, end)
                     accumulateIntradayData(symbol, map)
                     if (eventType != null) {
-                        signalsRepository.evaluateAndStoreSignal(symbol, merged, range, eventType)
+                        val overview = loadOverviewOrNull(symbol)
+                        signalsRepository.evaluateAndStoreSignal(symbol, merged, range, overview, eventType)
                     }
                     cacheRepository.upsert(
                         StockDetailCacheEntity(
@@ -427,7 +429,8 @@ class StockRepository @Inject constructor(
                 } else {
                     val candles = mapDailyToCandles(map)
                     if (eventType != null) {
-                        signalsRepository.evaluateAndStoreSignal(symbol, candles, range, eventType)
+                        val overview = loadOverviewOrNull(symbol)
+                        signalsRepository.evaluateAndStoreSignal(symbol, candles, range, overview, eventType)
                     }
                     cacheRepository.upsert(
                         StockDetailCacheEntity(
@@ -718,6 +721,13 @@ class StockRepository @Inject constructor(
         overviewCacheRepository.upsert(
             cached.copy(newsJson = StockNewsJson.toJson(news))
         )
+    }
+
+    private suspend fun loadOverviewOrNull(symbol: String): StockOverview? {
+        return when (val result = getStockOverview(symbol)) {
+            is Result.Success -> result.data
+            is Result.Error -> null
+        }
     }
 
     companion object {

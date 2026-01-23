@@ -59,7 +59,8 @@ class NotificationWindowWorkerTest {
         coEvery { stockRepository.getSeries(any(), any(), any(), any()) } returns StooqResult.Success(
             sampleCandles(now, 25) // Need at least 20 candles for signal computation
         )
-        coEvery { signalsRepository.computeSignal(any(), any()) } returns sampleSignal(now)
+        coEvery { stockRepository.getStockOverview(any()) } returns StooqResult.Error(Exception("no overview"))
+        coEvery { signalsRepository.computeSignal(any(), any(), any(), any()) } returns sampleSignal(now)
         coEvery { signalsRepository.isInCooldown(any(), any(), any()) } returns false
         coEvery { signalsRepository.recordEvent(any()) } just runs
         val candidatesSlot = slot<List<com.example.stocksignal.domain.model.NotificationEvent>>()
@@ -84,7 +85,8 @@ class NotificationWindowWorkerTest {
         coEvery { stockRepository.getSeries(any(), any(), any(), any()) } returns StooqResult.Success(
             sampleCandles(now, 25) // Need at least 20 candles for signal computation
         )
-        coEvery { signalsRepository.computeSignal(any(), any()) } returns sampleSignal(now)
+        coEvery { stockRepository.getStockOverview(any()) } returns StooqResult.Error(Exception("no overview"))
+        coEvery { signalsRepository.computeSignal(any(), any(), any(), any()) } returns sampleSignal(now)
         coEvery { signalsRepository.isInCooldown(any(), any(), any()) } returns false
         coEvery { signalsRepository.recordEvent(any()) } just runs
         val candidatesSlot = slot<List<com.example.stocksignal.domain.model.NotificationEvent>>()
@@ -96,6 +98,34 @@ class NotificationWindowWorkerTest {
         assertTrue(result is ListenableWorker.Result.Success)
         assertEquals(2, candidatesSlot.captured.size)
         assertTrue(candidatesSlot.captured.map { it.ticker }.containsAll(listOf("AAPL", "MSFT")))
+    }
+
+    @Test
+    fun `uses ai score for watchlist thresholds`() = runTest {
+        val now = LocalDateTime.now()
+        every { settingsRepository.settingsFlow } returns flowOf(defaultSettings())
+        coEvery { watchlistRepository.getAll() } returns listOf(sampleWatchlistItem("AAPL", now))
+        coEvery { stockRepository.getSeries(any(), any(), any(), any()) } returns StooqResult.Success(
+            sampleCandles(now, 25)
+        )
+        coEvery { stockRepository.getStockOverview(any()) } returns StooqResult.Error(Exception("no overview"))
+        coEvery { signalsRepository.computeSignal(any(), any(), any(), any()) } returns sampleSignal(
+            now,
+            score = 10,
+            aiScore = 80,
+            aiConfidence = 88
+        )
+        coEvery { signalsRepository.isInCooldown(any(), any(), any()) } returns false
+        coEvery { signalsRepository.recordEvent(any()) } just runs
+        val candidatesSlot = slot<List<com.example.stocksignal.domain.model.NotificationEvent>>()
+        coEvery { notificationQueueProcessor.processCandidates(capture(candidatesSlot), any()) } just runs
+
+        val worker = buildWorker()
+        val result = worker.doWork()
+
+        assertTrue(result is ListenableWorker.Result.Success)
+        assertTrue(candidatesSlot.captured.isNotEmpty())
+        assertEquals(80, candidatesSlot.captured.first().displayScore)
     }
 
     private fun buildWorker(): NotificationWindowWorker {
@@ -148,12 +178,21 @@ class NotificationWindowWorkerTest {
         )
     }
 
-    private fun sampleSignal(now: LocalDateTime): SignalResult {
+    private fun sampleSignal(
+        now: LocalDateTime,
+        score: Int = 80,
+        aiScore: Int? = null,
+        aiConfidence: Int? = null
+    ): SignalResult {
         return SignalResult(
-            score = 80,
-            averageScore = 80,
-            modeScore = 80,
+            score = score,
+            averageScore = score,
+            modeScore = score,
             confidence = 85,
+            aiScore = aiScore,
+            aiConfidence = aiConfidence,
+            aiSummary = null,
+            aiReasons = emptyList(),
             reasons = emptyList(),
             modelScores = emptyMap(),
             generatedAt = now

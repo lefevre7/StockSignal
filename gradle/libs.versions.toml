@@ -1,6 +1,6 @@
 [versions]
 agp = "8.13.2"
-kotlin = "2.0.21"
+kotlin = "2.2.21"
 coreKtx = "1.10.1"
 junit = "4.13.2"
 junitVersion = "1.1.5"
@@ -20,19 +20,20 @@ desugarJdkLibs = "2.0.4"
 composeBom = "2024.10.00"
 activityCompose = "1.9.3"
 lifecycle = "2.8.7"
-hilt = "2.52"
+hilt = "2.57.2"
 hiltAndroidx = "1.2.0"
-room = "2.7.0-alpha07"
+room = "2.7.0-beta01"
 datastore = "1.1.1"
 work = "2.9.1"
 vico = "2.0.0"
 jsoup = "1.17.2"
 robolectric = "4.12.2"
 androidxTestRules = "1.5.0"
-mlkitGenaiPrompt = "1.0.0-alpha1"
 orgJson = "20240303"
-mediapipeGenai = "0.10.27"
 playAssetDelivery = "2.2.2"
+litertlm = "0.9.0-alpha01"
+playServicesTfliteJava = "16.4.0"
+playServicesTfliteGpu = "16.4.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -86,8 +87,10 @@ jsoup = { group = "org.jsoup", name = "jsoup", version.ref = "jsoup" }
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
 androidx-work-testing = { group = "androidx.work", name = "work-testing", version.ref = "work" }
 androidx-test-rules = { group = "androidx.test", name = "rules", version.ref = "androidxTestRules" }
-mlkit-genai-prompt = { group = "com.google.mlkit", name = "genai-prompt", version.ref = "mlkitGenaiPrompt" }
-mediapipe-tasks-genai = { group = "com.google.mediapipe", name = "tasks-genai", version.ref = "mediapipeGenai" }
+litertlm = { group = "com.google.ai.edge.litertlm", name = "litertlm-android", version.ref = "litertlm" }
+tflite = { group = "com.google.android.gms", name = "play-services-tflite-java", version.ref = "playServicesTfliteJava" }
+tflite-gpu = { group = "com.google.android.gms", name = "play-services-tflite-gpu", version.ref = "playServicesTfliteGpu" }
+tflite-support = { group = "com.google.android.gms", name = "play-services-tflite-support", version.ref = "playServicesTfliteJava" }
 play-asset-delivery = { group = "com.google.android.play", name = "asset-delivery", version.ref = "playAssetDelivery" }
 json = { group = "org.json", name = "json", version.ref = "orgJson" }
 

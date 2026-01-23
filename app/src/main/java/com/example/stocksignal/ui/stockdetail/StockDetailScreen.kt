@@ -86,12 +86,17 @@ import com.example.stocksignal.domain.model.IndicatorAlertSetting
 import com.example.stocksignal.domain.model.IndicatorMetric
 import com.example.stocksignal.domain.model.NotificationEvent
 import com.example.stocksignal.domain.model.PriceCandle
+import com.example.stocksignal.domain.model.AiScoreReason
 import com.example.stocksignal.domain.model.SignalReason
 import com.example.stocksignal.domain.model.SignalResult
 import com.example.stocksignal.domain.model.SignalTier
 import com.example.stocksignal.domain.model.StockNewsItem
 import com.example.stocksignal.domain.model.TechnicalIndicators
 import com.example.stocksignal.ui.components.ChartFrame
+import java.time.Instant
+import java.time.ZoneId
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 import com.example.stocksignal.ui.components.SignalBadge
 import com.example.stocksignal.ui.components.SignalChip
 import com.example.stocksignal.ui.components.SignalScoreRow
@@ -100,7 +105,6 @@ import com.example.stocksignal.ui.components.TagChip
 import com.example.stocksignal.ui.components.CompanyExchangeText
 import com.example.stocksignal.ui.components.HtmlText
 import com.example.stocksignal.ui.theme.StockSignalDimens
-import java.time.format.DateTimeFormatter
 import java.net.URLEncoder
 import java.util.Locale
 import java.nio.charset.StandardCharsets
@@ -142,7 +146,6 @@ fun StockDetailRoute(
         onRemoveTag = viewModel::removeTag,
         onAddNote = onAddNote,
         onShare = onShare,
-        onConfirmTranslationDownload = viewModel::confirmTranslationDownload,
         onRetryTranslationDownload = viewModel::retryTranslationDownload,
         onDownloadOfflineModel = viewModel::requestOfflineModelDownload,
         onDismissTranslationPrompt = viewModel::dismissTranslationPrompt,
@@ -173,7 +176,6 @@ fun StockDetailScreen(
     onRemoveTag: (String) -> Unit,
     onAddNote: (String) -> Unit,
     onShare: (String, String?) -> Unit,
-    onConfirmTranslationDownload: () -> Unit,
     onRetryTranslationDownload: () -> Unit,
     onDownloadOfflineModel: () -> Unit,
     onDismissTranslationPrompt: () -> Unit,
@@ -362,19 +364,8 @@ fun StockDetailScreen(
                 }
             },
             confirmButton = {
-                when (state.translationPromptType) {
-                    TranslationPromptType.PLAY_SERVICES -> {
-                        TextButton(
-                            onClick = onConfirmTranslationDownload,
-                            enabled = !isDownloading
-                        ) { Text("Download") }
-                    }
-                    TranslationPromptType.LOCAL_MODEL -> {
-                        if (!isDownloading) {
-                            TextButton(onClick = onRetryTranslationDownload) { Text("Download") }
-                        }
-                    }
-                    null -> Unit
+                if (state.translationPromptType == TranslationPromptType.LOCAL_MODEL && !isDownloading) {
+                    TextButton(onClick = onRetryTranslationDownload) { Text("Download") }
                 }
             },
             dismissButton = {
@@ -487,6 +478,8 @@ private fun PriceSignalSection(
     }
     val updatedAt = last?.time?.format(DateTimeFormatter.ofPattern("HH:mm")) ?: "—"
     val signalTier = signal?.tier ?: SignalTier.NEUTRAL
+    val aiScore = signal?.aiScore ?: signal?.score ?: 0
+    val aiConfidence = signal?.aiConfidence ?: signal?.confidence
 
     StockCard {
         Row(
@@ -520,8 +513,8 @@ private fun PriceSignalSection(
             Spacer(modifier = Modifier.width(12.dp))
             SignalBadge(
                 tier = signalTier,
-                score = signal?.score ?: 0,
-                confidence = signal?.confidence,
+                score = aiScore,
+                confidence = aiConfidence,
                 ticker = null
             )
         }
@@ -529,9 +522,11 @@ private fun PriceSignalSection(
         Spacer(modifier = Modifier.height(12.dp))
         SignalScoreRow(
             tier = signalTier,
-            score = signal?.score ?: 0,
-            confidence = signal?.confidence,
-            compact = false
+            score = aiScore,
+            confidence = aiConfidence,
+            compact = false,
+            scoreLabel = "AI Score",
+            confidenceLabel = "AI Confidence"
         )
         Spacer(modifier = Modifier.height(6.dp))
         AverageModeRow(signal = signal)
@@ -548,6 +543,7 @@ private fun PriceSignalSection(
 private fun AverageModeRow(signal: SignalResult?) {
     val average = signal?.averageScore
     val mode = signal?.modeScore ?: average
+    val confidence = signal?.confidence
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(
             text = "Avg ${average ?: 0}",
@@ -555,6 +551,10 @@ private fun AverageModeRow(signal: SignalResult?) {
         )
         Text(
             text = "Mode ${mode ?: 0}",
+            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
+        )
+        Text(
+            text = "Rule Conf ${confidence ?: 0}%",
             style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
         )
     }
@@ -735,8 +735,16 @@ private fun NewsTab(
                 Text(text = displayTitle, style = MaterialTheme.typography.bodyMedium)
                 if (item.translatedTitle.isNullOrBlank()) {
                     val meta = buildString {
-                        if (item.publishedAtText.isNotBlank()) {
-                            append(item.publishedAtText)
+                        // Format publishedAt in local phone timezone
+                        item.publishedAt?.let { instant ->
+                            val formatter = DateTimeFormatter.ofPattern("MMM d, h:mm a z")
+                            val localTime = instant.atZone(ZoneId.systemDefault())
+                            append(localTime.format(formatter))
+                        } ?: run {
+                            // Fallback to original text if Instant not available
+                            if (item.publishedAtText.isNotBlank()) {
+                                append(item.publishedAtText)
+                            }
                         }
                         if (!item.source.isNullOrBlank()) {
                             if (isNotEmpty()) append(" • ")
@@ -779,7 +787,23 @@ private fun SignalsTab(signal: SignalResult?, range: ChartRange) {
         }
         AverageModeRow(signal = signal)
         Spacer(modifier = Modifier.height(8.dp))
-        Text(text = "Why this signal", style = MaterialTheme.typography.bodyMedium)
+        if (!signal.aiSummary.isNullOrBlank() || signal.aiReasons.isNotEmpty()) {
+            Text(text = "AI reasoning", style = MaterialTheme.typography.bodyMedium)
+            Spacer(modifier = Modifier.height(6.dp))
+            if (!signal.aiSummary.isNullOrBlank()) {
+                Text(
+                    text = signal.aiSummary,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+            }
+            signal.aiReasons.take(3).forEach { reason ->
+                AiReasonRow(reason = reason)
+                Spacer(modifier = Modifier.height(6.dp))
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+        Text(text = "Rule-based reasons", style = MaterialTheme.typography.bodyMedium)
         Spacer(modifier = Modifier.height(6.dp))
         signal.reasons.take(3).forEach { reason ->
             ReasonRow(reason = reason)
@@ -833,11 +857,13 @@ private fun HistoryTab(
                         Text(text = event.generatedAt.format(DateTimeFormatter.ofPattern("MMM d, HH:mm")))
                         Text(text = event.tier.label, style = MaterialTheme.typography.bodySmall)
                     }
-                    SignalChip(tier = event.tier, label = event.score.toString())
+                    SignalChip(tier = event.tier, label = "AI ${event.displayScore}")
                 }
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
-                    text = "Avg ${event.averageScore ?: event.score} • Mode ${event.modeScore ?: event.averageScore ?: event.score}",
+                    text = "Avg ${event.averageScore ?: event.score} • " +
+                        "Mode ${event.modeScore ?: event.averageScore ?: event.score} • " +
+                        "Rule Conf ${event.confidence}%",
                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
                 )
             }
@@ -1410,6 +1436,36 @@ private fun ReasonRow(reason: SignalReason) {
             Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = reason.explanation,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun AiReasonRow(reason: AiScoreReason) {
+    var expanded by rememberSaveable(reason.title) { mutableStateOf(false) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { expanded = !expanded }
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(text = reason.title, style = MaterialTheme.typography.bodyMedium)
+            Icon(
+                imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                contentDescription = null
+            )
+        }
+        if (expanded) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = reason.detail,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
             )
