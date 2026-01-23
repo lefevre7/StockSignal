@@ -335,8 +335,6 @@ class AiSignalScorer @Inject constructor(
     }
 
     private fun buildRuleSummary(ruleSignal: SignalResult): String {
-        val avg = ruleSignal.averageScore
-        val mode = ruleSignal.modeScore ?: avg
         val confidence = ruleSignal.confidence
         val topReasons = ruleSignal.reasons
             .sortedByDescending { abs(it.impactScore) }
@@ -344,7 +342,8 @@ class AiSignalScorer @Inject constructor(
         val metricScores = ruleSignal.modelScores.entries.joinToString { "${it.key}=${it.value}" }
         return buildString {
             appendLine("- Score: ${ruleSignal.score}")
-            appendLine("- Avg: $avg, Mode: $mode, Confidence: $confidence")
+            appendLine("- Confidence: $confidence")
+            appendLine("- Indicator metrics: listed in the Indicator stats section above.")
             appendLine("- Metric scores: ${metricScores.ifBlank { "none" }}")
             if (topReasons.isNotEmpty()) {
                 appendLine("- Top reasons:")
