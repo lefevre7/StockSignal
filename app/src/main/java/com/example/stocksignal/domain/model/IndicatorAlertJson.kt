@@ -25,9 +25,11 @@ object IndicatorAlertJson {
         val results = mutableListOf<IndicatorAlertSetting>()
         for (index in 0 until array.length()) {
             val json = array.optJSONObject(index) ?: continue
-            val metric = runCatching {
-                IndicatorMetric.valueOf(json.optString("metric"))
-            }.getOrNull() ?: continue
+            val metricName = json.optString("metric")
+            val metric = when (metricName) {
+                "RETURN_ZSCORE_20" -> IndicatorMetric.ROLLING_RETURN_ZSCORE
+                else -> runCatching { IndicatorMetric.valueOf(metricName) }.getOrNull()
+            } ?: continue
             val direction = runCatching {
                 AlertDirection.valueOf(json.optString("direction"))
             }.getOrNull() ?: metric.defaultDirection

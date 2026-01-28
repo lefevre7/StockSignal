@@ -16,6 +16,7 @@ import com.example.stocksignal.domain.model.PriceCandle
 import com.example.stocksignal.domain.model.SignalResult
 import com.example.stocksignal.domain.model.SignalSnapshot
 import com.example.stocksignal.domain.model.WatchlistItem
+import com.example.stocksignal.ui.model.AiGenerationState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -227,7 +228,8 @@ data class WatchlistCardState(
     val signal: SignalResult?,
     val price: Double?,
     val percentChange: Double?,
-    val updatedAt: LocalDateTime?
+    val updatedAt: LocalDateTime?,
+    val aiGenerationState: AiGenerationState = AiGenerationState.IDLE
 )
 
 private data class WatchlistMarketData(

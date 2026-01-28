@@ -225,17 +225,18 @@ object RuleBasedSignalModel {
             metricScores["breakout"] = scaledBreakoutScore
         }
 
-        // Add rolling z-score metric
-        if (candles.size >= 21) {
-            val returnZScore = IndicatorCalculator.returnZScore(closes, 20)
+        // Add rolling return z-score metric
+        val returnWindow = config.rollingReturnZScoreWindow
+        if (candles.size >= returnWindow + 1) {
+            val returnZScore = IndicatorCalculator.rollingReturnZScore(closes, returnWindow)
             if (returnZScore != null) {
                 val rawZScore = (returnZScore * 20.0).coerceIn(-60.0, 60.0)
                 val zScoreImpact = rawZScore
                 reasons.add(
                     reason(
-                        id = "return_zscore",
-                        title = "Return anomaly",
-                        explanation = "Latest return z-score is ${"%.2f".format(returnZScore)}.",
+                        id = "rolling_return_zscore",
+                        title = "Rolling return anomaly",
+                        explanation = "Latest rolling return z-score is ${"%.2f".format(returnZScore)}.",
                         impact = zScoreImpact,
                         model = "zscore"
                     )

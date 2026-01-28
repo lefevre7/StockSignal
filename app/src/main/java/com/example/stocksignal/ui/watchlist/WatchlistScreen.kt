@@ -2,9 +2,11 @@ package com.example.stocksignal.ui.watchlist
 
 import android.widget.Toast
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -19,6 +21,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.NotificationsActive
@@ -425,13 +428,26 @@ private fun WatchlistCard(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
-                Text(text = item.item.symbol, style = MaterialTheme.typography.headlineMedium)
-                CompanyExchangeText(
-                    companyName = item.item.companyName,
-                    exchange = item.item.exchange,
-                    style = MaterialTheme.typography.bodySmall
-                )
+            androidx.compose.foundation.layout.Box(
+                modifier = Modifier
+                    .background(
+                        color = Color.Black.copy(alpha = 0.5f),
+                        shape = RoundedCornerShape(4.dp)
+                    )
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+            ) {
+                Column {
+                    Text(
+                        text = item.item.symbol,
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = Color.White
+                    )
+                    CompanyExchangeText(
+                        companyName = item.item.companyName,
+                        exchange = item.item.exchange,
+                        style = MaterialTheme.typography.bodySmall.copy(color = Color.White)
+                    )
+                }
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (showDragHandle) {
@@ -457,7 +473,8 @@ private fun WatchlistCard(
             confidence = aiConfidence,
             compact = true,
             scoreLabel = "AI Score",
-            confidenceLabel = "AI Conf"
+            confidenceLabel = "AI Conf",
+            aiGenerationState = item.aiGenerationState
         )
 
         if (displaySignal != null) {

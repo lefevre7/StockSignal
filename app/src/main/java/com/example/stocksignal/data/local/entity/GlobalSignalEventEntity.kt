@@ -22,6 +22,7 @@ data class GlobalSignalEventEntity(
     val notifiedAt: LocalDateTime?,
     val source: String,
     val delivered: Boolean,
+    val dismissed: Boolean = false,
     val deepLink: String?,
     val reasons: List<String> = emptyList(),
     val avgScore: Int?,

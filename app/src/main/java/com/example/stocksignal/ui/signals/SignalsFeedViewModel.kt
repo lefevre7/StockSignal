@@ -9,11 +9,12 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
 class SignalsFeedViewModel @Inject constructor(
-    signalsRepository: SignalsRepository
+    private val signalsRepository: SignalsRepository
 ) : ViewModel() {
 
     val uiState: StateFlow<SignalsFeedUiState> = signalsRepository.eventsFlow
@@ -22,6 +23,18 @@ class SignalsFeedViewModel @Inject constructor(
             SignalsFeedUiState(events = sorted)
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SignalsFeedUiState())
+
+    fun dismissEvent(id: String) {
+        viewModelScope.launch {
+            signalsRepository.dismissEvent(id)
+        }
+    }
+
+    fun undoDismissEvent(id: String) {
+        viewModelScope.launch {
+            signalsRepository.undoDismissEvent(id)
+        }
+    }
 }
 
 data class SignalsFeedUiState(

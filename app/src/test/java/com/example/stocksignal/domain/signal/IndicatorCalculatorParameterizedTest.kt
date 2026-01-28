@@ -383,46 +383,46 @@ class IndicatorCalculatorParameterizedTest {
         assertTrue("Outlier should have high z-score", abs(zScore!!) > 2.0)
     }
 
-    // ==================== Return Z-Score Tests ====================
+    // ==================== Rolling Return Z-Score Tests ====================
 
     @Test
-    fun `returnZScore with window 20`() {
+    fun `rollingReturnZScore with window 20`() {
         val candles = TestDataFactory.candlesForRange(
             com.example.stocksignal.domain.model.ChartRange.ONE_MONTH,
             PriceCandleBuilder.PricePattern.TRENDING_UP
         )
         val closes = candles.map { it.close }
         
-        val returnZ = IndicatorCalculator.returnZScore(closes, 20)
+        val returnZ = IndicatorCalculator.rollingReturnZScore(closes, 20)
         assertNotNull(returnZ)
     }
 
     @Test
-    fun `returnZScore edge cases`() {
+    fun `rollingReturnZScore edge cases`() {
         // Insufficient data
-        assertNull(IndicatorCalculator.returnZScore(listOf(1.0, 2.0), 20))
+        assertNull(IndicatorCalculator.rollingReturnZScore(listOf(1.0, 2.0), 20))
         
         // Minimum data (window + 1)
         val minData = List(21) { 100.0 + it * 0.5 }
-        assertNotNull(IndicatorCalculator.returnZScore(minData, 20))
+        assertNotNull(IndicatorCalculator.rollingReturnZScore(minData, 20))
         
         // Flat prices (zero returns)
         val flat = List(25) { 100.0 }
-        val returnZFlat = IndicatorCalculator.returnZScore(flat, 20)
+        val returnZFlat = IndicatorCalculator.rollingReturnZScore(flat, 20)
         assertEquals(0.0, returnZFlat!!, 0.0001)
     }
 
     @Test
-    fun `returnZScore detects strong trends`() {
+    fun `rollingReturnZScore detects strong trends`() {
         // Strong positive trend
         val uptrend = List(30) { 100.0 + it * 2.0 }
-        val zUp = IndicatorCalculator.returnZScore(uptrend, 20)
+        val zUp = IndicatorCalculator.rollingReturnZScore(uptrend, 20)
         assertNotNull(zUp)
         assertTrue("Z-score should be finite", zUp!!.isFinite())
         
         // Strong negative trend
         val downtrend = List(30) { 200.0 - it * 2.0 }
-        val zDown = IndicatorCalculator.returnZScore(downtrend, 20)
+        val zDown = IndicatorCalculator.rollingReturnZScore(downtrend, 20)
         assertNotNull(zDown)
         assertTrue("Z-score should be finite", zDown!!.isFinite())
         
@@ -431,11 +431,11 @@ class IndicatorCalculatorParameterizedTest {
     }
 
     @Test
-    fun `returnZScore handles zero prices`() {
+    fun `rollingReturnZScore handles zero prices`() {
         val closes = MutableList(25) { 100.0 + it.toDouble() }
         closes[10] = 0.0 // Introduce zero (should be skipped in returns calculation)
         
-        val returnZ = IndicatorCalculator.returnZScore(closes, 20)
+        val returnZ = IndicatorCalculator.rollingReturnZScore(closes, 20)
         assertNotNull(returnZ)
     }
 
@@ -507,6 +507,6 @@ class IndicatorCalculatorParameterizedTest {
         assertNotNull(IndicatorCalculator.bollinger(closes, 20, 2.0))
         assertNotNull(IndicatorCalculator.atr(candles, 14))
         assertNotNull(IndicatorCalculator.zScore(closes.map { it }, 20))
-        assertNotNull(IndicatorCalculator.returnZScore(closes, 20))
+        assertNotNull(IndicatorCalculator.rollingReturnZScore(closes, 20))
     }
 }

@@ -131,6 +131,16 @@ class NotificationWindowWorkerTest {
 
     private fun buildWorker(): NotificationWindowWorker {
         val context = RuntimeEnvironment.getApplication()
+        val runner = NotificationWindowRunner(
+            context,
+            settingsRepository,
+            watchlistRepository,
+            marketMoversRepository,
+            stockRepository,
+            signalsRepository,
+            notificationQueueProcessor,
+            diagnosticsRepository
+        )
         val factory = object : WorkerFactory() {
             override fun createWorker(
                 appContext: android.content.Context,
@@ -140,13 +150,7 @@ class NotificationWindowWorkerTest {
                 return NotificationWindowWorker(
                     appContext,
                     params,
-                    settingsRepository,
-                    watchlistRepository,
-                    marketMoversRepository,
-                    stockRepository,
-                    signalsRepository,
-                    notificationQueueProcessor,
-                    diagnosticsRepository
+                    runner
                 )
             }
         }

@@ -13,7 +13,10 @@ class SignalEngineTest {
 
     @Test
     fun `aggregation uses average and mode with confidence formula`() {
-        val candles = sampleCandles(30)
+        val returnWindow = IndicatorConfig.forHoldingPeriod(
+            com.example.stocksignal.data.settings.HoldingPeriod.MONTHS
+        ).rollingReturnZScoreWindow
+        val candles = sampleCandles(returnWindow + 1)
         val signal = SignalEngine.computeSignal(candles, ChartRange.ONE_MONTH)
         assertNotNull(signal)
         val result = signal!!

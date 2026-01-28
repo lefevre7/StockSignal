@@ -60,7 +60,7 @@ class IndicatorCalculatorTest {
     @Test
     fun `return zscore flat series returns zero`() {
         val closes = List(21) { 10.0 }
-        val zScore = IndicatorCalculator.returnZScore(closes, 20)
+        val zScore = IndicatorCalculator.rollingReturnZScore(closes, 20)
         assertEquals(0.0, requireNotNull(zScore), 0.0001)
     }
 
@@ -164,8 +164,8 @@ class IndicatorCalculatorTest {
         val strongUptrend = List(30) { 100.0 + it * 5.0 }
         val strongDowntrend = List(30) { 200.0 - it * 5.0 }
 
-        val zUp = IndicatorCalculator.returnZScore(strongUptrend, 20)
-        val zDown = IndicatorCalculator.returnZScore(strongDowntrend, 20)
+        val zUp = IndicatorCalculator.rollingReturnZScore(strongUptrend, 20)
+        val zDown = IndicatorCalculator.rollingReturnZScore(strongDowntrend, 20)
 
         assertNotNull(zUp)
         assertNotNull(zDown)
@@ -217,7 +217,7 @@ class IndicatorCalculatorTest {
         val bollinger = IndicatorCalculator.bollinger(closes)
         val atr = IndicatorCalculator.atr(candles, 14)
         val volumeZ = IndicatorCalculator.zScore(candles.map { it.volume.toDouble() }, 20)
-        val returnZ = IndicatorCalculator.returnZScore(closes, 20)
+        val returnZ = IndicatorCalculator.rollingReturnZScore(closes, 20)
 
         assertNotNull("SMA should handle volatile data", sma50)
         assertNotNull("RSI should handle volatile data", rsi14)

@@ -1,5 +1,6 @@
 package com.example.stocksignal.domain.signal
 
+import com.example.stocksignal.data.settings.HoldingPeriod
 import com.example.stocksignal.domain.model.AlertDirection
 import com.example.stocksignal.domain.model.IndicatorMetric
 import org.junit.Assert.*
@@ -361,10 +362,10 @@ class IndicatorAlertEvaluatorTest {
         assertNull(evaluation)
     }
 
-    // ==================== Return Z-Score Tests ====================
+    // ==================== Rolling Return Z-Score Tests ====================
 
     @Test
-    fun `RETURN_ZSCORE_20 strong uptrend above 2`() {
+    fun `ROLLING_RETURN_ZSCORE strong uptrend above 2`() {
         // Create an uptrend where the last return is unusually positive (accelerating rally)
         val normalUptrend = PriceCandleBuilder()
             .count(28)
@@ -393,18 +394,18 @@ class IndicatorAlertEvaluatorTest {
         )
         
         val alert = IndicatorAlertSettingBuilder()
-            .metric(IndicatorMetric.RETURN_ZSCORE_20)
+            .metric(IndicatorMetric.ROLLING_RETURN_ZSCORE)
             .threshold(2.0)
             .direction(AlertDirection.ABOVE)
             .build()
 
-        val evaluation = IndicatorAlertEvaluator.evaluate(alert, acceleratedCandles)
+        val evaluation = IndicatorAlertEvaluator.evaluate(alert, acceleratedCandles, HoldingPeriod.WEEKS)
         assertNotNull(evaluation)
         assertTrue("Z-score should be positive for accelerating uptrend", evaluation!!.current > 0)
     }
 
     @Test
-    fun `RETURN_ZSCORE_20 strong downtrend below -2`() {
+    fun `ROLLING_RETURN_ZSCORE strong downtrend below -2`() {
         // Create a downtrend where the last return is unusually negative (accelerating decline)
         val normalDowntrend = PriceCandleBuilder()
             .count(28)
@@ -433,40 +434,40 @@ class IndicatorAlertEvaluatorTest {
         )
         
         val alert = IndicatorAlertSettingBuilder()
-            .metric(IndicatorMetric.RETURN_ZSCORE_20)
+            .metric(IndicatorMetric.ROLLING_RETURN_ZSCORE)
             .threshold(-2.0)
             .direction(AlertDirection.BELOW)
             .build()
 
-        val evaluation = IndicatorAlertEvaluator.evaluate(alert, acceleratedCandles)
+        val evaluation = IndicatorAlertEvaluator.evaluate(alert, acceleratedCandles, HoldingPeriod.WEEKS)
         assertNotNull(evaluation)
         assertTrue("Z-score should be negative for accelerating downtrend", evaluation!!.current < 0)
     }
 
     @Test
-    fun `RETURN_ZSCORE_20 flat prices is zero`() {
+    fun `ROLLING_RETURN_ZSCORE flat prices is zero`() {
         val candles = TestDataFactory.flatPriceCandles(count = 25, price = 100.0)
         val alert = IndicatorAlertSettingBuilder()
-            .metric(IndicatorMetric.RETURN_ZSCORE_20)
+            .metric(IndicatorMetric.ROLLING_RETURN_ZSCORE)
             .threshold(0.0)
             .direction(AlertDirection.ABOVE)
             .build()
 
-        val evaluation = IndicatorAlertEvaluator.evaluate(alert, candles)
+        val evaluation = IndicatorAlertEvaluator.evaluate(alert, candles, HoldingPeriod.WEEKS)
         assertNotNull(evaluation)
         assertEquals("Z-score should be 0 for flat prices", 0.0, evaluation!!.current, 0.01)
     }
 
     @Test
-    fun `RETURN_ZSCORE_20 insufficient data returns null`() {
+    fun `ROLLING_RETURN_ZSCORE insufficient data returns null`() {
         val candles = TestDataFactory.flatPriceCandles(count = 18) // Need 21
         val alert = IndicatorAlertSettingBuilder()
-            .metric(IndicatorMetric.RETURN_ZSCORE_20)
+            .metric(IndicatorMetric.ROLLING_RETURN_ZSCORE)
             .threshold(2.0)
             .direction(AlertDirection.ABOVE)
             .build()
 
-        val evaluation = IndicatorAlertEvaluator.evaluate(alert, candles)
+        val evaluation = IndicatorAlertEvaluator.evaluate(alert, candles, HoldingPeriod.WEEKS)
         assertNull(evaluation)
     }
 

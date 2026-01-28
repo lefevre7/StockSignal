@@ -3,8 +3,6 @@ package com.example.stocksignal.ui.settings
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import androidx.work.WorkInfo
-import androidx.work.WorkManager
 import com.example.stocksignal.data.settings.AppSettings
 import com.example.stocksignal.data.settings.HoldingPeriod
 import com.example.stocksignal.data.settings.NotificationFrequency
@@ -20,6 +18,7 @@ import com.example.stocksignal.domain.model.ChartRange
 import com.example.stocksignal.notifications.NotificationDiagnosticsRepository
 import com.example.stocksignal.notifications.NotificationScheduler
 import com.example.stocksignal.notifications.NotificationTestSender
+import com.example.stocksignal.notifications.PremarketWindowUtils
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -39,19 +38,28 @@ class SettingsViewModel @Inject constructor(
     private val notificationTestSender: NotificationTestSender,
     private val notificationScheduler: NotificationScheduler,
     private val diagnosticsRepository: NotificationDiagnosticsRepository,
-    private val workManager: WorkManager,
     private val translationService: NewsTranslationService
 ) : ViewModel() {
 
     private val _errorMessage = MutableStateFlow<String?>(null)
     private val _toastMessage = MutableStateFlow<String?>(null)
+    private val _modelDownloadProgress = MutableStateFlow<Int?>(null)
+    private val _isDownloadingModel = MutableStateFlow(false)
 
     val uiState: StateFlow<SettingsUiState> = combine(
         settingsRepository.settingsFlow,
         _errorMessage,
-        _toastMessage
-    ) { settings, error, toast ->
-        SettingsUiState(settings = settings, errorMessage = error, toastMessage = toast)
+        _toastMessage,
+        _modelDownloadProgress,
+        _isDownloadingModel
+    ) { settings, error, toast, downloadProgress, isDownloading ->
+        SettingsUiState(
+            settings = settings,
+            errorMessage = error,
+            toastMessage = toast,
+            modelDownloadProgress = downloadProgress,
+            isDownloadingModel = isDownloading
+        )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState(settings = defaultSettings()))
 
     init {
@@ -88,7 +96,7 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 settingsRepository.setFrequency(frequency)
-                // Also reschedule workers when frequency changes
+                // Also reschedule alarms when frequency changes
                 val settings = settingsRepository.settingsFlow.first()
                 notificationScheduler.schedule(settings)
                 val label = when (frequency) {
@@ -96,10 +104,10 @@ class SettingsViewModel @Inject constructor(
                     NotificationFrequency.ONE_PER_DAY -> "1x/day"
                     NotificationFrequency.ONE_PER_WEEK -> "1x/week"
                     NotificationFrequency.ONLY_WHEN_OPEN -> "Only when open"
-                    NotificationFrequency.DEV_ONE_MINUTE -> "DEV mode (2min)"
+                    NotificationFrequency.DEV_FIVE_MINUTES -> "DEV mode (5min)"
                 }
-                showToast("Frequency: $label - workers rescheduled")
-                Log.d(TAG, "Frequency changed to $frequency, workers rescheduled")
+                showToast("Frequency: $label - alarms rescheduled")
+                Log.d(TAG, "Frequency changed to $frequency, alarms rescheduled")
             } catch (e: Exception) {
                 Log.e(TAG, "Error setting frequency to $frequency", e)
                 _errorMessage.value = "Failed to save frequency: ${e.message}"
@@ -271,73 +279,50 @@ class SettingsViewModel @Inject constructor(
     fun checkWorkerStatus() {
         viewModelScope.launch {
             try {
-                val windowWorkers = withContext(Dispatchers.IO) {
-                    workManager.getWorkInfosByTag(NotificationScheduler.WORK_TAG).get()
-                }
-                val bootstrapWorkers = withContext(Dispatchers.IO) {
-                    workManager.getWorkInfosByTag("notification_bootstrap").get()
-                }
+                val settings = settingsRepository.settingsFlow.first()
+                val windows = PremarketWindowUtils.windowsForFrequency(settings)
+                val windowIds = windows.map { it.id }.toSet()
                 val nowMillis = System.currentTimeMillis()
-                val windowIds = windowWorkers
-                    .flatMap { it.tags }
-                    .filter { it.startsWith(NotificationScheduler.WINDOW_TAG_PREFIX) }
-                    .map { it.removePrefix(NotificationScheduler.WINDOW_TAG_PREFIX) }
-                    .toSet()
                 val runInfoByWindow = diagnosticsRepository.getWindowRunInfo(windowIds)
-                
+                val nextRuns = diagnosticsRepository.getNextWindowRunTimes(windowIds)
+                val robotsNext = diagnosticsRepository.getRobotsNextRun()
+
                 val status = buildString {
-                    appendLine("📊 Worker Status:")
+                    appendLine("📊 Alarm Schedule Status:")
                     appendLine()
-                    if (windowWorkers.isEmpty()) {
-                        appendLine("❌ No notification window workers scheduled!")
-                        appendLine("   This means background notifications won't run.")
+                    if (windowIds.isEmpty()) {
+                        appendLine("❌ No notification windows scheduled.")
+                        appendLine("   Background notifications are disabled.")
                     } else {
-                        appendLine("✓ ${windowWorkers.size} notification window worker(s) scheduled")
-                        windowWorkers.forEachIndexed { idx, info ->
-                            val state = when (info.state) {
-                                WorkInfo.State.ENQUEUED -> formatEnqueuedState(info, nowMillis)
-                                WorkInfo.State.RUNNING -> "▶️ Running"
-                                WorkInfo.State.SUCCEEDED -> "✓ Success"
-                                WorkInfo.State.FAILED -> "❌ Failed"
-                                WorkInfo.State.BLOCKED -> "🚫 Blocked"
-                                WorkInfo.State.CANCELLED -> "⛔ Cancelled"
+                        appendLine("✓ ${windowIds.size} notification window alarm(s) scheduled")
+                        windows.forEachIndexed { idx, window ->
+                            appendLine("   Window ${idx + 1}: ${window.id}")
+                            val nextRun = nextRuns[window.id]
+                            appendLine("     Next run: ${formatNextRun(nextRun, nowMillis)}")
+                            val runInfo = runInfoByWindow[window.id]
+                            appendLine(
+                                "     Last run: ${formatLastRun(runInfo?.lastRunAtMillis, nowMillis)}"
+                            )
+                            if (!runInfo?.lastResult.isNullOrBlank()) {
+                                appendLine("     Last result: ${runInfo?.lastResult}")
                             }
-                            appendLine("   Worker ${idx + 1}: $state")
-                            
-                            // Show run attempt count
-                            appendLine("     Run attempts (retries): ${info.runAttemptCount}")
-                            
-                            // Show window ID if available
-                            val windowId = info.tags.find {
-                                it.startsWith(NotificationScheduler.WINDOW_TAG_PREFIX)
-                            }?.removePrefix(NotificationScheduler.WINDOW_TAG_PREFIX)
-                            if (windowId != null) {
-                                appendLine("     Window: $windowId")
-                                val runInfo = runInfoByWindow[windowId]
-                                appendLine(
-                                    "     Last run: ${formatLastRun(runInfo?.lastRunAtMillis, nowMillis)}"
-                                )
-                                if (!runInfo?.lastResult.isNullOrBlank()) {
-                                    appendLine("     Last result: ${runInfo?.lastResult}")
-                                }
-                                if (!runInfo?.lastReason.isNullOrBlank()) {
-                                    appendLine("     Last reason: ${runInfo?.lastReason}")
-                                }
+                            if (!runInfo?.lastReason.isNullOrBlank()) {
+                                appendLine("     Last reason: ${runInfo?.lastReason}")
                             }
                         }
                     }
                     appendLine()
-                    if (bootstrapWorkers.isNotEmpty()) {
-                        appendLine("Bootstrap workers: ${bootstrapWorkers.size}")
+                    if (robotsNext != null) {
+                        appendLine("Robots.txt next check: ${formatNextRun(robotsNext, nowMillis)}")
                     }
                     appendLine()
-                    appendLine("💡 Tap 'Force schedule' to reschedule workers now")
+                    appendLine("💡 Tap 'Force schedule' to reschedule alarms now")
                 }
                 
                 Log.d(TAG, status)
                 _errorMessage.value = status
             } catch (e: Exception) {
-                Log.e(TAG, "Error checking worker status", e)
+                Log.e(TAG, "Error checking alarm status", e)
                 _errorMessage.value = "Error checking status: ${e.message}"
             }
         }
@@ -348,32 +333,29 @@ class SettingsViewModel @Inject constructor(
             try {
                 val settings = settingsRepository.settingsFlow.first()
                 notificationScheduler.schedule(settings, force = true)
-                _errorMessage.value = "✓ Workers scheduled! Frequency: ${settings.frequency}, Types: ${settings.notificationTypes.joinToString()}"
-                Log.d(TAG, "Force scheduled workers for frequency: ${settings.frequency}")
+                _errorMessage.value = "✓ Alarms scheduled! Frequency: ${settings.frequency}, Types: ${settings.notificationTypes.joinToString()}"
+                Log.d(TAG, "Force scheduled alarms for frequency: ${settings.frequency}")
             } catch (e: Exception) {
-                Log.e(TAG, "Error force scheduling workers", e)
-                _errorMessage.value = "Failed to schedule workers: ${e.message}"
+                Log.e(TAG, "Error force scheduling alarms", e)
+                _errorMessage.value = "Failed to schedule alarms: ${e.message}"
             }
         }
     }
 
-    private fun formatEnqueuedState(info: WorkInfo, nowMillis: Long): String {
-        val nextSchedule = info.nextScheduleTimeMillis
-        if (nextSchedule == Long.MAX_VALUE) {
-            return "⏳ Enqueued (time unknown)"
-        }
-        val diffMillis = nextSchedule - nowMillis
+    private fun formatNextRun(nextRunAtMillis: Long?, nowMillis: Long): String {
+        if (nextRunAtMillis == null) return "unknown"
+        val diffMillis = nextRunAtMillis - nowMillis
         if (diffMillis <= 0) {
-            return "⏳ Ready to run (pending constraints)"
+            return "due now"
         }
         val minutes = (diffMillis + 59_999) / 60_000
         val hours = minutes / 60
         val mins = minutes % 60
         return if (hours > 0) {
-            "⏳ Next run in ${hours}h ${mins}m"
+            "in ${hours}h ${mins}m"
         } else {
             val unit = if (minutes == 1L) "minute" else "minutes"
-            "⏳ Next run in $minutes $unit"
+            "in $minutes $unit"
         }
     }
 
@@ -444,6 +426,51 @@ class SettingsViewModel @Inject constructor(
         )
     }
 
+    fun getModelInfo(): Pair<String, String> {
+        val path = translationService.getLocalModelFilePath()
+        val file = java.io.File(path)
+        val exists = file.exists()
+        val size = if (exists) {
+            val bytes = file.length()
+            "%.1f MB".format(bytes / (1024.0 * 1024.0))
+        } else {
+            "Not downloaded"
+        }
+        return Pair("Gemma 3 1B int4", size)
+    }
+
+    fun isModelDownloaded(): Boolean {
+        val path = translationService.getLocalModelFilePath()
+        return java.io.File(path).exists()
+    }
+
+    fun downloadModel() {
+        viewModelScope.launch {
+            _isDownloadingModel.value = true
+            _modelDownloadProgress.value = 0
+            
+            try {
+                val success = translationService.downloadLocalModel { progress ->
+                    _modelDownloadProgress.value = progress
+                }
+                
+                if (success) {
+                    showToast("Model downloaded successfully")
+                    _modelDownloadProgress.value = null
+                } else {
+                    _errorMessage.value = "Download failed. Please check your connection and try again."
+                    _modelDownloadProgress.value = null
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error downloading model", e)
+                _errorMessage.value = "Download failed: ${e.message}"
+                _modelDownloadProgress.value = null
+            } finally {
+                _isDownloadingModel.value = false
+            }
+        }
+    }
+
     companion object {
         private const val TAG = "SettingsViewModel"
     }
@@ -452,5 +479,7 @@ class SettingsViewModel @Inject constructor(
 data class SettingsUiState(
     val settings: AppSettings,
     val errorMessage: String? = null,
-    val toastMessage: String? = null
+    val toastMessage: String? = null,
+    val modelDownloadProgress: Int? = null,
+    val isDownloadingModel: Boolean = false
 )

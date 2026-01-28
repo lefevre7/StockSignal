@@ -4,6 +4,7 @@ import com.example.stocksignal.domain.model.AlertDirection
 import com.example.stocksignal.domain.model.IndicatorAlertSetting
 import com.example.stocksignal.domain.model.IndicatorMetric
 import com.example.stocksignal.domain.model.PriceCandle
+import com.example.stocksignal.data.settings.HoldingPeriod
 
 object IndicatorAlertEvaluator {
 
@@ -15,7 +16,8 @@ object IndicatorAlertEvaluator {
 
     fun evaluate(
         alert: IndicatorAlertSetting,
-        candles: List<PriceCandle>
+        candles: List<PriceCandle>,
+        holdingPeriod: HoldingPeriod = HoldingPeriod.MONTHS
     ): Evaluation? {
         if (candles.size < 2) return null
         val closes = candles.map { it.close }
@@ -38,10 +40,14 @@ object IndicatorAlertEvaluator {
             IndicatorMetric.SMA_200_DISTANCE -> smaDistance(closes, 200)
             IndicatorMetric.BOLLINGER_PERCENT_B -> bollingerPercentB(closes)
             IndicatorMetric.ATR_PERCENT -> atrPercent(candles)
-            IndicatorMetric.RETURN_ZSCORE_20 -> valueWithPrevious(
-                current = IndicatorCalculator.returnZScore(closes, 20),
-                previous = IndicatorCalculator.returnZScore(closes.dropLast(1), 20)
-            )
+            IndicatorMetric.ROLLING_RETURN_ZSCORE -> {
+                val config = IndicatorConfig.forHoldingPeriod(holdingPeriod)
+                val window = config.rollingReturnZScoreWindow
+                valueWithPrevious(
+                    current = IndicatorCalculator.rollingReturnZScore(closes, window),
+                    previous = IndicatorCalculator.rollingReturnZScore(closes.dropLast(1), window)
+                )
+            }
         } ?: return null
 
         if (!current.isFinite()) return null

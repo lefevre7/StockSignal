@@ -3,6 +3,8 @@ package com.example.stocksignal.ui.settings
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -24,6 +26,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -31,6 +34,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,6 +48,9 @@ import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.stocksignal.data.settings.AppSettings
 import com.example.stocksignal.data.settings.HoldingPeriod
@@ -57,6 +64,7 @@ import com.example.stocksignal.data.settings.SnoozeDurationOption
 import com.example.stocksignal.ui.components.StockCard
 import com.example.stocksignal.ui.theme.StockSignalDimens
 import com.example.stocksignal.util.DebugConfig
+import com.example.stocksignal.util.ExactAlarmPermission
 import java.time.DayOfWeek
 import android.widget.Toast
 import kotlin.math.roundToInt
@@ -88,6 +96,11 @@ fun SettingsRoute(viewModel: SettingsViewModel = hiltViewModel()) {
         onImmediatePostsToggle = viewModel::setImmediatePostsEnabled,
         onOfflineTranslationToggle = viewModel::setOfflineTranslationEnabled,
         onDeleteOfflineTranslationModel = viewModel::deleteOfflineTranslationModel,
+        onDownloadModel = viewModel::downloadModel,
+        getModelInfo = viewModel::getModelInfo,
+        isModelDownloaded = viewModel.isModelDownloaded(),
+        modelDownloadProgress = state.modelDownloadProgress,
+        isDownloadingModel = state.isDownloadingModel,
         onSendTestNotification = viewModel::sendTestNotification,
         onCheckWorkerStatus = viewModel::checkWorkerStatus,
         onForceScheduleWorkers = viewModel::forceScheduleWorkers
@@ -110,6 +123,11 @@ fun SettingsScreen(
     onImmediatePostsToggle: (Boolean) -> Unit,
     onOfflineTranslationToggle: (Boolean) -> Unit,
     onDeleteOfflineTranslationModel: () -> Unit,
+    onDownloadModel: () -> Unit,
+    getModelInfo: () -> Pair<String, String>,
+    isModelDownloaded: Boolean,
+    modelDownloadProgress: Int?,
+    isDownloadingModel: Boolean,
     onSendTestNotification: () -> Unit,
     onCheckWorkerStatus: () -> Unit,
     onForceScheduleWorkers: () -> Unit,
@@ -118,6 +136,25 @@ fun SettingsScreen(
     onClearError: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val exactAlarmAllowedState = remember { mutableStateOf(ExactAlarmPermission.isAllowed(context)) }
+    val exactAlarmIntent = ExactAlarmPermission.requestIntent()
+    val exactAlarmLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        exactAlarmAllowedState.value = ExactAlarmPermission.isAllowed(context)
+    }
+    DisposableEffect(lifecycleOwner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                exactAlarmAllowedState.value = ExactAlarmPermission.isAllowed(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    val exactAlarmAllowed = exactAlarmAllowedState.value
+
     val notificationsEnabled = NotificationManagerCompat.from(context).areNotificationsEnabled()
     val postPermissionGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
@@ -127,6 +164,9 @@ fun SettingsScreen(
     val showPermissionBanner = !postPermissionGranted
     val showNotificationsDisabledBanner = postPermissionGranted && !notificationsEnabled
     val showDigestsDisabledBanner = !settings.notificationTypes.contains(NotificationType.DIGESTS)
+    val showExactAlarmBanner = !exactAlarmAllowed &&
+        settings.frequency != NotificationFrequency.ONLY_WHEN_OPEN &&
+        exactAlarmIntent != null
 
     val windowsEnabled = settings.frequency != NotificationFrequency.ONLY_WHEN_OPEN
     val scheduleWindows = when (settings.frequency) {
@@ -135,7 +175,7 @@ fun SettingsScreen(
             settings.scheduleWindows.filter { it.type == ScheduleWindowType.MARKET_OPEN_MINUS }
         NotificationFrequency.ONE_PER_WEEK -> emptyList()
         NotificationFrequency.ONLY_WHEN_OPEN -> settings.scheduleWindows
-        NotificationFrequency.DEV_ONE_MINUTE -> settings.scheduleWindows.take(1) // Dev mode: just first window
+        NotificationFrequency.DEV_FIVE_MINUTES -> settings.scheduleWindows.take(1) // Dev mode: just first window
     }
 
     LazyColumn(
@@ -183,12 +223,31 @@ fun SettingsScreen(
                 )
             }
         }
+        if (showExactAlarmBanner) {
+            item {
+                ActionBanner(
+                    message = "Exact alarms are off. Background notification timing may be delayed.",
+                    actionLabel = "Enable alarms",
+                    onAction = { exactAlarmIntent?.let { exactAlarmLauncher.launch(it) } }
+                )
+            }
+        }
 
         item {
             HoldingPeriodCard(
                 selected = settings.holdingPeriod,
                 onSelect = onHoldingPeriodChange
             )
+        }
+
+        // Notification permission card
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            item {
+                NotificationPermissionCard(
+                    permissionGranted = postPermissionGranted,
+                    notificationsEnabled = notificationsEnabled
+                )
+            }
         }
 
         item {
@@ -203,12 +262,17 @@ fun SettingsScreen(
                     val availableFrequencies = if (DebugConfig.ENABLE_DEV_MODE) {
                         NotificationFrequency.values().toList()
                     } else {
-                        NotificationFrequency.values().filter { it != NotificationFrequency.DEV_ONE_MINUTE }
+                        NotificationFrequency.values().filter { it != NotificationFrequency.DEV_FIVE_MINUTES }
                     }
                     availableFrequencies.forEach { option ->
                         FilterChip(
                             selected = settings.frequency == option,
-                            onClick = { onFrequencyChange(option) },
+                            onClick = {
+                                onFrequencyChange(option)
+                                if (option != NotificationFrequency.ONLY_WHEN_OPEN && !exactAlarmAllowed) {
+                                    exactAlarmIntent?.let { exactAlarmLauncher.launch(it) }
+                                }
+                            },
                             label = { Text(text = frequencyLabel(option)) }
                         )
                     }
@@ -271,6 +335,16 @@ fun SettingsScreen(
         }
 
         item {
+            ModelManagementCard(
+                onDownloadModel = onDownloadModel,
+                getModelInfo = getModelInfo,
+                isModelDownloaded = isModelDownloaded,
+                modelDownloadProgress = modelDownloadProgress,
+                isDownloadingModel = isDownloadingModel
+            )
+        }
+
+        item {
             StockCard {
                 Text(text = "Test notification", style = MaterialTheme.typography.headlineMedium)
                 Spacer(modifier = Modifier.height(6.dp))
@@ -285,10 +359,10 @@ fun SettingsScreen(
 
         item {
             StockCard {
-                Text(text = "Background work diagnostics", style = MaterialTheme.typography.headlineMedium)
+                Text(text = "Background alarm diagnostics", style = MaterialTheme.typography.headlineMedium)
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
-                    text = "Check if notification workers are scheduled to run in the background.",
+                    text = "Check if notification alarms are scheduled to run in the background.",
                     style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(modifier = Modifier.height(8.dp))
@@ -300,7 +374,7 @@ fun SettingsScreen(
                         Text("Force schedule") 
                     }
                 }
-                if (errorMessage != null && errorMessage.contains("worker", ignoreCase = true)) {
+                if (errorMessage != null && errorMessage.contains("alarm", ignoreCase = true)) {
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = errorMessage,
@@ -698,8 +772,8 @@ private fun scheduleDescription(frequency: NotificationFrequency): String {
             "Weekly notifications use market open offset on the selected day."
         NotificationFrequency.ONLY_WHEN_OPEN ->
             "Background windows are disabled when notifications only run on open."
-        NotificationFrequency.DEV_ONE_MINUTE ->
-            "⚡ DEV MODE: Runs immediately + every 2min. Check Logcat for 'NotificationWindowWorker'."
+        NotificationFrequency.DEV_FIVE_MINUTES ->
+            "⚡ DEV MODE: Runs every 5min. Check Logcat for 'NotificationWindowRunner'."
     }
 }
 
@@ -736,7 +810,7 @@ private fun frequencyLabel(option: NotificationFrequency): String {
         NotificationFrequency.ONE_PER_DAY -> "1x/day"
         NotificationFrequency.ONE_PER_WEEK -> "1x/week"
         NotificationFrequency.ONLY_WHEN_OPEN -> "Only when app is open"
-        NotificationFrequency.DEV_ONE_MINUTE -> "⚡ 2min (DEV)"
+        NotificationFrequency.DEV_FIVE_MINUTES -> "⚡ 5min (DEV)"
     }
 }
 
@@ -814,6 +888,215 @@ private fun InfoBanner(message: String) {
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSecondaryContainer,
             modifier = Modifier.padding(12.dp)
+        )
+    }
+}
+
+@Composable
+private fun ActionBanner(
+    message: String,
+    actionLabel: String,
+    onAction: () -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer
+        ),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSecondaryContainer
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            TextButton(onClick = onAction) {
+                Text(actionLabel)
+            }
+        }
+    }
+}
+
+@Composable
+private fun NotificationPermissionCard(
+    permissionGranted: Boolean,
+    notificationsEnabled: Boolean
+) {
+    val context = LocalContext.current
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            Toast.makeText(context, "Notification permission granted", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(context, "Notification permission denied. Enable in system settings.", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    StockCard {
+        Text(text = "Notifications", style = MaterialTheme.typography.headlineMedium)
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            text = "Enable notifications to receive alerts when strong signals are detected.",
+            style = MaterialTheme.typography.bodySmall
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(text = "Enable Notifications", style = MaterialTheme.typography.bodyMedium)
+            Switch(
+                checked = permissionGranted && notificationsEnabled,
+                onCheckedChange = { enabled ->
+                    if (enabled && !permissionGranted) {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        }
+                    } else if (!enabled && permissionGranted) {
+                        // Direct user to app settings to disable
+                        Toast.makeText(
+                            context, 
+                            "To disable notifications, go to: Settings → Apps → StockSignal → Notifications", 
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            )
+        }
+        
+        if (!permissionGranted) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "⚠️ Permission not granted. Tap the switch to request permission.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        } else if (!notificationsEnabled) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "⚠️ Notifications are disabled in system settings.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+    }
+}
+
+@Composable
+private fun ModelManagementCard(
+    onDownloadModel: () -> Unit,
+    getModelInfo: () -> Pair<String, String>,
+    isModelDownloaded: Boolean,
+    modelDownloadProgress: Int?,
+    isDownloadingModel: Boolean
+) {
+    var showConfirmDialog by remember { mutableStateOf(false) }
+    val (modelName, modelSize) = getModelInfo()
+
+    StockCard {
+        Text(text = "AI Model Management", style = MaterialTheme.typography.headlineMedium)
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            text = "Re-download or update the local LLM for offline AI signal scoring.",
+            style = MaterialTheme.typography.bodySmall
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+        
+        // Model info
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(text = "Model:", style = MaterialTheme.typography.bodyMedium)
+            Text(
+                text = modelName,
+                style = MaterialTheme.typography.bodyMedium,
+                fontFamily = FontFamily.Monospace
+            )
+        }
+        Spacer(modifier = Modifier.height(4.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(text = "Size:", style = MaterialTheme.typography.bodyMedium)
+            Text(
+                text = modelSize,
+                style = MaterialTheme.typography.bodyMedium,
+                fontFamily = FontFamily.Monospace
+            )
+        }
+        Spacer(modifier = Modifier.height(4.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(text = "Status:", style = MaterialTheme.typography.bodyMedium)
+            Text(
+                text = if (isModelDownloaded) "Downloaded" else "Not downloaded",
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (isModelDownloaded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+            )
+        }
+        
+        Spacer(modifier = Modifier.height(12.dp))
+        
+        // Download button and progress
+        if (isDownloadingModel && modelDownloadProgress != null) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "Downloading: $modelDownloadProgress%",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                androidx.compose.material3.LinearProgressIndicator(
+                    progress = modelDownloadProgress / 100f,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        } else {
+            TextButton(
+                onClick = { showConfirmDialog = true },
+                enabled = !isDownloadingModel
+            ) {
+                Text(if (isModelDownloaded) "Re-download Model" else "Download Model")
+            }
+        }
+    }
+
+    if (showConfirmDialog) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showConfirmDialog = false },
+            title = { Text("Confirm Download") },
+            text = {
+                Text(
+                    "This will download ~584MB over the network. " +
+                    if (isModelDownloaded) {
+                        "The existing model will be replaced. Continue?"
+                    } else {
+                        "Continue?"
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showConfirmDialog = false
+                        onDownloadModel()
+                    }
+                ) {
+                    Text("Download")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showConfirmDialog = false }) {
+                    Text("Cancel")
+                }
+            }
         )
     }
 }

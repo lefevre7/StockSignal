@@ -3,6 +3,8 @@ package com.example.stocksignal.ui.stockdetail
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import com.example.stocksignal.ui.components.InfoIconButton
+import com.example.stocksignal.ui.components.MetricExplanations
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -93,6 +95,7 @@ import com.example.stocksignal.domain.model.SignalTier
 import com.example.stocksignal.domain.model.StockNewsItem
 import com.example.stocksignal.domain.model.TechnicalIndicators
 import com.example.stocksignal.ui.components.ChartFrame
+import com.example.stocksignal.ui.model.AiGenerationState
 import java.time.Instant
 import java.time.ZoneId
 import java.time.ZonedDateTime
@@ -248,7 +251,8 @@ fun StockDetailScreen(
             PriceSignalSection(
                 series = state.series,
                 signal = state.signal,
-                range = state.range
+                range = state.range,
+                aiGenerationState = state.aiGenerationState
             )
             Spacer(modifier = Modifier.height(16.dp))
 
@@ -461,7 +465,8 @@ private fun StockDetailTopBar(
 private fun PriceSignalSection(
     series: List<PriceCandle>,
     signal: SignalResult?,
-    range: ChartRange
+    range: ChartRange,
+    aiGenerationState: AiGenerationState = AiGenerationState.IDLE
 ) {
     val last = series.lastOrNull()
     val prev = series.getOrNull(series.lastIndex - 1)
@@ -528,7 +533,8 @@ private fun PriceSignalSection(
             confidence = aiConfidence,
             compact = false,
             scoreLabel = "AI Score",
-            confidenceLabel = "AI Confidence"
+            confidenceLabel = "AI Confidence",
+            aiGenerationState = aiGenerationState
         )
         Spacer(modifier = Modifier.height(6.dp))
         AverageModeRow(signal = signal)
@@ -657,13 +663,41 @@ private fun MetricsTab(indicators: TechnicalIndicators?, range: ChartRange) {
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
         )
         Spacer(modifier = Modifier.height(8.dp))
-        IndicatorRow(label = "RSI 14", value = formatIndicator(indicators?.rsi14))
-        IndicatorRow(label = "MACD", value = formatIndicator(indicators?.macd))
-        IndicatorRow(label = "Signal", value = formatIndicator(indicators?.macdSignal))
-        IndicatorRow(label = "Histogram", value = formatIndicator(indicators?.macdHistogram))
-        IndicatorRow(label = "SMA 50", value = formatIndicator(indicators?.sma50))
-        IndicatorRow(label = "SMA 200", value = formatIndicator(indicators?.sma200))
-        IndicatorRow(label = "ATR 14", value = formatIndicator(indicators?.atr14))
+        IndicatorRow(
+            label = "RSI 14",
+            value = formatIndicator(indicators?.rsi14),
+            explanation = MetricExplanations.RSI_14
+        )
+        IndicatorRow(
+            label = "MACD",
+            value = formatIndicator(indicators?.macd),
+            explanation = MetricExplanations.MACD
+        )
+        IndicatorRow(
+            label = "Signal",
+            value = formatIndicator(indicators?.macdSignal),
+            explanation = MetricExplanations.MACD_SIGNAL
+        )
+        IndicatorRow(
+            label = "Histogram",
+            value = formatIndicator(indicators?.macdHistogram),
+            explanation = MetricExplanations.MACD_HISTOGRAM
+        )
+        IndicatorRow(
+            label = "SMA 50",
+            value = formatIndicator(indicators?.sma50),
+            explanation = MetricExplanations.SMA_50
+        )
+        IndicatorRow(
+            label = "SMA 200",
+            value = formatIndicator(indicators?.sma200),
+            explanation = MetricExplanations.SMA_200
+        )
+        IndicatorRow(
+            label = "ATR 14",
+            value = formatIndicator(indicators?.atr14),
+            explanation = MetricExplanations.ATR_14
+        )
     }
 }
 
@@ -1487,12 +1521,23 @@ private fun KeyStat(label: String, value: String) {
 }
 
 @Composable
-private fun IndicatorRow(label: String, value: String) {
+private fun IndicatorRow(
+    label: String,
+    value: String,
+    explanation: String? = null
+) {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(text = label, style = MaterialTheme.typography.bodySmall)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(text = label, style = MaterialTheme.typography.bodySmall)
+            if (explanation != null) {
+                Spacer(modifier = Modifier.width(4.dp))
+                InfoIconButton(explanation = explanation)
+            }
+        }
         Text(
             text = value,
             style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)

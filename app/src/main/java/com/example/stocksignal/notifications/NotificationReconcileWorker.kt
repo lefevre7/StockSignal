@@ -20,14 +20,14 @@ class NotificationReconcileWorker @AssistedInject constructor(
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
-        Log.d(TAG, "Reconciling notification state and ensuring workers are scheduled")
+        Log.d(TAG, "Reconciling notification state and ensuring alarms are scheduled")
         val settings = settingsRepository.settingsFlow.first()
         notificationQueueProcessor.reconcileState(settings)
         
-        // Also ensure notification window workers are scheduled
+        // Also ensure notification alarms are scheduled
         // This is important after boot or if the app was killed
         notificationScheduler.schedule(settings)
-        Log.d(TAG, "Reconcile complete and workers scheduled")
+        Log.d(TAG, "Reconcile complete and alarms scheduled")
         return Result.success()
     }
     

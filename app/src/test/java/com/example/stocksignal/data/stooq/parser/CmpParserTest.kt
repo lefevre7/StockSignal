@@ -33,6 +33,36 @@ class CmpParserTest {
     }
 
     @Test
+    fun `parse - extracts price and percent change`() {
+        val input = "window.cmp_r('TSLA.US~Tesla Inc~XNAS~432.7500~0.43%~4');"
+        val results = CmpParser.parse(input)
+
+        assertEquals(1, results.size)
+        assertEquals("TSLA.US", results[0].symbol)
+        assertEquals(432.75, results[0].price!!, 0.0001)
+        assertEquals(0.43, results[0].percentChange!!, 0.0001)
+    }
+
+    @Test
+    fun `parse - handles negative percent change`() {
+        val input = "window.cmp_r('META.US~Meta Platforms~XNAS~287.1200~-1.25%~4');"
+        val results = CmpParser.parse(input)
+
+        assertEquals(1, results.size)
+        assertEquals(-1.25, results[0].percentChange!!, 0.0001)
+    }
+
+    @Test
+    fun `parse - handles missing price and percent change`() {
+        val input = "window.cmp_r('AAPL.US~Apple Inc~XNAS');"
+        val results = CmpParser.parse(input)
+
+        assertEquals(1, results.size)
+        assertEquals(null, results[0].price)
+        assertEquals(null, results[0].percentChange)
+    }
+
+    @Test
     fun `parse - parses multiple valid results`() {
         val input = """
             window.cmp_r('AAPL.US~Apple Inc~XNAS');

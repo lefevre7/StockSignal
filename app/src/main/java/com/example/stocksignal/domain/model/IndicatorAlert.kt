@@ -20,7 +20,7 @@ enum class IndicatorMetric(
     SMA_200_DISTANCE("SMA 200 Distance %", 0.0, AlertDirection.ABOVE, ChartRange.ONE_YEAR),
     BOLLINGER_PERCENT_B("Bollinger %B", 80.0, AlertDirection.ABOVE, ChartRange.ONE_MONTH),
     ATR_PERCENT("ATR % (14)", 5.0, AlertDirection.ABOVE, ChartRange.ONE_MONTH),
-    RETURN_ZSCORE_20("Return Z-Score (20)", 2.0, AlertDirection.ABOVE, ChartRange.ONE_MONTH)
+    ROLLING_RETURN_ZSCORE("Rolling Return Z-Score", 2.0, AlertDirection.ABOVE, ChartRange.ONE_MONTH)
 }
 
 data class IndicatorAlertSetting(

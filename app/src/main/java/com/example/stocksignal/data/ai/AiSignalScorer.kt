@@ -269,6 +269,19 @@ class AiSignalScorer @Inject constructor(
             appendLine("- Sell: -59 to -30")
             appendLine("- Strong Sell: <= -60")
             appendLine()
+            
+            // Add holding period context
+            val holdingPeriodDescription = when (holdingPeriod) {
+                HoldingPeriod.HOURS -> "User's holding period: HOURS (typically holding positions for hours, intraday trading)"
+                HoldingPeriod.DAYS -> "User's holding period: DAYS (typically holding positions for several days, short-term swing trading)"
+                HoldingPeriod.WEEKS -> "User's holding period: WEEKS (typically holding positions for several weeks, medium-term swing trading)"
+                HoldingPeriod.MONTHS -> "User's holding period: MONTHS (typically holding positions for several months, position trading)"
+                HoldingPeriod.YEARS -> "User's holding period: YEARS (typically holding positions for years, long-term investing)"
+            }
+            appendLine(holdingPeriodDescription)
+            appendLine("Consider this timeframe when evaluating the strength and urgency of signals.")
+            appendLine()
+            
             appendLine("Context:")
             appendLine("- Ticker: $ticker")
             appendLine("- Range: ${range.label}")
@@ -337,7 +350,10 @@ class AiSignalScorer @Inject constructor(
         val smaShort = IndicatorCalculator.sma(closes, config.smaShortPeriod)
         val smaLong = IndicatorCalculator.sma(closes, config.smaLongPeriod)
         val volumeZ = IndicatorCalculator.zScore(volumes, config.volumeZscoreWindow)
-        val returnZ = IndicatorCalculator.returnZScore(closes, 20)
+        val returnZ = IndicatorCalculator.rollingReturnZScore(
+            closes,
+            config.rollingReturnZScoreWindow
+        )
 
         return buildString {
             appendLine("- RSI(${config.rsiPeriod}): ${formatDouble(rsi)}")
@@ -348,7 +364,7 @@ class AiSignalScorer @Inject constructor(
             appendLine("- SMA short/long (${config.smaShortPeriod}/${config.smaLongPeriod}): ${formatDouble(smaShort)} / ${formatDouble(smaLong)}")
             appendLine("- ATR(${config.atrPeriod}): ${formatDouble(atr)} (${formatDouble(atrPercent)}%)")
             appendLine("- Volume Z (${config.volumeZscoreWindow}): ${formatDouble(volumeZ)}")
-            appendLine("- Return Z (20): ${formatDouble(returnZ)}")
+            appendLine("- Rolling Return Z (${config.rollingReturnZScoreWindow}): ${formatDouble(returnZ)}")
         }
     }
 

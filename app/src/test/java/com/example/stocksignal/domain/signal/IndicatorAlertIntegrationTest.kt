@@ -329,7 +329,7 @@ class IndicatorAlertIntegrationTest {
         assertNotNull(IndicatorCalculator.bollinger(closes))
         assertNotNull(IndicatorCalculator.atr(candles, 14))
         assertNotNull(IndicatorCalculator.zScore(closes, 20))
-        assertNotNull(IndicatorCalculator.returnZScore(closes, 20))
+        assertNotNull(IndicatorCalculator.rollingReturnZScore(closes, 20))
     }
 
     // ==================== Realistic End-to-End Scenario Tests ====================

@@ -27,6 +27,7 @@ import com.example.stocksignal.domain.signal.IndicatorCalculator
 import com.example.stocksignal.domain.signal.SignalEngine
 import com.example.stocksignal.domain.export.IntradayDataExporter
 import com.example.stocksignal.domain.export.ExportResult
+import com.example.stocksignal.ui.model.AiGenerationState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -972,6 +973,9 @@ class StockDetailViewModel @Inject constructor(
         }
         aiSignalKey = aiKey
 
+        // Set state to QUEUED immediately
+        _uiState.update { it.copy(aiGenerationState = AiGenerationState.QUEUED) }
+
         // Launch async job that first checks cache, updates UI if found, then generates fresh score
         aiSignalJob = viewModelScope.launch {
             // First check cache synchronously and update UI immediately if available
@@ -987,11 +991,14 @@ class StockDetailViewModel @Inject constructor(
                 _uiState.update { current ->
                     if (current.ticker == ticker && current.range == range) {
                         aiSignalAppliedKey = aiKey
-                        current.copy(signal = cachedSignal)
+                        current.copy(signal = cachedSignal, aiGenerationState = AiGenerationState.COMPLETE)
                     } else {
                         current
                     }
                 }
+            } else {
+                // No cache, so set state to GENERATING
+                _uiState.update { it.copy(aiGenerationState = AiGenerationState.GENERATING) }
             }
 
             // Now generate fresh AI score (will update cache and UI when complete)
@@ -1000,9 +1007,11 @@ class StockDetailViewModel @Inject constructor(
                 signalsRepository.computeSignal(ticker, series, range, overview)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 Log.d(TAG, "AI signal computation cancelled for $ticker")
+                _uiState.update { it.copy(aiGenerationState = AiGenerationState.IDLE) }
                 throw e // Re-throw to properly cancel the coroutine
             } catch (e: Exception) {
                 Log.e(TAG, "AI signal computation failed for $ticker", e)
+                _uiState.update { it.copy(aiGenerationState = AiGenerationState.ERROR) }
                 null
             }
             if (aiSignal != null) {
@@ -1011,19 +1020,20 @@ class StockDetailViewModel @Inject constructor(
                     // Only apply if still viewing the same ticker and range, and not already applied from cache
                     if (current.ticker != ticker || current.range != range) {
                         Log.d(TAG, "Skipping AI signal update: context changed (ticker=${current.ticker}/$ticker, range=${current.range}/$range)")
-                        current
+                        current.copy(aiGenerationState = AiGenerationState.IDLE)
                     } else if (aiSignalAppliedKey == aiKey) {
                         // Already applied from cache, but update anyway in case AI generated a fresher result
                         Log.d(TAG, "Updating AI signal (cache was already applied) for $ticker")
-                        current.copy(signal = aiSignal)
+                        current.copy(signal = aiSignal, aiGenerationState = AiGenerationState.COMPLETE)
                     } else {
                         Log.d(TAG, "Applying AI signal to UI for $ticker")
                         aiSignalAppliedKey = aiKey
-                        current.copy(signal = aiSignal)
+                        current.copy(signal = aiSignal, aiGenerationState = AiGenerationState.COMPLETE)
                     }
                 }
             } else {
                 Log.w(TAG, "AI signal returned null for $ticker")
+                // ERROR state already set in catch block if it was an exception
             }
         }
     }
@@ -1141,5 +1151,6 @@ data class StockDetailUiState(
     val offlineTranslationEnabled: Boolean = false,
     val localModelAvailable: Boolean = false,
     val localModelIncompatible: Boolean = false,
-    val overviewError: String? = null
+    val overviewError: String? = null,
+    val aiGenerationState: AiGenerationState = AiGenerationState.IDLE
 )

@@ -280,7 +280,7 @@ class NotificationQueueProcessor @Inject constructor(
             NotificationFrequency.ONE_PER_DAY -> 1
             NotificationFrequency.ONE_PER_WEEK -> 1
             NotificationFrequency.ONLY_WHEN_OPEN -> 0
-            NotificationFrequency.DEV_ONE_MINUTE -> 99 // No cap for dev testing
+            NotificationFrequency.DEV_FIVE_MINUTES -> 99 // No cap for dev testing
         }
     }
 

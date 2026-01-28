@@ -65,6 +65,24 @@ class SignalEventsRepository @Inject constructor(
         }
     }
 
+    suspend fun dismissSignal(id: String) {
+        try {
+            signalEventDao.dismissSignal(id)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error dismissing event: $id", e)
+            throw e
+        }
+    }
+
+    suspend fun undoDismissSignal(id: String) {
+        try {
+            signalEventDao.undoDismissSignal(id)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error restoring dismissed event: $id", e)
+            throw e
+        }
+    }
+
     suspend fun deleteById(id: String) {
         try {
             signalEventDao.deleteById(id)

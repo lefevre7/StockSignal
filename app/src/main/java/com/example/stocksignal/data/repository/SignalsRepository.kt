@@ -55,6 +55,14 @@ class SignalsRepository @Inject constructor(
         signalEventsRepository.updateDelivery(ids, notifiedAt, true)
     }
 
+    suspend fun dismissEvent(id: String) {
+        signalEventsRepository.dismissSignal(id)
+    }
+
+    suspend fun undoDismissEvent(id: String) {
+        signalEventsRepository.undoDismissSignal(id)
+    }
+
     suspend fun isInCooldown(ticker: String, label: String, generatedAt: LocalDateTime): Boolean {
         val latest = signalEventsRepository.getLatestForTickerAndLabel(ticker, label) ?: return false
         val age = Duration.between(latest.generatedAt, generatedAt)
@@ -227,6 +235,7 @@ class SignalsRepository @Inject constructor(
             notifiedAt = notifiedAt,
             source = source,
             delivered = delivered,
+            dismissed = false,
             deepLink = deepLink,
             reasons = reasons.map { it.title },
             avgScore = averageScore,
@@ -253,6 +262,7 @@ class SignalsRepository @Inject constructor(
             notifiedAt = notifiedAt,
             source = source,
             delivered = delivered,
+            dismissed = false,
             deepLink = deepLink,
             reasons = reasons.map { it.title },
             avgScore = averageScore,
@@ -282,6 +292,7 @@ class SignalsRepository @Inject constructor(
             notifiedAt = null,
             source = "local",
             delivered = false,
+            dismissed = false,
             deepLink = "stocksignal://stock/$ticker",
             reasons = reasons.map { it.title },
             avgScore = averageScore,

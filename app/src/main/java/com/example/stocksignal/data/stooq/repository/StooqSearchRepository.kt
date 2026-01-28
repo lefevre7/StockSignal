@@ -21,22 +21,19 @@ class StooqSearchRepository @Inject constructor(
         if (query.isBlank()) return Result.Success(emptyList())
 
         return try {
-            val campaignId = cachedCampaignId ?: fetchCampaignId()
-            if (campaignId == null) {
-                Log.i(TAG, "Search failed: missing cmp campaign id for query=$query")
-                Result.Error(Exception("Missing cmp campaign id"), "Unable to load search metadata")
-            } else {
-                Log.i(TAG, "Searching for query=$query, campaignId=$campaignId")
-                val raw = api.getCmp(campaignId, query)
-                Log.i(TAG, "Raw cmp response for query=$query (length=${raw.length}):")
-                Log.i(TAG, "--- START RAW RESPONSE ---")
-                Log.i(TAG, raw)
-                Log.i(TAG, "--- END RAW RESPONSE ---")
-                
-                val results = CmpParser.parse(raw)
-                Log.i(TAG, "Parsed ${results.size} search results for query=$query")
-                Result.Success(results)
-            }
+            // Try to get campaign ID, fall back to empty string if not found
+            val campaignId = cachedCampaignId ?: fetchCampaignId() ?: ""
+            
+            Log.i(TAG, "Searching for query=$query, campaignId=${if (campaignId.isEmpty()) "empty (fallback)" else campaignId}")
+            val raw = api.getCmp(campaignId, query)
+            Log.i(TAG, "Raw cmp response for query=$query (length=${raw.length}):")
+            Log.i(TAG, "--- START RAW RESPONSE ---")
+            Log.i(TAG, raw)
+            Log.i(TAG, "--- END RAW RESPONSE ---")
+            
+            val results = CmpParser.parse(raw)
+            Log.i(TAG, "Parsed ${results.size} search results for query=$query")
+            Result.Success(results)
         } catch (e: Exception) {
             Log.e(TAG, "Search failed for query=$query", e)
             Result.Error(e, "Search failed: ${e.message}")
@@ -53,7 +50,7 @@ class StooqSearchRepository @Inject constructor(
             campaignId
         } catch (e: Exception) {
             if (e is StooqBlockedException) throw e
-            Log.e(TAG, "Failed to fetch cmp campaign id", e)
+            Log.w(TAG, "Failed to fetch cmp campaign id, will use empty string as fallback", e)
             null
         }
     }

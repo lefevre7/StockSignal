@@ -12,7 +12,7 @@ import kotlinx.coroutines.flow.first
 
 /**
  * Bootstrap worker that runs on boot or app initialization to ensure
- * notification window workers are properly scheduled even if the app
+ * notification alarms are properly scheduled even if the app
  * process was killed and never restarted.
  */
 @HiltWorker
@@ -26,16 +26,16 @@ class NotificationBootstrapWorker @AssistedInject constructor(
 
     override suspend fun doWork(): Result {
         return try {
-            Log.d(TAG, "Bootstrap worker starting - will schedule notification windows")
+            Log.d(TAG, "Bootstrap worker starting - will schedule notification alarms")
             val settings = settingsRepository.settingsFlow.first()
             
             // Reconcile any stale notification state
             notificationQueueProcessor.reconcileState(settings)
             
-            // Schedule all notification window workers based on current settings
+            // Schedule all notification alarms based on current settings
             notificationScheduler.schedule(settings)
             
-            Log.d(TAG, "Bootstrap complete - workers scheduled for frequency: ${settings.frequency}")
+            Log.d(TAG, "Bootstrap complete - alarms scheduled for frequency: ${settings.frequency}")
             Result.success()
         } catch (e: Exception) {
             Log.e(TAG, "Bootstrap worker failed", e)

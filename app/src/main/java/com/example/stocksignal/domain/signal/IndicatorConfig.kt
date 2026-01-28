@@ -42,7 +42,7 @@ data class IndicatorConfig(
     val breakoutWindow: Int,
     
     // Rolling return z-score
-    val returnsWindow: Int
+    val rollingReturnZScoreWindow: Int
 ) {
     companion object {
         /**
@@ -64,7 +64,7 @@ data class IndicatorConfig(
                     volumeZscoreThreshold = 2.0,
                     atrPeriod = 7,
                     breakoutWindow = 10,
-                    returnsWindow = 10
+                    rollingReturnZScoreWindow = 10
                 )
                 
                 HoldingPeriod.DAYS -> IndicatorConfig(
@@ -81,7 +81,7 @@ data class IndicatorConfig(
                     volumeZscoreThreshold = 2.0,
                     atrPeriod = 10,
                     breakoutWindow = 15,
-                    returnsWindow = 15
+                    rollingReturnZScoreWindow = 15
                 )
                 
                 HoldingPeriod.WEEKS -> IndicatorConfig(
@@ -98,7 +98,7 @@ data class IndicatorConfig(
                     volumeZscoreThreshold = 2.0,
                     atrPeriod = 14,
                     breakoutWindow = 20,
-                    returnsWindow = 20
+                    rollingReturnZScoreWindow = 20
                 )
                 
                 HoldingPeriod.MONTHS -> IndicatorConfig(
@@ -115,7 +115,7 @@ data class IndicatorConfig(
                     volumeZscoreThreshold = 2.0,
                     atrPeriod = 14,
                     breakoutWindow = 30,
-                    returnsWindow = 30
+                    rollingReturnZScoreWindow = 30
                 )
                 
                 HoldingPeriod.YEARS -> IndicatorConfig(
@@ -132,7 +132,7 @@ data class IndicatorConfig(
                     volumeZscoreThreshold = 2.0,
                     atrPeriod = 20,           // Longer ATR period
                     breakoutWindow = 50,
-                    returnsWindow = 50
+                    rollingReturnZScoreWindow = 50
                 )
             }
         }

@@ -1,138 +1,132 @@
 package com.example.stocksignal.notifications
 
-import android.content.Context
 import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import androidx.work.Configuration
-import androidx.work.CoroutineWorker
-import androidx.work.WorkInfo
-import androidx.work.WorkManager
-import androidx.work.WorkerFactory
-import androidx.work.testing.SynchronousExecutor
-import androidx.work.testing.WorkManagerTestInitHelper
-import org.junit.Assert.assertEquals
+import com.example.stocksignal.data.settings.NotificationFrequency
+import com.example.stocksignal.data.settings.NotificationType
+import com.example.stocksignal.data.settings.ScheduleWindow
+import com.example.stocksignal.data.settings.ScheduleWindowType
+import com.example.stocksignal.data.settings.SettingsRepository
+import com.example.stocksignal.data.settings.settingsDataStore
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.runBlocking
 
 /**
  * Tests for NotificationBootReceiver to ensure it properly:
  * - Responds only to BOOT_COMPLETED intent
- * - Enqueues NotificationBootstrapWorker
- * - Uses correct work name and tag
+ * - Schedules notification alarms based on current settings
  */
 @RunWith(AndroidJUnit4::class)
 class NotificationBootReceiverTest {
 
-    private lateinit var context: Context
-    private lateinit var workManager: WorkManager
+    private lateinit var settingsRepository: SettingsRepository
     private lateinit var receiver: NotificationBootReceiver
+    private lateinit var diagnosticsRepository: NotificationDiagnosticsRepository
 
     @Before
     fun setup() {
-        context = ApplicationProvider.getApplicationContext()
-        val config = Configuration.Builder()
-            .setExecutor(SynchronousExecutor())
-            .setWorkerFactory(TestWorkerFactory())
-            .build()
-        WorkManagerTestInitHelper.initializeTestWorkManager(context, config)
-        workManager = WorkManager.getInstance(context)
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        settingsRepository = SettingsRepository(context.settingsDataStore)
+        diagnosticsRepository = NotificationDiagnosticsRepository(context.settingsDataStore)
         receiver = NotificationBootReceiver()
     }
 
     @Test
-    fun bootReceiverEnqueuesBootstrapWorkerOnBootCompleted() {
-        val intent = Intent(Intent.ACTION_BOOT_COMPLETED)
+    fun bootReceiverSchedulesAlarmsOnBootCompleted() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        disableBackgroundScheduling()
 
-        receiver.onReceive(context, intent)
-
-        val workInfos = workManager.getWorkInfosByTag("notification_bootstrap")
-            .get(5, TimeUnit.SECONDS)
-
-        assertTrue("Bootstrap worker should be enqueued", workInfos.isNotEmpty())
-        val state = workInfos.first().state
-        assertTrue(
-            "Worker should be enqueued or finished",
-            state == WorkInfo.State.ENQUEUED ||
-                state == WorkInfo.State.RUNNING ||
-                state == WorkInfo.State.SUCCEEDED
+        settingsRepository.setFrequency(NotificationFrequency.THREE_PER_DAY)
+        settingsRepository.setNotificationTypes(
+            setOf(
+                NotificationType.WATCHLIST,
+                NotificationType.MARKET_MOVERS,
+                NotificationType.DIGESTS
+            )
         )
+        settingsRepository.setScheduleWindows(
+            listOf(
+                ScheduleWindow(
+                    id = "local_1100",
+                    type = ScheduleWindowType.FIXED_LOCAL,
+                    hour = 11,
+                    minute = 0,
+                    zoneId = null,
+                    offsetMinutes = null
+                ),
+                ScheduleWindow(
+                    id = "local_1400",
+                    type = ScheduleWindowType.FIXED_LOCAL,
+                    hour = 14,
+                    minute = 0,
+                    zoneId = null,
+                    offsetMinutes = null
+                )
+            )
+        )
+
+        receiver.onReceive(context, Intent(Intent.ACTION_BOOT_COMPLETED))
+
+        awaitWindowIds(setOf("local_1100", "local_1400"))
     }
 
     @Test
-    fun bootReceiverIgnoresNonBootIntents() {
-        val intent = Intent(Intent.ACTION_SCREEN_ON)
-
-        receiver.onReceive(context, intent)
-
-        val workInfos = workManager.getWorkInfosByTag("notification_bootstrap")
-            .get(5, TimeUnit.SECONDS)
-
-        assertTrue("No worker should be enqueued for non-boot intent", workInfos.isEmpty())
+    fun bootReceiverIgnoresNonBootIntents() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        disableBackgroundScheduling()
+        receiver.onReceive(context, Intent(Intent.ACTION_SCREEN_ON))
+        kotlinx.coroutines.delay(200)
+        val scheduled = diagnosticsRepository.getScheduledWindowIds()
+        assertTrue("No alarms should be scheduled for non-boot intent", scheduled.isEmpty())
     }
 
     @Test
-    fun bootReceiverUsesCorrectWorkName() {
-        val intent = Intent(Intent.ACTION_BOOT_COMPLETED)
-
-        receiver.onReceive(context, intent)
-
-        // Work name is used for unique work, so we verify through tags
-        val workInfos = workManager.getWorkInfosByTag("notification_bootstrap")
-            .get(5, TimeUnit.SECONDS)
-
-        assertTrue("Bootstrap worker should be tagged correctly", workInfos.isNotEmpty())
-    }
-
-    @Test
-    fun bootReceiverReplacesExistingBootstrapWork() {
-        val intent = Intent(Intent.ACTION_BOOT_COMPLETED)
-
-        // Enqueue first time
-        receiver.onReceive(context, intent)
-        val firstWorkInfos = workManager.getWorkInfosByTag("notification_bootstrap")
-            .get(5, TimeUnit.SECONDS)
-        val firstWorkId = firstWorkInfos.first().id
-
-        // Enqueue second time
-        receiver.onReceive(context, intent)
-        val secondWorkInfos = workManager.getWorkInfosByTag("notification_bootstrap")
-            .get(5, TimeUnit.SECONDS)
-
-        // Due to REPLACE policy, should still only have one work item
-        // (though it might be a different ID)
-        assertEquals("Should have exactly one bootstrap work item", 1, secondWorkInfos.size)
-    }
-
-    @Test
-    fun bootReceiverHandlesNullActionGracefully() {
+    fun bootReceiverHandlesNullActionGracefully() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        disableBackgroundScheduling()
         val intent = Intent()
         intent.action = null
 
         // Should not crash
         receiver.onReceive(context, intent)
-
-        val workInfos = workManager.getWorkInfosByTag("notification_bootstrap")
-            .get(5, TimeUnit.SECONDS)
-
-        assertTrue("No worker should be enqueued for null action", workInfos.isEmpty())
+        val scheduled = diagnosticsRepository.getScheduledWindowIds()
+        assertTrue("No alarms should be scheduled for null action", scheduled.isEmpty())
     }
 
-    private class TestWorkerFactory : WorkerFactory() {
-        override fun createWorker(
-            appContext: Context,
-            workerClassName: String,
-            workerParameters: androidx.work.WorkerParameters
-        ): androidx.work.ListenableWorker? {
-            if (workerClassName != NotificationBootstrapWorker::class.java.name) {
-                return null
-            }
-            return object : CoroutineWorker(appContext, workerParameters) {
-                override suspend fun doWork(): Result = Result.success()
-            }
+    private suspend fun awaitWindowIds(expected: Set<String>, timeoutMs: Long = 5_000) {
+        val start = System.currentTimeMillis()
+        while (System.currentTimeMillis() - start < timeoutMs) {
+            val scheduled = diagnosticsRepository.getScheduledWindowIds()
+            if (scheduled.containsAll(expected)) return
+            kotlinx.coroutines.delay(100)
         }
+        fail("Timed out waiting for alarms: expected $expected")
+    }
+
+    private suspend fun disableBackgroundScheduling() {
+        diagnosticsRepository.clearScheduleFingerprint()
+        diagnosticsRepository.setScheduledWindowIds(emptySet())
+        diagnosticsRepository.setScheduledPremarketKeys(emptySet())
+        diagnosticsRepository.setRobotsNextRun(null)
+        settingsRepository.setNotificationTypes(
+            setOf(NotificationType.WATCHLIST)
+        )
+        settingsRepository.setFrequency(NotificationFrequency.ONLY_WHEN_OPEN)
+        awaitEmptyScheduled()
+    }
+
+    private suspend fun awaitEmptyScheduled(timeoutMs: Long = 5_000) {
+        val start = System.currentTimeMillis()
+        while (System.currentTimeMillis() - start < timeoutMs) {
+            val scheduled = diagnosticsRepository.getScheduledWindowIds()
+            if (scheduled.isEmpty()) return
+            kotlinx.coroutines.delay(100)
+        }
+        fail("Timed out waiting for alarms to clear")
     }
 }

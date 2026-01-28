@@ -207,9 +207,7 @@ class SettingsRepository @Inject constructor(
     }
 
     private fun Preferences.toAppSettings(): AppSettings {
-        val frequency = NotificationFrequency.valueOf(
-            this[SettingsKeys.frequency] ?: NotificationFrequency.THREE_PER_DAY.name
-        )
+        val frequency = parseFrequency(this[SettingsKeys.frequency])
         val types = this[SettingsKeys.notificationTypes]
             ?.mapNotNull { runCatching { NotificationType.valueOf(it) }.getOrNull() }
             ?.toSet()
@@ -327,6 +325,16 @@ class SettingsRepository @Inject constructor(
                 onboardingCompleted = false,
                 holdingPeriod = defaultHoldingPeriod
             )
+        }
+
+        private fun parseFrequency(raw: String?): NotificationFrequency {
+            if (raw.isNullOrBlank()) return NotificationFrequency.THREE_PER_DAY
+            return when (raw) {
+                NotificationFrequency.DEV_FIVE_MINUTES.name -> NotificationFrequency.DEV_FIVE_MINUTES
+                "DEV_ONE_MINUTE" -> NotificationFrequency.DEV_FIVE_MINUTES
+                else -> runCatching { NotificationFrequency.valueOf(raw) }
+                    .getOrDefault(NotificationFrequency.THREE_PER_DAY)
+            }
         }
     }
 }

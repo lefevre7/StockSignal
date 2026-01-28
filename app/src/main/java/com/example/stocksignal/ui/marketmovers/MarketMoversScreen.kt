@@ -1,5 +1,6 @@
 package com.example.stocksignal.ui.marketmovers
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import com.example.stocksignal.domain.model.PriceCandle
 import androidx.compose.foundation.layout.Arrangement
@@ -226,13 +227,26 @@ private fun MarketMoverCard(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
-                Text(text = item.ticker, style = MaterialTheme.typography.headlineMedium)
-                CompanyExchangeText(
-                    companyName = item.companyName,
-                    exchange = item.exchange,
-                    style = MaterialTheme.typography.bodySmall
-                )
+            androidx.compose.foundation.layout.Box(
+                modifier = Modifier
+                    .background(
+                        color = Color.Black.copy(alpha = 0.5f),
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(4.dp)
+                    )
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+            ) {
+                Column {
+                    Text(
+                        text = item.ticker,
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = Color.White
+                    )
+                    CompanyExchangeText(
+                        companyName = item.companyName,
+                        exchange = item.exchange,
+                        style = MaterialTheme.typography.bodySmall.copy(color = Color.White)
+                    )
+                }
             }
             Column(horizontalAlignment = Alignment.End) {
                 Text(

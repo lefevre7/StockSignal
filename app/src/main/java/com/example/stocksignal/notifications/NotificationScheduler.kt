@@ -1,16 +1,8 @@
 package com.example.stocksignal.notifications
 
+import android.app.AlarmManager
 import android.content.Context
 import android.util.Log
-import androidx.work.Constraints
-import androidx.work.ExistingPeriodicWorkPolicy
-import androidx.work.ExistingWorkPolicy
-import androidx.work.NetworkType
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.PeriodicWorkRequestBuilder
-import androidx.work.WorkInfo
-import androidx.work.WorkManager
-import androidx.work.workDataOf
 import com.example.stocksignal.data.settings.AppSettings
 import com.example.stocksignal.data.settings.NotificationFrequency
 import com.example.stocksignal.data.settings.NotificationType
@@ -25,216 +17,322 @@ import java.time.LocalTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.temporal.TemporalAdjusters
-import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 @Singleton
 class NotificationScheduler @Inject constructor(
-    @ApplicationContext context: Context,
+    @ApplicationContext private val context: Context,
     private val diagnosticsRepository: NotificationDiagnosticsRepository
 ) {
 
-    private val workManager = WorkManager.getInstance(context)
+    private val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
 
     suspend fun schedule(settings: AppSettings, force: Boolean = false) {
         Log.d(TAG, "=== Notification Scheduler Start ===")
         Log.d(TAG, "Frequency: ${settings.frequency}, Types: ${settings.notificationTypes}")
-        
+
         if (!hasNotificationSources(settings)) {
-            workManager.cancelAllWorkByTag(WORK_TAG)
+            cancelAllAlarms()
             diagnosticsRepository.clearScheduleFingerprint()
             Log.w(TAG, "❌ Background scheduling DISABLED - no notification sources enabled")
-            Log.w(TAG, "   Enable Watchlist or Market Movers in Settings to receive background notifications")
             return
         }
-        
-        // Auto-fallback if DEV mode is set but debug flag is disabled
-        val effectiveFrequency = if (settings.frequency == NotificationFrequency.DEV_ONE_MINUTE && !DebugConfig.ENABLE_DEV_MODE) {
-            Log.w(TAG, "⚠️ DEV_ONE_MINUTE frequency set but debug mode disabled - falling back to THREE_PER_DAY")
-            NotificationFrequency.THREE_PER_DAY
-        } else {
-            settings.frequency
-        }
-        
+
+        val effectiveFrequency = resolveEffectiveFrequency(settings.frequency)
+        val effectiveSettings = settings.copy(frequency = effectiveFrequency)
         if (effectiveFrequency == NotificationFrequency.ONLY_WHEN_OPEN) {
-            workManager.cancelAllWorkByTag(WORK_TAG)
+            cancelAllAlarms()
             diagnosticsRepository.clearScheduleFingerprint()
             Log.d(TAG, "Background scheduling disabled (only when open)")
             return
         }
 
-        val windows = windowsForFrequency(settings.copy(frequency = effectiveFrequency))
+        val windows = windowsForFrequency(effectiveSettings)
         if (windows.isEmpty()) {
             Log.w(TAG, "❌ No notification windows configured for frequency: $effectiveFrequency")
             return
         }
-        
-        val devInterval = Duration.ofMinutes(2)
-        val interval = when (effectiveFrequency) {
-            NotificationFrequency.ONE_PER_WEEK -> Duration.ofDays(7)
-            NotificationFrequency.DEV_ONE_MINUTE -> devInterval
-            else -> Duration.ofDays(1)
-        }
-        
-        // For DEV mode, use one-time work to run immediately, then repeat via chained one-time work
-        val isDevMode = effectiveFrequency == NotificationFrequency.DEV_ONE_MINUTE && DebugConfig.ENABLE_DEV_MODE
 
-        val fingerprint = scheduleFingerprint(settings, effectiveFrequency, windows, isDevMode)
+        val isDevMode = isDevMode(effectiveFrequency)
+        val exactAllowed = canScheduleExactAlarms()
+        diagnosticsRepository.setLastExactAlarmAllowed(exactAllowed)
+        val fingerprint = scheduleFingerprint(effectiveSettings, windows, isDevMode, exactAllowed)
         if (!force && !shouldReschedule(fingerprint, windows)) {
-            Log.d(TAG, "Schedule unchanged and workers present; skipping reschedule")
+            Log.d(TAG, "Schedule unchanged and alarms present; skipping reschedule")
             return
         }
 
-        workManager.cancelAllWorkByTag(WORK_TAG)
-        Log.d(TAG, "Scheduling ${windows.size} notification window(s) with ${interval.toMinutes()}min interval (devMode=$isDevMode)")
+        Log.d(TAG, "Scheduling ${windows.size} window(s) (devMode=$isDevMode, exactAllowed=$exactAllowed)")
+        cancelObsoleteWindowAlarms(windows)
         windows.forEach { window ->
-            if (isDevMode) {
-                // DEV MODE: Schedule immediate work and then repeat via chained one-time work
-                Log.d(TAG, "🔧 DEV MODE: Scheduling immediate + repeat work for ${window.id}")
-                
-                // Immediate one-time execution
-                val immediateRequest = OneTimeWorkRequestBuilder<NotificationWindowWorker>()
-                    .setConstraints(CONSTRAINTS)
-                    .addTag(WORK_TAG)
-                    .addTag(DEV_IMMEDIATE_TAG)
-                    .addTag(windowTag(window.id))
-                    .setInputData(workDataOf(NotificationWindowWorker.KEY_WINDOW_ID to window.id))
-                    .build()
-                
-                workManager.enqueueUniqueWork(
-                    "dev_immediate_${window.id}",
-                    ExistingWorkPolicy.REPLACE,
-                    immediateRequest
-                )
-                Log.d(TAG, "⚡ DEV: Queued immediate execution for ${window.id}")
-                
-                val repeatRequest = OneTimeWorkRequestBuilder<NotificationWindowWorker>()
-                    .setConstraints(CONSTRAINTS)
-                    .setInitialDelay(devInterval.toMinutes(), TimeUnit.MINUTES)
-                    .addTag(WORK_TAG)
-                    .addTag(DEV_REPEAT_TAG)
-                    .addTag(windowTag(window.id))
-                    .setInputData(workDataOf(NotificationWindowWorker.KEY_WINDOW_ID to window.id))
-                    .build()
-
-                workManager.enqueueUniqueWork(
-                    devRepeatWorkName(window.id),
-                    ExistingWorkPolicy.REPLACE,
-                    repeatRequest
-                )
-                Log.d(TAG, "✓ DEV: Scheduled repeat (${devInterval.toMinutes()}min) for ${window.id}")
-            } else {
-                // Normal mode: Schedule with calculated delay
-                val delay = initialDelay(window, settings)
-                val request = PeriodicWorkRequestBuilder<NotificationWindowWorker>(
-                    interval.toHours(),
-                    TimeUnit.HOURS
-                )
-                    .setConstraints(CONSTRAINTS)
-                    .setInitialDelay(delay.toMinutes(), TimeUnit.MINUTES)
-                    .addTag(WORK_TAG)
-                    .addTag(windowTag(window.id))
-                    .setInputData(workDataOf(NotificationWindowWorker.KEY_WINDOW_ID to window.id))
-                    .build()
-
-                workManager.enqueueUniquePeriodicWork(
-                    workName(window.id),
-                    ExistingPeriodicWorkPolicy.REPLACE,
-                    request
-                )
-                Log.d(TAG, "✓ Scheduled window ${window.id} with initial delay ${delay.toMinutes()}m (${delay.toHours()}h)")
-            }
+            scheduleWindowAlarm(effectiveSettings, window, exactAllowed)
         }
-
+        diagnosticsRepository.setScheduledWindowIds(windows.map { it.id }.toSet())
         diagnosticsRepository.setLastScheduleFingerprint(fingerprint)
-        
+
+        scheduleRobotsTxtCheck(effectiveSettings)
+        schedulePremarketQuotes(effectiveSettings)
+
         Log.d(TAG, "=== Notification Scheduler Complete ===")
-        
-        // Schedule daily robots.txt check at first notification window
-        scheduleRobotsTxtCheck(settings)
-
-        // Schedule premarket quote snapshots relative to the first window
-        schedulePremarketQuotes(settings)
     }
-    
-    private fun scheduleRobotsTxtCheck(settings: AppSettings) {
+
+    suspend fun scheduleNextWindow(settings: AppSettings, windowId: String) {
+        val effectiveFrequency = resolveEffectiveFrequency(settings.frequency)
+        val effectiveSettings = settings.copy(frequency = effectiveFrequency)
+        if (!hasNotificationSources(settings) || effectiveFrequency == NotificationFrequency.ONLY_WHEN_OPEN) {
+            cancelWindowAlarm(windowId)
+            diagnosticsRepository.setNextWindowRun(windowId, null)
+            return
+        }
+        val windows = windowsForFrequency(effectiveSettings)
+        val window = windows.firstOrNull { it.id == windowId }
+        if (window == null) {
+            cancelWindowAlarm(windowId)
+            diagnosticsRepository.setNextWindowRun(windowId, null)
+            return
+        }
+        scheduleWindowAlarm(effectiveSettings, window, canScheduleExactAlarms())
+        val scheduled = diagnosticsRepository.getScheduledWindowIds() + windowId
+        diagnosticsRepository.setScheduledWindowIds(scheduled)
+    }
+
+    suspend fun scheduleRobotsTxtCheck(settings: AppSettings) {
         val windows = windowsForFrequency(settings)
-        if (windows.isEmpty()) return
-        
-        // Use the first window for the daily check
+        if (windows.isEmpty() || settings.frequency == NotificationFrequency.ONLY_WHEN_OPEN) {
+            cancelRobotsAlarm()
+            diagnosticsRepository.setRobotsNextRun(null)
+            return
+        }
         val firstWindow = windows.first()
-        val delay = initialDelay(firstWindow, settings)
-        
-        val request = PeriodicWorkRequestBuilder<RobotsTxtCheckWorker>(
-            24, // Daily
-            TimeUnit.HOURS
+        val nextRunAt = nextRunAt(firstWindow, ZonedDateTime.now(), settings)
+        scheduleAlarm(
+            triggerAtMillis = nextRunAt.toInstant().toEpochMilli(),
+            pendingIntent = NotificationAlarmIntentFactory.robotsPendingIntent(context),
+            exactAllowed = canScheduleExactAlarms()
         )
-            .setConstraints(CONSTRAINTS)
-            .setInitialDelay(delay.toMinutes(), TimeUnit.MINUTES)
-            .addTag(ROBOTS_TXT_CHECK_TAG)
-            .build()
-            
-        workManager.enqueueUniquePeriodicWork(
-            RobotsTxtCheckWorker.WORK_NAME,
-            ExistingPeriodicWorkPolicy.KEEP, // Keep existing to preserve check state
-            request
-        )
-        
-        Log.d(TAG, "Scheduled daily robots.txt check at first notification window")
+        diagnosticsRepository.setRobotsNextRun(nextRunAt.toInstant().toEpochMilli())
     }
 
-    private fun schedulePremarketQuotes(settings: AppSettings) {
-        workManager.cancelAllWorkByTag(PremarketQuoteWorker.WORK_TAG)
-        if (!settings.notificationTypes.contains(NotificationType.WATCHLIST)) return
-        if (settings.frequency == NotificationFrequency.ONLY_WHEN_OPEN) return
+    suspend fun schedulePremarketSample(settings: AppSettings, windowId: String, sampleIndex: Int) {
+        if (!shouldSchedulePremarket(settings)) {
+            cancelPremarketAlarm(windowId, sampleIndex)
+            diagnosticsRepository.setPremarketNextRun(NotificationAlarmIntentFactory.premarketKey(windowId, sampleIndex), null)
+            return
+        }
+        val nextRunAt = nextPremarketSampleAt(settings, windowId, sampleIndex) ?: return
+        scheduleAlarm(
+            triggerAtMillis = nextRunAt.toInstant().toEpochMilli(),
+            pendingIntent = NotificationAlarmIntentFactory.premarketPendingIntent(context, windowId, sampleIndex),
+            exactAllowed = canScheduleExactAlarms()
+        )
+        diagnosticsRepository.setPremarketNextRun(
+            NotificationAlarmIntentFactory.premarketKey(windowId, sampleIndex),
+            nextRunAt.toInstant().toEpochMilli()
+        )
+        val scheduled = diagnosticsRepository.getScheduledPremarketKeys() +
+            NotificationAlarmIntentFactory.premarketKey(windowId, sampleIndex)
+        diagnosticsRepository.setScheduledPremarketKeys(scheduled)
+    }
 
+    private suspend fun schedulePremarketQuotes(settings: AppSettings) {
+        if (!shouldSchedulePremarket(settings)) {
+            cancelPremarketAlarms()
+            return
+        }
+        val windowId = resolvePremarketWindowId(settings) ?: run {
+            cancelPremarketAlarms()
+            return
+        }
+        val expectedKeys = (0..4).map { index ->
+            NotificationAlarmIntentFactory.premarketKey(windowId, index)
+        }.toSet()
+        cancelObsoletePremarketAlarms(expectedKeys)
+        (0..4).forEach { index ->
+            val nextRunAt = nextPremarketSampleAt(settings, windowId, index) ?: return@forEach
+            scheduleAlarm(
+                triggerAtMillis = nextRunAt.toInstant().toEpochMilli(),
+                pendingIntent = NotificationAlarmIntentFactory.premarketPendingIntent(context, windowId, index),
+                exactAllowed = canScheduleExactAlarms()
+            )
+            diagnosticsRepository.setPremarketNextRun(
+                NotificationAlarmIntentFactory.premarketKey(windowId, index),
+                nextRunAt.toInstant().toEpochMilli()
+            )
+        }
+        diagnosticsRepository.setScheduledPremarketKeys(expectedKeys)
+    }
+
+    private fun shouldSchedulePremarket(settings: AppSettings): Boolean {
+        if (!settings.notificationTypes.contains(NotificationType.WATCHLIST)) return false
+        if (settings.frequency == NotificationFrequency.ONLY_WHEN_OPEN) return false
+        return true
+    }
+
+    private fun resolvePremarketWindowId(settings: AppSettings): String? {
         val now = ZonedDateTime.now()
         val marketWindow = settings.scheduleWindows.firstOrNull {
             it.type == ScheduleWindowType.MARKET_OPEN_MINUS
-        } ?: return
+        } ?: return null
         val offset = marketWindow.offsetMinutes ?: -10
-        if (offset >= 0) return
+        if (offset >= 0) return null
         val windowRunAt = nextRunAt(marketWindow, now, settings)
-        val firstWindow = PremarketWindowUtils.firstWindowForReference(settings, windowRunAt) ?: return
-        if (firstWindow.id != marketWindow.id) return
+        val firstWindow = PremarketWindowUtils.firstWindowForReference(settings, windowRunAt) ?: return null
+        if (firstWindow.id != marketWindow.id) return null
+        return firstWindow.id
+    }
+
+    private fun nextPremarketSampleAt(
+        settings: AppSettings,
+        windowId: String,
+        sampleIndex: Int
+    ): ZonedDateTime? {
+        val window = settings.scheduleWindows.firstOrNull { it.id == windowId } ?: return null
+        if (window.type != ScheduleWindowType.MARKET_OPEN_MINUS) return null
+        val offset = window.offsetMinutes ?: -10
+        if (offset >= 0) return null
+        val now = ZonedDateTime.now()
+        val windowRunAt = nextRunAt(window, now, settings)
+        val firstWindow = PremarketWindowUtils.firstWindowForReference(settings, windowRunAt) ?: return null
+        if (firstWindow.id != windowId) return null
         val start = windowRunAt.minusMinutes(60)
+        var runAt = start.plusMinutes(sampleIndex * 10L)
         val interval = if (settings.frequency == NotificationFrequency.ONE_PER_WEEK) {
             Duration.ofDays(7)
         } else {
             Duration.ofDays(1)
         }
+        if (runAt.toInstant().isBefore(Instant.now())) {
+            runAt = runAt.plus(interval)
+        }
+        return runAt
+    }
 
-        (0..4).forEach { index ->
-            val runAt = start.plusMinutes(index * 10L)
-            var delay = Duration.between(Instant.now(), runAt.toInstant())
-            if (delay.isNegative) {
-                delay = delay.plus(interval)
+    private suspend fun cancelAllAlarms() {
+        val scheduledWindowIds = diagnosticsRepository.getScheduledWindowIds()
+        scheduledWindowIds.forEach { cancelWindowAlarm(it) }
+        diagnosticsRepository.setScheduledWindowIds(emptySet())
+        diagnosticsRepository.getScheduledPremarketKeys().forEach { key ->
+            val parts = key.split(":")
+            if (parts.size == 2) {
+                val windowId = parts[0]
+                val sampleIndex = parts[1].toIntOrNull() ?: return@forEach
+                cancelPremarketAlarm(windowId, sampleIndex)
             }
+            diagnosticsRepository.setPremarketNextRun(key, null)
+        }
+        diagnosticsRepository.setScheduledPremarketKeys(emptySet())
+        cancelRobotsAlarm()
+        diagnosticsRepository.setRobotsNextRun(null)
+    }
 
-            val request = PeriodicWorkRequestBuilder<PremarketQuoteWorker>(
-                interval.toHours(),
-                TimeUnit.HOURS
-            )
-                .setConstraints(CONSTRAINTS)
-                .setInitialDelay(delay.toMinutes(), TimeUnit.MINUTES)
-                .addTag(PremarketQuoteWorker.WORK_TAG)
-                .setInputData(
-                    workDataOf(
-                        PremarketQuoteWorker.KEY_WINDOW_ID to firstWindow.id,
-                        PremarketQuoteWorker.KEY_SAMPLE_INDEX to index
-                    )
-                )
-                .build()
+    private suspend fun cancelObsoleteWindowAlarms(desiredWindows: List<ScheduleWindow>) {
+        val desiredIds = desiredWindows.map { it.id }.toSet()
+        val scheduledIds = diagnosticsRepository.getScheduledWindowIds()
+        val obsolete = scheduledIds - desiredIds
+        obsolete.forEach {
+            cancelWindowAlarm(it)
+            diagnosticsRepository.setNextWindowRun(it, null)
+        }
+        if (scheduledIds.isNotEmpty() && scheduledIds != desiredIds) {
+            desiredIds.forEach {
+                cancelWindowAlarm(it)
+                diagnosticsRepository.setNextWindowRun(it, null)
+            }
+        }
+    }
 
-            workManager.enqueueUniquePeriodicWork(
-                "premarket_${firstWindow.id}_$index",
-                ExistingPeriodicWorkPolicy.REPLACE,
-                request
-            )
-            Log.d(TAG, "Scheduled premarket sample #$index for ${firstWindow.id} with delay ${delay.toMinutes()}m")
+    private suspend fun cancelPremarketAlarms() {
+        val scheduled = diagnosticsRepository.getScheduledPremarketKeys()
+        scheduled.forEach { key ->
+            val parts = key.split(":")
+            if (parts.size == 2) {
+                val windowId = parts[0]
+                val sampleIndex = parts[1].toIntOrNull() ?: return@forEach
+                cancelPremarketAlarm(windowId, sampleIndex)
+            }
+            diagnosticsRepository.setPremarketNextRun(key, null)
+        }
+        diagnosticsRepository.setScheduledPremarketKeys(emptySet())
+    }
+
+    private suspend fun cancelObsoletePremarketAlarms(expectedKeys: Set<String>) {
+        val scheduled = diagnosticsRepository.getScheduledPremarketKeys()
+        val obsolete = scheduled - expectedKeys
+        obsolete.forEach { key ->
+            val parts = key.split(":")
+            if (parts.size == 2) {
+                val windowId = parts[0]
+                val sampleIndex = parts[1].toIntOrNull() ?: return@forEach
+                cancelPremarketAlarm(windowId, sampleIndex)
+            }
+            diagnosticsRepository.setPremarketNextRun(key, null)
+        }
+        if (scheduled.isNotEmpty() && scheduled != expectedKeys) {
+            expectedKeys.forEach { key ->
+                val parts = key.split(":")
+                if (parts.size == 2) {
+                    val windowId = parts[0]
+                    val sampleIndex = parts[1].toIntOrNull() ?: return@forEach
+                    cancelPremarketAlarm(windowId, sampleIndex)
+                }
+                diagnosticsRepository.setPremarketNextRun(key, null)
+            }
+        }
+    }
+
+    private fun cancelWindowAlarm(windowId: String) {
+        val pendingIntent = NotificationAlarmIntentFactory.windowPendingIntent(context, windowId)
+        alarmManager.cancel(pendingIntent)
+        pendingIntent.cancel()
+    }
+
+    private fun cancelPremarketAlarm(windowId: String, sampleIndex: Int) {
+        val pendingIntent = NotificationAlarmIntentFactory.premarketPendingIntent(context, windowId, sampleIndex)
+        alarmManager.cancel(pendingIntent)
+        pendingIntent.cancel()
+    }
+
+    private fun cancelRobotsAlarm() {
+        val pendingIntent = NotificationAlarmIntentFactory.robotsPendingIntent(context)
+        alarmManager.cancel(pendingIntent)
+        pendingIntent.cancel()
+    }
+
+    private suspend fun scheduleWindowAlarm(
+        settings: AppSettings,
+        window: ScheduleWindow,
+        exactAllowed: Boolean
+    ) {
+        val now = ZonedDateTime.now()
+        val triggerAt = if (isDevMode(settings.frequency)) {
+            now.plusMinutes(DEV_REPEAT_DELAY_MINUTES)
+        } else {
+            nextRunAt(window, now, settings)
+        }
+        val triggerAtMillis = triggerAt.toInstant().toEpochMilli()
+        scheduleAlarm(
+            triggerAtMillis = triggerAtMillis,
+            pendingIntent = NotificationAlarmIntentFactory.windowPendingIntent(context, window.id),
+            exactAllowed = exactAllowed
+        )
+        diagnosticsRepository.setNextWindowRun(window.id, triggerAtMillis)
+    }
+
+    private fun scheduleAlarm(
+        triggerAtMillis: Long,
+        pendingIntent: android.app.PendingIntent,
+        exactAllowed: Boolean
+    ) {
+        val safeTriggerAt = maxOf(triggerAtMillis, System.currentTimeMillis() + MIN_DELAY_MILLIS)
+        if (exactAllowed) {
+            alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, safeTriggerAt, pendingIntent)
+        } else {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, safeTriggerAt, pendingIntent)
+            } else {
+                alarmManager.set(AlarmManager.RTC_WAKEUP, safeTriggerAt, pendingIntent)
+            }
         }
     }
 
@@ -247,15 +345,8 @@ class NotificationScheduler @Inject constructor(
             NotificationFrequency.ONE_PER_WEEK ->
                 windows.filter { it.type == ScheduleWindowType.MARKET_OPEN_MINUS }.take(1)
             NotificationFrequency.ONLY_WHEN_OPEN -> emptyList()
-            NotificationFrequency.DEV_ONE_MINUTE -> windows.take(1) // Just use first window for dev testing
+            NotificationFrequency.DEV_FIVE_MINUTES -> windows.take(1)
         }
-    }
-
-    private fun initialDelay(window: ScheduleWindow, settings: AppSettings): Duration {
-        val now = ZonedDateTime.now()
-        val next = nextRunAt(window, now, settings)
-        val delay = Duration.between(Instant.now(), next.toInstant())
-        return if (delay.isNegative) Duration.ZERO else delay
     }
 
     private fun nextRunAt(
@@ -267,12 +358,12 @@ class NotificationScheduler @Inject constructor(
             return nextWeeklyWindow(window, now, settings.weeklyDay)
         }
         return when (window.type) {
-            ScheduleWindowType.FIXED_LOCAL -> nextLocalWindow(window, now)
+            ScheduleWindowType.FIXED_LOCAL -> nextLocalWindowWeekday(window, now)
             ScheduleWindowType.MARKET_OPEN_MINUS -> nextMarketOpenWindow(window, now)
         }
     }
 
-    private fun nextLocalWindow(window: ScheduleWindow, now: ZonedDateTime): ZonedDateTime {
+    private fun nextLocalWindowWeekday(window: ScheduleWindow, now: ZonedDateTime): ZonedDateTime {
         val hour = window.hour ?: 9
         val minute = window.minute ?: 0
         val zone = ZoneId.systemDefault()
@@ -280,6 +371,9 @@ class NotificationScheduler @Inject constructor(
         var candidate = localNow.toLocalDate().atTime(hour, minute).atZone(zone)
         if (!candidate.isAfter(localNow)) {
             candidate = candidate.plusDays(1)
+        }
+        if (candidate.dayOfWeek == DayOfWeek.SATURDAY || candidate.dayOfWeek == DayOfWeek.SUNDAY) {
+            candidate = candidate.with(TemporalAdjusters.next(DayOfWeek.MONDAY))
         }
         return candidate
     }
@@ -318,21 +412,29 @@ class NotificationScheduler @Inject constructor(
         return candidate
     }
 
-    private fun workName(windowId: String) = "notification_window_$windowId"
-    private fun devRepeatWorkName(windowId: String) = "notification_dev_repeat_$windowId"
-
-    private fun windowTag(windowId: String) = "$WINDOW_TAG_PREFIX$windowId"
-
     private fun hasNotificationSources(settings: AppSettings): Boolean {
         val types = settings.notificationTypes
         return types.contains(NotificationType.WATCHLIST) || types.contains(NotificationType.MARKET_MOVERS)
     }
 
+    private fun resolveEffectiveFrequency(frequency: NotificationFrequency): NotificationFrequency {
+        return if (frequency == NotificationFrequency.DEV_FIVE_MINUTES && !DebugConfig.ENABLE_DEV_MODE) {
+            Log.w(TAG, "⚠️ DEV_FIVE_MINUTES frequency set but debug mode disabled - falling back to THREE_PER_DAY")
+            NotificationFrequency.THREE_PER_DAY
+        } else {
+            frequency
+        }
+    }
+
+    private fun isDevMode(frequency: NotificationFrequency): Boolean {
+        return DebugConfig.ENABLE_DEV_MODE && frequency == NotificationFrequency.DEV_FIVE_MINUTES
+    }
+
     private fun scheduleFingerprint(
         settings: AppSettings,
-        effectiveFrequency: NotificationFrequency,
         windows: List<ScheduleWindow>,
-        isDevMode: Boolean
+        isDevMode: Boolean,
+        exactAllowed: Boolean
     ): String {
         val sources = settings.notificationTypes
             .filter { it == NotificationType.WATCHLIST || it == NotificationType.MARKET_MOVERS }
@@ -349,10 +451,11 @@ class NotificationScheduler @Inject constructor(
             ).joinToString("|")
         }
         return listOf(
-            "freq=${effectiveFrequency.name}",
+            "freq=${settings.frequency.name}",
             "sources=$sources",
             "weekly=${settings.weeklyDay.name}",
             "dev=$isDevMode",
+            "exact=$exactAllowed",
             "windows=$windowsFingerprint"
         ).joinToString("::")
     }
@@ -367,42 +470,48 @@ class NotificationScheduler @Inject constructor(
             return true
         }
 
-        val infos = withContext(Dispatchers.IO) {
-            runCatching { workManager.getWorkInfosByTag(WORK_TAG).get() }.getOrDefault(emptyList())
+        val nowMillis = System.currentTimeMillis()
+        val windowIds = windows.map { it.id }.toSet()
+        val scheduledIds = diagnosticsRepository.getScheduledWindowIds()
+        if (scheduledIds != windowIds) {
+            Log.d(TAG, "Scheduled windows $scheduledIds != desired $windowIds; rescheduling")
+            return true
         }
-        val activeInfos = infos.filter {
-            it.state == WorkInfo.State.ENQUEUED ||
-                it.state == WorkInfo.State.RUNNING ||
-                it.state == WorkInfo.State.BLOCKED
-        }
-        if (activeInfos.isEmpty()) {
-            Log.d(TAG, "No active notification window workers found; rescheduling")
+        val nextRuns = diagnosticsRepository.getNextWindowRunTimes(windowIds)
+        if (windowIds.any { nextRuns[it] == null || nextRuns[it]!! <= nowMillis }) {
+            Log.d(TAG, "Missing or stale next run times; rescheduling")
             return true
         }
 
-        val scheduledWindowIds = activeInfos
-            .flatMap { it.tags }
-            .filter { it.startsWith(WINDOW_TAG_PREFIX) }
-            .map { it.removePrefix(WINDOW_TAG_PREFIX) }
-            .toSet()
-        val desiredWindowIds = windows.map { it.id }.toSet()
-        if (scheduledWindowIds != desiredWindowIds) {
-            Log.d(TAG, "Scheduled windows $scheduledWindowIds != desired $desiredWindowIds; rescheduling")
+        val robotsNext = diagnosticsRepository.getRobotsNextRun()
+        if (robotsNext == null || robotsNext <= nowMillis) {
+            Log.d(TAG, "Robots check not scheduled or stale; rescheduling")
             return true
+        }
+
+        val premarketKeys = diagnosticsRepository.getScheduledPremarketKeys()
+        if (premarketKeys.isNotEmpty()) {
+            val nextPremarket = diagnosticsRepository.getPremarketNextRuns(premarketKeys)
+            if (premarketKeys.any { nextPremarket[it] == null || nextPremarket[it]!! <= nowMillis }) {
+                Log.d(TAG, "Premarket alarms not scheduled or stale; rescheduling")
+                return true
+            }
         }
 
         return false
     }
 
+    private fun canScheduleExactAlarms(): Boolean {
+        return if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            alarmManager.canScheduleExactAlarms()
+        } else {
+            true
+        }
+    }
+
     companion object {
         private const val TAG = "NotificationScheduler"
-        const val WORK_TAG = "notification_window"
-        const val WINDOW_TAG_PREFIX = "window_"
-        const val DEV_IMMEDIATE_TAG = "dev_immediate"
-        const val DEV_REPEAT_TAG = "dev_repeat"
-        private const val ROBOTS_TXT_CHECK_TAG = "robots_txt_check"
-        private val CONSTRAINTS = Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED)
-            .build()
+        private const val DEV_REPEAT_DELAY_MINUTES = 5L
+        private const val MIN_DELAY_MILLIS = 5_000L
     }
 }

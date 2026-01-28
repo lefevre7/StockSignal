@@ -28,6 +28,12 @@ object CmpParser {
                 val rawSymbol = fields.getOrNull(0)?.trim().orEmpty()
                 val rawCompanyName = fields.getOrNull(1)?.trim().orEmpty()
                 val exchange = fields.getOrNull(2)?.trim()
+                val price = fields.getOrNull(3)?.trim()?.takeIf { it.isNotBlank() }?.toDoubleOrNull()
+                val percentChange = fields.getOrNull(4)
+                    ?.trim()
+                    ?.removeSuffix("%")
+                    ?.takeIf { it.isNotBlank() }
+                    ?.toDoubleOrNull()
                 
                 // Strip HTML tags and decode entities from symbol and company name
                 // Also unescape single quotes (JavaScript escaped quotes)
@@ -50,7 +56,9 @@ object CmpParser {
                         SearchResult(
                             symbol = symbol,
                             companyName = companyName,
-                            exchange = exchange?.takeIf { it.isNotBlank() }
+                            exchange = exchange?.takeIf { it.isNotBlank() },
+                            price = price,
+                            percentChange = percentChange
                         )
                     )
                 } else {

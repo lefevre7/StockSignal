@@ -125,6 +125,7 @@ class SignalsRepositoryTest {
             notifiedAt = null,
             source = "local",
             delivered = false,
+            dismissed = false,
             deepLink = "stocksignal://stock/AAPL",
             reasons = emptyList(),
             avgScore = 50,

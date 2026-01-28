@@ -1,5 +1,6 @@
 package com.example.stocksignal.ui.search
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -37,6 +38,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.annotation.VisibleForTesting
 import com.example.stocksignal.data.local.model.MarketMoverItem
 import com.example.stocksignal.data.stooq.model.MarketMoverDirection
 import com.example.stocksignal.data.stooq.model.SearchResult
@@ -249,7 +251,14 @@ private fun SearchField(
         onValueChange = onQueryChange,
         modifier = Modifier.fillMaxWidth(),
         placeholder = { Text("Search tickers, names, exchange") },
-        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+        leadingIcon = { 
+            Icon(
+                Icons.Filled.Search, 
+                contentDescription = null,
+                modifier = Modifier.padding(4.dp),
+                tint = MaterialTheme.colorScheme.primary
+            ) 
+        },
         trailingIcon = {
             if (query.isNotBlank()) {
                 IconButton(onClick = onClearQuery) {
@@ -326,13 +335,26 @@ private fun MarketMoverSuggestion(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
-                Text(text = mover.ticker, style = MaterialTheme.typography.headlineMedium)
-                CompanyExchangeText(
-                    companyName = mover.companyName,
-                    exchange = mover.exchange,
-                    style = MaterialTheme.typography.bodySmall
-                )
+            androidx.compose.foundation.layout.Box(
+                modifier = Modifier
+                    .background(
+                        color = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.5f),
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(4.dp)
+                    )
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+            ) {
+                Column {
+                    Text(
+                        text = mover.ticker,
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = androidx.compose.ui.graphics.Color.White
+                    )
+                    CompanyExchangeText(
+                        companyName = mover.companyName,
+                        exchange = mover.exchange,
+                        style = MaterialTheme.typography.bodySmall.copy(color = androidx.compose.ui.graphics.Color.White)
+                    )
+                }
             }
             Column(horizontalAlignment = Alignment.End) {
                 Text(
@@ -395,19 +417,62 @@ private fun SearchResultRow(
     onOpenDetail: () -> Unit,
     onAlertsToggle: (Boolean) -> Unit
 ) {
+    val hasPriceAndChange = result.price != null && result.percentChange != null
+    val priceText = formatPrice(result.price)
+    val changeText = formatPercentChange(result.percentChange)
+    val changeColor = when {
+        result.percentChange == null -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+        result.percentChange > 0 -> MaterialTheme.colorScheme.primary
+        result.percentChange < 0 -> MaterialTheme.colorScheme.error
+        else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+    }
+
     StockCard {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
-                Text(text = result.symbol, style = MaterialTheme.typography.headlineMedium)
-                CompanyExchangeText(
-                    companyName = result.companyName,
-                    exchange = result.exchange,
-                    style = MaterialTheme.typography.bodySmall
-                )
+            androidx.compose.foundation.layout.Box(
+                modifier = Modifier
+                    .background(
+                        color = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.5f),
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(4.dp)
+                    )
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+            ) {
+                Column {
+                    if (hasPriceAndChange) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = result.symbol,
+                                style = MaterialTheme.typography.headlineMedium,
+                                color = androidx.compose.ui.graphics.Color.White
+                            )
+                            Text(
+                                text = " - $priceText",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                                color = androidx.compose.ui.graphics.Color.White
+                            )
+                            Text(
+                                text = " ($changeText)",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                                color = changeColor
+                            )
+                        }
+                    } else {
+                        Text(
+                            text = result.symbol,
+                            style = MaterialTheme.typography.headlineMedium,
+                            color = androidx.compose.ui.graphics.Color.White
+                        )
+                    }
+                    CompanyExchangeText(
+                        companyName = result.companyName,
+                        exchange = result.exchange,
+                        style = MaterialTheme.typography.bodySmall.copy(color = androidx.compose.ui.graphics.Color.White)
+                    )
+                }
             }
         }
 
@@ -415,25 +480,6 @@ private fun SearchResultRow(
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             if (isInWatchlist) TagChip(label = "Watchlist")
             if (isMover) TagChip(label = "Mover")
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(
-                text = "Price —",
-                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-            )
-            Text(
-                text = "1D —",
-                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-            )
-            Text(
-                text = "Cap —",
-                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-            )
         }
 
         Spacer(modifier = Modifier.height(8.dp))
@@ -463,24 +509,30 @@ private fun toSearchResult(item: MarketMoverItem): SearchResult {
     return SearchResult(
         symbol = item.ticker,
         companyName = item.companyName,
-        exchange = item.exchange
+        exchange = item.exchange,
+        price = item.price,
+        percentChange = item.percentChange
     )
 }
 
-private fun formatPrice(price: Double?): String {
-    return if (price == null) {
-        "—"
-    } else {
-        "$" + String.format(Locale.getDefault(), "%.2f", price)
+@VisibleForTesting
+internal fun formatPrice(price: Double?): String {
+    if (price == null) return "—"
+    val absPrice = abs(price)
+    val decimals = when {
+        absPrice >= 100.0 -> 2
+        absPrice >= 1.0 -> 2
+        absPrice >= 0.1 -> 3
+        absPrice >= 0.01 -> 4
+        else -> 6
     }
+    return "$" + String.format(Locale.getDefault(), "%.${decimals}f", price)
 }
 
-private fun formatPercentChange(change: Double?): String {
-    return if (change == null) {
-        "—"
-    } else {
-        val sign = if (change > 0) "+" else if (change < 0) "-" else ""
-        val magnitude = abs(change)
-        sign + String.format(Locale.getDefault(), "%.2f", magnitude) + "%"
-    }
+@VisibleForTesting
+internal fun formatPercentChange(change: Double?): String {
+    if (change == null) return "—"
+    val sign = if (change > 0) "+" else if (change < 0) "-" else ""
+    val magnitude = abs(change)
+    return sign + String.format(Locale.getDefault(), "%.2f", magnitude) + "%"
 }

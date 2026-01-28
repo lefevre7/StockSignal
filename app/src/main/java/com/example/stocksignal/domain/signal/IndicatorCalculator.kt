@@ -126,7 +126,17 @@ object IndicatorCalculator {
         return (last - mean) / std
     }
 
-    fun returnZScore(closes: List<Double>, window: Int): Double? {
+    /**
+     * Computes the z-score of the latest close-to-close return using a rolling window.
+     *
+     * The function:
+     * - Computes close-to-close returns for the series.
+     * - Takes the last [window] returns.
+     * - Returns the z-score of the most recent return within that window.
+     *
+     * Returns null when there are fewer than window + 1 closes.
+     */
+    fun rollingReturnZScore(closes: List<Double>, window: Int): Double? {
         if (closes.size < window + 1) return null
         val returns = mutableListOf<Double>()
         for (i in 1 until closes.size) {

@@ -24,7 +24,7 @@ class IndicatorConfigTest {
         assertEquals(10, config.volumeZscoreWindow)
         assertEquals(7, config.atrPeriod)
         assertEquals(10, config.breakoutWindow)
-        assertEquals(10, config.returnsWindow)
+        assertEquals(10, config.rollingReturnZScoreWindow)
     }
 
     @Test
@@ -69,7 +69,7 @@ class IndicatorConfigTest {
         assertEquals(100, config.smaLongPeriod)
         assertEquals(30, config.volumeZscoreWindow)
         assertEquals(30, config.breakoutWindow)
-        assertEquals(30, config.returnsWindow)
+        assertEquals(30, config.rollingReturnZScoreWindow)
     }
 
     @Test
@@ -83,7 +83,7 @@ class IndicatorConfigTest {
         assertEquals(50, config.volumeZscoreWindow)
         assertEquals(20, config.atrPeriod)
         assertEquals(50, config.breakoutWindow)
-        assertEquals(50, config.returnsWindow)
+        assertEquals(50, config.rollingReturnZScoreWindow)
     }
 
     @Test
@@ -176,5 +176,20 @@ class IndicatorConfigTest {
         assertEquals(2.0, hours.bbStdDev, 0.01)
         assertEquals(2.5, years.bbStdDev, 0.01)
         assertTrue(years.bbStdDev > hours.bbStdDev)
+    }
+
+    @Test
+    fun `rolling return z-score window matches holding period`() {
+        val expected = mapOf(
+            HoldingPeriod.HOURS to 10,
+            HoldingPeriod.DAYS to 15,
+            HoldingPeriod.WEEKS to 20,
+            HoldingPeriod.MONTHS to 30,
+            HoldingPeriod.YEARS to 50
+        )
+        expected.forEach { (period, window) ->
+            val config = IndicatorConfig.forHoldingPeriod(period)
+            assertEquals(window, config.rollingReturnZScoreWindow)
+        }
     }
 }

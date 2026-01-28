@@ -1,6 +1,7 @@
 package com.example.stocksignal.ui.signals
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -12,17 +13,31 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxState
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -39,6 +54,8 @@ import com.example.stocksignal.ui.components.StockCard
 import com.example.stocksignal.ui.components.TagChip
 import com.example.stocksignal.ui.theme.StockSignalDimens
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @Composable
 fun SignalsFeedRoute(
@@ -48,7 +65,9 @@ fun SignalsFeedRoute(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     SignalsFeedScreen(
         state = state,
-        onOpenDetail = onOpenDetail
+        onOpenDetail = onOpenDetail,
+        onDismissEvent = viewModel::dismissEvent,
+        onUndoDismiss = viewModel::undoDismissEvent
     )
 }
 
@@ -57,6 +76,8 @@ fun SignalsFeedRoute(
 fun SignalsFeedScreen(
     state: SignalsFeedUiState,
     onOpenDetail: (String, String?) -> Unit,
+    onDismissEvent: (String) -> Unit,
+    onUndoDismiss: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     var filter by remember { mutableStateOf(SignalsFilter.ALL) }
@@ -65,51 +86,95 @@ fun SignalsFeedScreen(
         SignalsFilter.WATCHLIST -> state.events.filter { it.type == NotificationEventType.WATCHLIST_SIGNAL }
         SignalsFilter.MOVERS -> state.events.filter { it.type == NotificationEventType.MARKET_MOVER }
     }
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
 
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .padding(StockSignalDimens.cardPadding)
-    ) {
-        Text(text = "Signals", style = MaterialTheme.typography.headlineLarge)
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = "Latest signals for your watchlist and market movers.",
-            style = MaterialTheme.typography.bodySmall
-        )
-        Spacer(modifier = Modifier.height(12.dp))
-
-        FlowRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            SignalsFilter.values().forEach { option ->
-                FilterChip(
-                    selected = filter == option,
-                    onClick = { filter = option },
-                    label = { Text(option.label) }
-                )
+    fun showUndoSnackbar(eventId: String) {
+        scope.launch {
+            snackbarHostState.currentSnackbarData?.dismiss()
+            val timeoutJob = launch {
+                delay(5_000)
+                snackbarHostState.currentSnackbarData?.dismiss()
+            }
+            val result = snackbarHostState.showSnackbar(
+                message = "Signal dismissed",
+                actionLabel = "Undo",
+                duration = SnackbarDuration.Indefinite
+            )
+            timeoutJob.cancel()
+            if (result == SnackbarResult.ActionPerformed) {
+                onUndoDismiss(eventId)
             }
         }
+    }
 
-        Spacer(modifier = Modifier.height(12.dp))
-        if (filtered.isEmpty()) {
-            StockCard {
-                Text(text = "No signals yet.", style = MaterialTheme.typography.bodySmall)
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Signals appear when we detect strong buy/sell events.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-        } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                items(filtered, key = { it.id }) { event ->
-                    SignalEventCard(
-                        event = event,
-                        onOpenDetail = { onOpenDetail(event.ticker, event.id) }
+    Scaffold(
+        modifier = modifier.fillMaxSize(),
+        snackbarHost = { SnackbarHost(snackbarHostState) }
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .padding(StockSignalDimens.cardPadding)
+        ) {
+            Text(text = "Signals", style = MaterialTheme.typography.headlineLarge)
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Latest signals for your watchlist and market movers.",
+                style = MaterialTheme.typography.bodySmall
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                SignalsFilter.values().forEach { option ->
+                    FilterChip(
+                        selected = filter == option,
+                        onClick = { filter = option },
+                        label = { Text(option.label) }
                     )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+            if (filtered.isEmpty()) {
+                StockCard {
+                    Text(text = "No signals yet.", style = MaterialTheme.typography.bodySmall)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Signals appear when we detect strong buy/sell events.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            } else {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    items(filtered, key = { it.id }) { event ->
+                        val dismissState = rememberSwipeToDismissBoxState(
+                            confirmValueChange = { value ->
+                                if (value == SwipeToDismissBoxValue.Settled) return@rememberSwipeToDismissBoxState true
+                                onDismissEvent(event.id)
+                                showUndoSnackbar(event.id)
+                                true
+                            }
+                        )
+
+                        SwipeToDismissBox(
+                            state = dismissState,
+                            backgroundContent = {
+                                DismissBackground(state = dismissState)
+                            },
+                            content = {
+                                SignalEventCard(
+                                    event = event,
+                                    onOpenDetail = { onOpenDetail(event.ticker, event.id) }
+                                )
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -120,6 +185,36 @@ private enum class SignalsFilter(val label: String) {
     ALL("All"),
     WATCHLIST("Watchlist"),
     MOVERS("Movers")
+}
+
+@Composable
+private fun DismissBackground(state: SwipeToDismissBoxState) {
+    val direction = state.dismissDirection
+    val alignment = when (direction) {
+        SwipeToDismissBoxValue.StartToEnd -> Arrangement.Start
+        SwipeToDismissBoxValue.EndToStart -> Arrangement.End
+        SwipeToDismissBoxValue.Settled -> Arrangement.End
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.errorContainer)
+            .padding(horizontal = 24.dp),
+        horizontalArrangement = alignment,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Default.Delete,
+            contentDescription = "Dismiss",
+            tint = MaterialTheme.colorScheme.onErrorContainer
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = "Dismiss",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onErrorContainer
+        )
+    }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -165,6 +260,7 @@ private fun SignalEventCard(
             confidence = aiConfidence,
             scoreLabel = "AI Score",
             confidenceLabel = "AI Confidence"
+            // Note: Historical signals don't show generation state
         )
 
         Spacer(modifier = Modifier.height(6.dp))
