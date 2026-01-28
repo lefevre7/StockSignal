@@ -699,7 +699,7 @@ private fun scheduleDescription(frequency: NotificationFrequency): String {
         NotificationFrequency.ONLY_WHEN_OPEN ->
             "Background windows are disabled when notifications only run on open."
         NotificationFrequency.DEV_ONE_MINUTE ->
-            "⚡ DEV MODE: Runs immediately + every 15min. Check Logcat for 'NotificationWindowWorker'."
+            "⚡ DEV MODE: Runs immediately + every 2min. Check Logcat for 'NotificationWindowWorker'."
     }
 }
 
@@ -736,7 +736,7 @@ private fun frequencyLabel(option: NotificationFrequency): String {
         NotificationFrequency.ONE_PER_DAY -> "1x/day"
         NotificationFrequency.ONE_PER_WEEK -> "1x/week"
         NotificationFrequency.ONLY_WHEN_OPEN -> "Only when app is open"
-        NotificationFrequency.DEV_ONE_MINUTE -> "⚡ 1min (DEV)"
+        NotificationFrequency.DEV_ONE_MINUTE -> "⚡ 2min (DEV)"
     }
 }
 

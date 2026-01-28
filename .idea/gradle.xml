@@ -11,7 +11,7 @@
           <set>
             <option value="$PROJECT_DIR$" />
             <option value="$PROJECT_DIR$/app" />
-            <option value="$PROJECT_DIR$/gemma3_270m_model" />
+            <option value="$PROJECT_DIR$/gemma3_1b_model" />
           </set>
         </option>
       </GradleProjectSettings>

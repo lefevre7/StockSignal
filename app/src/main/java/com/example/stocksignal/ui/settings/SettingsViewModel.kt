@@ -17,6 +17,7 @@ import com.example.stocksignal.data.settings.SignalSensitivity
 import com.example.stocksignal.data.settings.SnoozeDurationOption
 import com.example.stocksignal.data.translation.NewsTranslationService
 import com.example.stocksignal.domain.model.ChartRange
+import com.example.stocksignal.notifications.NotificationDiagnosticsRepository
 import com.example.stocksignal.notifications.NotificationScheduler
 import com.example.stocksignal.notifications.NotificationTestSender
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -37,6 +38,7 @@ class SettingsViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val notificationTestSender: NotificationTestSender,
     private val notificationScheduler: NotificationScheduler,
+    private val diagnosticsRepository: NotificationDiagnosticsRepository,
     private val workManager: WorkManager,
     private val translationService: NewsTranslationService
 ) : ViewModel() {
@@ -94,7 +96,7 @@ class SettingsViewModel @Inject constructor(
                     NotificationFrequency.ONE_PER_DAY -> "1x/day"
                     NotificationFrequency.ONE_PER_WEEK -> "1x/week"
                     NotificationFrequency.ONLY_WHEN_OPEN -> "Only when open"
-                    NotificationFrequency.DEV_ONE_MINUTE -> "DEV mode (15min)"
+                    NotificationFrequency.DEV_ONE_MINUTE -> "DEV mode (2min)"
                 }
                 showToast("Frequency: $label - workers rescheduled")
                 Log.d(TAG, "Frequency changed to $frequency, workers rescheduled")
@@ -269,9 +271,19 @@ class SettingsViewModel @Inject constructor(
     fun checkWorkerStatus() {
         viewModelScope.launch {
             try {
-                val windowWorkers = workManager.getWorkInfosByTag("notification_window").get()
-                val bootstrapWorkers = workManager.getWorkInfosByTag("notification_bootstrap").get()
+                val windowWorkers = withContext(Dispatchers.IO) {
+                    workManager.getWorkInfosByTag(NotificationScheduler.WORK_TAG).get()
+                }
+                val bootstrapWorkers = withContext(Dispatchers.IO) {
+                    workManager.getWorkInfosByTag("notification_bootstrap").get()
+                }
                 val nowMillis = System.currentTimeMillis()
+                val windowIds = windowWorkers
+                    .flatMap { it.tags }
+                    .filter { it.startsWith(NotificationScheduler.WINDOW_TAG_PREFIX) }
+                    .map { it.removePrefix(NotificationScheduler.WINDOW_TAG_PREFIX) }
+                    .toSet()
+                val runInfoByWindow = diagnosticsRepository.getWindowRunInfo(windowIds)
                 
                 val status = buildString {
                     appendLine("📊 Worker Status:")
@@ -293,21 +305,24 @@ class SettingsViewModel @Inject constructor(
                             appendLine("   Worker ${idx + 1}: $state")
                             
                             // Show run attempt count
-                            appendLine("     Run attempts: ${info.runAttemptCount}")
-                            
-                            // Show last run time if available (for periodic workers)
-                            if (info.state == WorkInfo.State.ENQUEUED) {
-                                val periodStartTime = info.outputData.getLong("lastRunTime", 0L)
-                                if (periodStartTime > 0) {
-                                    val elapsed = (nowMillis - periodStartTime) / 60000
-                                    appendLine("     Last ran: ${elapsed}min ago")
-                                }
-                            }
+                            appendLine("     Run attempts (retries): ${info.runAttemptCount}")
                             
                             // Show window ID if available
-                            val windowId = info.tags.find { it.startsWith("window_") }?.removePrefix("window_")
+                            val windowId = info.tags.find {
+                                it.startsWith(NotificationScheduler.WINDOW_TAG_PREFIX)
+                            }?.removePrefix(NotificationScheduler.WINDOW_TAG_PREFIX)
                             if (windowId != null) {
                                 appendLine("     Window: $windowId")
+                                val runInfo = runInfoByWindow[windowId]
+                                appendLine(
+                                    "     Last run: ${formatLastRun(runInfo?.lastRunAtMillis, nowMillis)}"
+                                )
+                                if (!runInfo?.lastResult.isNullOrBlank()) {
+                                    appendLine("     Last result: ${runInfo?.lastResult}")
+                                }
+                                if (!runInfo?.lastReason.isNullOrBlank()) {
+                                    appendLine("     Last reason: ${runInfo?.lastReason}")
+                                }
                             }
                         }
                     }
@@ -332,7 +347,7 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val settings = settingsRepository.settingsFlow.first()
-                notificationScheduler.schedule(settings)
+                notificationScheduler.schedule(settings, force = true)
                 _errorMessage.value = "✓ Workers scheduled! Frequency: ${settings.frequency}, Types: ${settings.notificationTypes.joinToString()}"
                 Log.d(TAG, "Force scheduled workers for frequency: ${settings.frequency}")
             } catch (e: Exception) {
@@ -360,6 +375,19 @@ class SettingsViewModel @Inject constructor(
             val unit = if (minutes == 1L) "minute" else "minutes"
             "⏳ Next run in $minutes $unit"
         }
+    }
+
+    private fun formatLastRun(lastRunAtMillis: Long?, nowMillis: Long): String {
+        if (lastRunAtMillis == null) return "never"
+        val diffMillis = nowMillis - lastRunAtMillis
+        if (diffMillis < 0) return "in the future"
+        val minutes = diffMillis / 60_000
+        if (minutes < 1) return "just now"
+        if (minutes < 60) return "${minutes}m ago"
+        val hours = minutes / 60
+        if (hours < 24) return "${hours}h ago"
+        val days = hours / 24
+        return "${days}d ago"
     }
 
     private fun defaultSettings(): AppSettings {

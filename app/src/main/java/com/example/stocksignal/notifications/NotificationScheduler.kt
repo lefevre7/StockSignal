@@ -8,6 +8,7 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
 import com.example.stocksignal.data.settings.AppSettings
@@ -27,20 +28,24 @@ import java.time.temporal.TemporalAdjusters
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Singleton
 class NotificationScheduler @Inject constructor(
-    @ApplicationContext context: Context
+    @ApplicationContext context: Context,
+    private val diagnosticsRepository: NotificationDiagnosticsRepository
 ) {
 
     private val workManager = WorkManager.getInstance(context)
 
-    fun schedule(settings: AppSettings) {
+    suspend fun schedule(settings: AppSettings, force: Boolean = false) {
         Log.d(TAG, "=== Notification Scheduler Start ===")
         Log.d(TAG, "Frequency: ${settings.frequency}, Types: ${settings.notificationTypes}")
         
-        workManager.cancelAllWorkByTag(WORK_TAG)
         if (!hasNotificationSources(settings)) {
+            workManager.cancelAllWorkByTag(WORK_TAG)
+            diagnosticsRepository.clearScheduleFingerprint()
             Log.w(TAG, "❌ Background scheduling DISABLED - no notification sources enabled")
             Log.w(TAG, "   Enable Watchlist or Market Movers in Settings to receive background notifications")
             return
@@ -55,6 +60,8 @@ class NotificationScheduler @Inject constructor(
         }
         
         if (effectiveFrequency == NotificationFrequency.ONLY_WHEN_OPEN) {
+            workManager.cancelAllWorkByTag(WORK_TAG)
+            diagnosticsRepository.clearScheduleFingerprint()
             Log.d(TAG, "Background scheduling disabled (only when open)")
             return
         }
@@ -65,27 +72,35 @@ class NotificationScheduler @Inject constructor(
             return
         }
         
+        val devInterval = Duration.ofMinutes(2)
         val interval = when (effectiveFrequency) {
             NotificationFrequency.ONE_PER_WEEK -> Duration.ofDays(7)
-            NotificationFrequency.DEV_ONE_MINUTE -> Duration.ofMinutes(15) // WorkManager minimum is 15 min
+            NotificationFrequency.DEV_ONE_MINUTE -> devInterval
             else -> Duration.ofDays(1)
         }
         
-        // For DEV mode, use expedited one-time work to run immediately, then periodic
+        // For DEV mode, use one-time work to run immediately, then repeat via chained one-time work
         val isDevMode = effectiveFrequency == NotificationFrequency.DEV_ONE_MINUTE && DebugConfig.ENABLE_DEV_MODE
 
+        val fingerprint = scheduleFingerprint(settings, effectiveFrequency, windows, isDevMode)
+        if (!force && !shouldReschedule(fingerprint, windows)) {
+            Log.d(TAG, "Schedule unchanged and workers present; skipping reschedule")
+            return
+        }
+
+        workManager.cancelAllWorkByTag(WORK_TAG)
         Log.d(TAG, "Scheduling ${windows.size} notification window(s) with ${interval.toMinutes()}min interval (devMode=$isDevMode)")
         windows.forEach { window ->
             if (isDevMode) {
-                // DEV MODE: Schedule periodic work with minimum 15-minute interval
-                // AND run immediately with one-time work
-                Log.d(TAG, "🔧 DEV MODE: Scheduling immediate + periodic work for ${window.id}")
+                // DEV MODE: Schedule immediate work and then repeat via chained one-time work
+                Log.d(TAG, "🔧 DEV MODE: Scheduling immediate + repeat work for ${window.id}")
                 
                 // Immediate one-time execution
                 val immediateRequest = OneTimeWorkRequestBuilder<NotificationWindowWorker>()
                     .setConstraints(CONSTRAINTS)
                     .addTag(WORK_TAG)
                     .addTag(DEV_IMMEDIATE_TAG)
+                    .addTag(windowTag(window.id))
                     .setInputData(workDataOf(NotificationWindowWorker.KEY_WINDOW_ID to window.id))
                     .build()
                 
@@ -96,21 +111,21 @@ class NotificationScheduler @Inject constructor(
                 )
                 Log.d(TAG, "⚡ DEV: Queued immediate execution for ${window.id}")
                 
-                // Periodic work with 15-min minimum (WorkManager constraint)
-                val periodicRequest = PeriodicWorkRequestBuilder<NotificationWindowWorker>(
-                    15, TimeUnit.MINUTES
-                )
+                val repeatRequest = OneTimeWorkRequestBuilder<NotificationWindowWorker>()
                     .setConstraints(CONSTRAINTS)
+                    .setInitialDelay(devInterval.toMinutes(), TimeUnit.MINUTES)
                     .addTag(WORK_TAG)
+                    .addTag(DEV_REPEAT_TAG)
+                    .addTag(windowTag(window.id))
                     .setInputData(workDataOf(NotificationWindowWorker.KEY_WINDOW_ID to window.id))
                     .build()
-                
-                workManager.enqueueUniquePeriodicWork(
-                    workName(window.id),
-                    ExistingPeriodicWorkPolicy.REPLACE,
-                    periodicRequest
+
+                workManager.enqueueUniqueWork(
+                    devRepeatWorkName(window.id),
+                    ExistingWorkPolicy.REPLACE,
+                    repeatRequest
                 )
-                Log.d(TAG, "✓ DEV: Scheduled periodic (15min) for ${window.id}")
+                Log.d(TAG, "✓ DEV: Scheduled repeat (${devInterval.toMinutes()}min) for ${window.id}")
             } else {
                 // Normal mode: Schedule with calculated delay
                 val delay = initialDelay(window, settings)
@@ -121,6 +136,7 @@ class NotificationScheduler @Inject constructor(
                     .setConstraints(CONSTRAINTS)
                     .setInitialDelay(delay.toMinutes(), TimeUnit.MINUTES)
                     .addTag(WORK_TAG)
+                    .addTag(windowTag(window.id))
                     .setInputData(workDataOf(NotificationWindowWorker.KEY_WINDOW_ID to window.id))
                     .build()
 
@@ -132,6 +148,8 @@ class NotificationScheduler @Inject constructor(
                 Log.d(TAG, "✓ Scheduled window ${window.id} with initial delay ${delay.toMinutes()}m (${delay.toHours()}h)")
             }
         }
+
+        diagnosticsRepository.setLastScheduleFingerprint(fingerprint)
         
         Log.d(TAG, "=== Notification Scheduler Complete ===")
         
@@ -301,16 +319,87 @@ class NotificationScheduler @Inject constructor(
     }
 
     private fun workName(windowId: String) = "notification_window_$windowId"
+    private fun devRepeatWorkName(windowId: String) = "notification_dev_repeat_$windowId"
+
+    private fun windowTag(windowId: String) = "$WINDOW_TAG_PREFIX$windowId"
 
     private fun hasNotificationSources(settings: AppSettings): Boolean {
         val types = settings.notificationTypes
         return types.contains(NotificationType.WATCHLIST) || types.contains(NotificationType.MARKET_MOVERS)
     }
 
+    private fun scheduleFingerprint(
+        settings: AppSettings,
+        effectiveFrequency: NotificationFrequency,
+        windows: List<ScheduleWindow>,
+        isDevMode: Boolean
+    ): String {
+        val sources = settings.notificationTypes
+            .filter { it == NotificationType.WATCHLIST || it == NotificationType.MARKET_MOVERS }
+            .sortedBy { it.name }
+            .joinToString(",")
+        val windowsFingerprint = windows.joinToString(";") { window ->
+            listOf(
+                window.id,
+                window.type.name,
+                window.hour?.toString() ?: "",
+                window.minute?.toString() ?: "",
+                window.zoneId ?: "",
+                window.offsetMinutes?.toString() ?: ""
+            ).joinToString("|")
+        }
+        return listOf(
+            "freq=${effectiveFrequency.name}",
+            "sources=$sources",
+            "weekly=${settings.weeklyDay.name}",
+            "dev=$isDevMode",
+            "windows=$windowsFingerprint"
+        ).joinToString("::")
+    }
+
+    private suspend fun shouldReschedule(
+        fingerprint: String,
+        windows: List<ScheduleWindow>
+    ): Boolean {
+        val lastFingerprint = diagnosticsRepository.getLastScheduleFingerprint()
+        if (lastFingerprint != fingerprint) {
+            Log.d(TAG, "Schedule fingerprint changed or missing; rescheduling")
+            return true
+        }
+
+        val infos = withContext(Dispatchers.IO) {
+            runCatching { workManager.getWorkInfosByTag(WORK_TAG).get() }.getOrDefault(emptyList())
+        }
+        val activeInfos = infos.filter {
+            it.state == WorkInfo.State.ENQUEUED ||
+                it.state == WorkInfo.State.RUNNING ||
+                it.state == WorkInfo.State.BLOCKED
+        }
+        if (activeInfos.isEmpty()) {
+            Log.d(TAG, "No active notification window workers found; rescheduling")
+            return true
+        }
+
+        val scheduledWindowIds = activeInfos
+            .flatMap { it.tags }
+            .filter { it.startsWith(WINDOW_TAG_PREFIX) }
+            .map { it.removePrefix(WINDOW_TAG_PREFIX) }
+            .toSet()
+        val desiredWindowIds = windows.map { it.id }.toSet()
+        if (scheduledWindowIds != desiredWindowIds) {
+            Log.d(TAG, "Scheduled windows $scheduledWindowIds != desired $desiredWindowIds; rescheduling")
+            return true
+        }
+
+        return false
+    }
+
     companion object {
         private const val TAG = "NotificationScheduler"
-        private const val WORK_TAG = "notification_window"
-        private const val DEV_IMMEDIATE_TAG = "dev_immediate"
+        const val WORK_TAG = "notification_window"
+        const val WINDOW_TAG_PREFIX = "window_"
+        const val DEV_IMMEDIATE_TAG = "dev_immediate"
+        const val DEV_REPEAT_TAG = "dev_repeat"
         private const val ROBOTS_TXT_CHECK_TAG = "robots_txt_check"
         private val CONSTRAINTS = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)

@@ -1,6 +1,7 @@
 package com.example.stocksignal.data.stooq.di
 
 import com.example.stocksignal.data.stooq.network.StooqApi
+import com.example.stocksignal.data.stooq.network.StooqBlockInterceptor
 import com.example.stocksignal.data.stooq.repository.StooqRepository
 import dagger.Module
 import dagger.Provides
@@ -65,6 +66,7 @@ object StooqModule {
     @Provides
     @Singleton
     fun provideOkHttpClient(
+        stooqBlockInterceptor: StooqBlockInterceptor,
         headerInterceptor: Interceptor,
         loggingInterceptor: HttpLoggingInterceptor
     ): OkHttpClient {
@@ -72,6 +74,7 @@ object StooqModule {
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
+            .addInterceptor(stooqBlockInterceptor)
             .addInterceptor(headerInterceptor)
             .addInterceptor(loggingInterceptor)
             .build()

@@ -1,10 +1,20 @@
 package com.example.stocksignal.notifications
 
 import android.content.Context
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.util.Log
+import androidx.core.app.NotificationCompat
 import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.Constraints
+import androidx.work.NetworkType
 import androidx.work.WorkerParameters
+import androidx.work.workDataOf
+import com.example.stocksignal.R
 import com.example.stocksignal.data.local.entity.WatchlistItemEntity
 import com.example.stocksignal.data.local.repository.WatchlistRepository
 import com.example.stocksignal.data.repository.SignalsRepository
@@ -12,6 +22,7 @@ import com.example.stocksignal.data.repository.StockRepository
 import com.example.stocksignal.data.settings.NotificationFrequency
 import com.example.stocksignal.data.settings.NotificationType
 import com.example.stocksignal.data.settings.SettingsRepository
+import com.example.stocksignal.data.settings.AppSettings
 import com.example.stocksignal.data.stooq.model.MarketMoverDirection
 import com.example.stocksignal.data.stooq.model.MarketMoverRange
 import com.example.stocksignal.data.stooq.model.Result as StooqResult
@@ -36,6 +47,7 @@ import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
+import java.util.concurrent.TimeUnit
 
 @HiltWorker
 class NotificationWindowWorker @AssistedInject constructor(
@@ -46,7 +58,8 @@ class NotificationWindowWorker @AssistedInject constructor(
     private val marketMoversRepository: MarketMoversRepository,
     private val stockRepository: StockRepository,
     private val signalsRepository: SignalsRepository,
-    private val notificationQueueProcessor: NotificationQueueProcessor
+    private val notificationQueueProcessor: NotificationQueueProcessor,
+    private val diagnosticsRepository: NotificationDiagnosticsRepository
 ) : CoroutineWorker(context, params) {
     private val overviewCache = mutableMapOf<String, StockOverview?>()
 
@@ -68,8 +81,15 @@ class NotificationWindowWorker @AssistedInject constructor(
             return Result.failure()
         }
 
-        return try {
+        var scheduleNextDev = false
+        suspend fun recordRun(result: String, reason: String? = null) {
+            runCatching { diagnosticsRepository.recordWindowRun(windowId, result, reason) }
+        }
+
+        val result = try {
             val settings = settingsRepository.settingsFlow.first()
+            maybeShowDebugStartNotification(windowId, settings)
+            val devMode = isDevMode(settings)
             Log.d(TAG, "📋 Settings loaded:")
             Log.d(TAG, "   Frequency: ${settings.frequency}")
             Log.d(TAG, "   NotificationTypes: ${settings.notificationTypes}")
@@ -79,10 +99,14 @@ class NotificationWindowWorker @AssistedInject constructor(
             val moversEnabled = settings.notificationTypes.contains(NotificationType.MARKET_MOVERS)
             if (!watchlistEnabled && !moversEnabled) {
                 Log.w(TAG, "⚠️ Skipping window $windowId - no notification sources enabled")
+                recordRun("skipped", "no notification sources enabled")
+                scheduleNextDev = devMode
                 return Result.success()
             }
             if (settings.frequency == NotificationFrequency.ONLY_WHEN_OPEN) {
                 Log.d(TAG, "⏭️ Skipping window $windowId - frequency is only when open")
+                recordRun("skipped", "frequency only when open")
+                scheduleNextDev = devMode
                 return Result.success()
             }
 
@@ -338,12 +362,20 @@ class NotificationWindowWorker @AssistedInject constructor(
             if (candidates.isEmpty()) {
                 Log.i(TAG, "📭 No candidates generated, processing queued events...")
                 notificationQueueProcessor.processQueued(settings)
+                recordRun(
+                    "success",
+                    "candidates=0 (watchlist=$watchlistCandidates movers=$moverCandidates)"
+                )
             } else {
                 Log.i(TAG, "📬 Processing ${candidates.size} candidate(s)...")
                 candidates.forEachIndexed { idx, event ->
                     Log.i(TAG, "   ${idx + 1}. ${event.ticker}: ${event.tier.label} (score=${event.score})")
                 }
                 notificationQueueProcessor.processCandidates(candidates, settings)
+                recordRun(
+                    "success",
+                    "candidates=${candidates.size} (watchlist=$watchlistCandidates movers=$moverCandidates)"
+                )
             }
             
             if (DebugConfig.ENABLE_DEV_MODE) {
@@ -355,20 +387,31 @@ class NotificationWindowWorker @AssistedInject constructor(
             } else {
                 Log.d(TAG, "NotificationWindowWorker completed successfully - window: $windowId")
             }
+            scheduleNextDev = devMode
             Result.success()
         } catch (e: java.io.IOException) {
             Log.e(TAG, "❌ Network error in window $windowId, will retry", e)
+            recordRun("retry", "network error: ${e.message}")
             Result.retry()
         } catch (e: android.database.sqlite.SQLiteException) {
             Log.e(TAG, "❌ Database error in window $windowId, will retry", e)
+            recordRun("retry", "database error: ${e.message}")
             Result.retry()
         } catch (e: kotlinx.coroutines.CancellationException) {
             Log.w(TAG, "⚠️ Worker cancelled for window $windowId", e)
+            recordRun("cancelled", "cancelled")
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "❌ Unexpected error in window $windowId, will not retry", e)
+            recordRun("failure", "unexpected error: ${e.message}")
             Result.failure()
         }
+
+        if (scheduleNextDev) {
+            scheduleDevRepeat(windowId)
+        }
+
+        return result
     }
 
     private fun buildEvent(
@@ -569,11 +612,62 @@ class NotificationWindowWorker @AssistedInject constructor(
         return !age.isNegative && age <= STALE_THRESHOLD
     }
 
+    private fun isDevMode(settings: AppSettings): Boolean {
+        return DebugConfig.ENABLE_DEV_MODE &&
+            settings.frequency == NotificationFrequency.DEV_ONE_MINUTE
+    }
+
+    private fun maybeShowDebugStartNotification(windowId: String, settings: AppSettings) {
+        if (!isDevMode(settings)) return
+        val manager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val channel = NotificationChannel(
+            DEBUG_CHANNEL_ID,
+            "Debug worker",
+            NotificationManager.IMPORTANCE_LOW
+        )
+        manager.createNotificationChannel(channel)
+        val notification = NotificationCompat.Builder(applicationContext, DEBUG_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("Debug: Notification window")
+            .setContentText("Worker started (window=$windowId)")
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setAutoCancel(true)
+            .build()
+        manager.notify(debugNotificationId(windowId), notification)
+    }
+
+    private fun scheduleDevRepeat(windowId: String) {
+        val request = OneTimeWorkRequestBuilder<NotificationWindowWorker>()
+            .setConstraints(DEV_CONSTRAINTS)
+            .setInitialDelay(DEV_REPEAT_DELAY_MINUTES, TimeUnit.MINUTES)
+            .addTag(NotificationScheduler.WORK_TAG)
+            .addTag(NotificationScheduler.DEV_REPEAT_TAG)
+            .addTag("${NotificationScheduler.WINDOW_TAG_PREFIX}$windowId")
+            .setInputData(workDataOf(KEY_WINDOW_ID to windowId))
+            .build()
+
+        WorkManager.getInstance(applicationContext).enqueueUniqueWork(
+            "notification_dev_repeat_$windowId",
+            ExistingWorkPolicy.REPLACE,
+            request
+        )
+    }
+
+    private fun debugNotificationId(windowId: String): Int {
+        return DEBUG_NOTIFICATION_ID_BASE + (windowId.hashCode() and 0x0FFF)
+    }
+
     companion object {
         const val KEY_WINDOW_ID = "window_id"
         private const val TAG = "NotificationWindowWorker"
         private const val MAX_MOVERS = 3
         private const val MIN_CANDLES_FOR_SIGNAL = 20
         private val STALE_THRESHOLD = Duration.ofDays(7)
+        private const val DEBUG_CHANNEL_ID = "debug_worker"
+        private const val DEBUG_NOTIFICATION_ID_BASE = 9100
+        private const val DEV_REPEAT_DELAY_MINUTES = 2L
+        private val DEV_CONSTRAINTS = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
     }
 }

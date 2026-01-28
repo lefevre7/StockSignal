@@ -8,7 +8,7 @@ enum class NotificationFrequency {
     ONE_PER_DAY,
     ONE_PER_WEEK,
     ONLY_WHEN_OPEN,
-    DEV_ONE_MINUTE // Development/testing only - runs every minute
+    DEV_ONE_MINUTE // Development/testing only - runs every 2 minutes (dev only)
 }
 
 enum class NotificationType {

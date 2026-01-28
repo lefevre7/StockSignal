@@ -6,6 +6,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import androidx.work.Configuration
 import androidx.work.WorkManager
 import androidx.work.testing.WorkManagerTestInitHelper
+import com.example.stocksignal.data.settings.settingsDataStore
 import com.example.stocksignal.data.settings.AppSettings
 import com.example.stocksignal.data.settings.HoldingPeriod
 import com.example.stocksignal.data.settings.NotificationFrequency
@@ -19,6 +20,7 @@ import com.example.stocksignal.domain.model.ChartRange
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
+import kotlinx.coroutines.runBlocking
 import java.time.DayOfWeek
 import java.util.concurrent.TimeUnit
 
@@ -34,7 +36,8 @@ class NotificationSchedulerTest {
         WorkManagerTestInitHelper.initializeTestWorkManager(context, config)
         val workManager = WorkManager.getInstance(context)
 
-        val scheduler = NotificationScheduler(context)
+        val diagnosticsRepository = NotificationDiagnosticsRepository(context.settingsDataStore)
+        val scheduler = NotificationScheduler(context, diagnosticsRepository)
         val settings = AppSettings(
             frequency = NotificationFrequency.THREE_PER_DAY,
             notificationTypes = setOf(
@@ -79,7 +82,9 @@ class NotificationSchedulerTest {
             holdingPeriod = HoldingPeriod.DAYS
         )
 
-        scheduler.schedule(settings)
+        runBlocking {
+            scheduler.schedule(settings)
+        }
 
         val infos = workManager.getWorkInfosByTag("notification_window")
             .get(5, TimeUnit.SECONDS)

@@ -3,6 +3,7 @@ package com.example.stocksignal.data.settings
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import com.example.stocksignal.notifications.NotificationDiagnosticsRepository
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -24,5 +25,13 @@ object SettingsModule {
     @Singleton
     fun provideSettingsRepository(dataStore: DataStore<Preferences>): SettingsRepository {
         return SettingsRepository(dataStore)
+    }
+
+    @Provides
+    @Singleton
+    fun provideNotificationDiagnosticsRepository(
+        dataStore: DataStore<Preferences>
+    ): NotificationDiagnosticsRepository {
+        return NotificationDiagnosticsRepository(dataStore)
     }
 }

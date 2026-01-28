@@ -4,6 +4,7 @@ import android.util.Log
 import com.example.stocksignal.data.stooq.model.Result
 import com.example.stocksignal.data.stooq.model.SearchResult
 import com.example.stocksignal.data.stooq.network.StooqApi
+import com.example.stocksignal.data.stooq.network.StooqBlockedException
 import com.example.stocksignal.data.stooq.parser.CmpCampaignParser
 import com.example.stocksignal.data.stooq.parser.CmpParser
 import javax.inject.Inject
@@ -51,6 +52,7 @@ class StooqSearchRepository @Inject constructor(
             }
             campaignId
         } catch (e: Exception) {
+            if (e is StooqBlockedException) throw e
             Log.e(TAG, "Failed to fetch cmp campaign id", e)
             null
         }

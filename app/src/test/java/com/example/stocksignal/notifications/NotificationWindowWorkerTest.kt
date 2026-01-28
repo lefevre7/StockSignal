@@ -50,6 +50,7 @@ class NotificationWindowWorkerTest {
     private val stockRepository = mockk<StockRepository>()
     private val signalsRepository = mockk<SignalsRepository>()
     private val notificationQueueProcessor = mockk<NotificationQueueProcessor>()
+    private val diagnosticsRepository = mockk<NotificationDiagnosticsRepository>(relaxed = true)
 
     @Test
     fun `processes watchlist candidates`() = runTest {
@@ -144,7 +145,8 @@ class NotificationWindowWorkerTest {
                     marketMoversRepository,
                     stockRepository,
                     signalsRepository,
-                    notificationQueueProcessor
+                    notificationQueueProcessor,
+                    diagnosticsRepository
                 )
             }
         }
