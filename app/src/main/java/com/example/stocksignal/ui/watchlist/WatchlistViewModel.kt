@@ -133,9 +133,21 @@ class WatchlistViewModel @Inject constructor(
     private suspend fun fetchMarketData(symbol: String) {
         try {
             val existing = marketData.value[symbol]
-            if (existing != null && !isStale(existing)) return
+            var usedCached = false
+            if (existing == null) {
+                when (val cached = stockRepository.getFreshCachedSeries(symbol, ChartRange.ONE_DAY)) {
+                    is Result.Success -> {
+                        updateMarketData(symbol, cached.data, emptyList(), ChartRange.ONE_DAY)
+                        usedCached = true
+                    }
+                    is Result.Error -> {
+                        // No fresh cache available; fall through to live fetch.
+                    }
+                }
+            }
+            if (existing != null && !isStale(existing) && !usedCached) return
 
-            when (val result = stockRepository.getSeries(symbol, ChartRange.ONE_DAY, eventType = null)) {
+            when (val result = stockRepository.getSeries(symbol, ChartRange.ONE_DAY, forceRefresh = true, eventType = null)) {
                 is Result.Success -> {
                     // If intraday data doesn't have enough candles for signal computation (need 20+),
                     // fall back to daily data which will have more history

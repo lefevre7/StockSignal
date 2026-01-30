@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import androidx.core.content.ContextCompat
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
 import dagger.hilt.android.EntryPointAccessors
@@ -38,8 +39,24 @@ class NotificationAlarmReceiver : BroadcastReceiver() {
                         if (windowId.isNullOrBlank()) {
                             Log.w(TAG, "Alarm missing window ID")
                         } else {
-                            windowRunner.run(windowId)
-                            scheduler.scheduleNextWindow(settings, windowId)
+                            val serviceIntent = Intent(appContext, WindowRunService::class.java).apply {
+                                putExtra(NotificationAlarmIntentFactory.EXTRA_WINDOW_ID, windowId)
+                                putExtra(NotificationAlarmIntentFactory.EXTRA_RUN_AT_MILLIS, System.currentTimeMillis())
+                            }
+                            ContextCompat.startForegroundService(appContext, serviceIntent)
+                        }
+                    }
+                    NotificationAlarmIntentFactory.TYPE_PRE_NOTIFY -> {
+                        val windowId = intent.getStringExtra(NotificationAlarmIntentFactory.EXTRA_WINDOW_ID)
+                        val runAtMillis = intent.getLongExtra(NotificationAlarmIntentFactory.EXTRA_RUN_AT_MILLIS, -1L)
+                        if (windowId.isNullOrBlank() || runAtMillis <= 0L) {
+                            Log.w(TAG, "Pre-notify alarm missing window/run time")
+                        } else {
+                            val serviceIntent = Intent(appContext, WindowPreNotifyService::class.java).apply {
+                                putExtra(NotificationAlarmIntentFactory.EXTRA_WINDOW_ID, windowId)
+                                putExtra(NotificationAlarmIntentFactory.EXTRA_RUN_AT_MILLIS, runAtMillis)
+                            }
+                            ContextCompat.startForegroundService(appContext, serviceIntent)
                         }
                     }
                     NotificationAlarmIntentFactory.TYPE_ROBOTS -> {

@@ -22,6 +22,18 @@ class NotificationDiagnosticsRepository @Inject constructor(
         val lastReason: String?
     )
 
+    data class WindowPreNotifyRunInfo(
+        val lastRunAtMillis: Long?,
+        val lastResult: String?,
+        val lastReason: String?
+    )
+
+    data class RobotsRunInfo(
+        val lastRunAtMillis: Long?,
+        val lastResult: String?,
+        val lastReason: String?
+    )
+
     suspend fun recordWindowRun(
         windowId: String,
         result: String,
@@ -38,6 +50,22 @@ class NotificationDiagnosticsRepository @Inject constructor(
         }
     }
 
+    suspend fun recordWindowPreNotifyRun(
+        windowId: String,
+        result: String,
+        reason: String?
+    ) {
+        dataStore.edit { prefs ->
+            prefs[windowPreNotifyLastRunKey(windowId)] = System.currentTimeMillis()
+            prefs[windowPreNotifyLastResultKey(windowId)] = result
+            if (reason.isNullOrBlank()) {
+                prefs.remove(windowPreNotifyLastReasonKey(windowId))
+            } else {
+                prefs[windowPreNotifyLastReasonKey(windowId)] = reason
+            }
+        }
+    }
+
     suspend fun getWindowRunInfo(windowIds: Set<String>): Map<String, WindowRunInfo> {
         if (windowIds.isEmpty()) return emptyMap()
         val prefs = dataStore.data.first()
@@ -50,11 +78,31 @@ class NotificationDiagnosticsRepository @Inject constructor(
         }
     }
 
+    suspend fun getWindowPreNotifyRunInfo(windowIds: Set<String>): Map<String, WindowPreNotifyRunInfo> {
+        if (windowIds.isEmpty()) return emptyMap()
+        val prefs = dataStore.data.first()
+        return windowIds.associateWith { windowId ->
+            WindowPreNotifyRunInfo(
+                lastRunAtMillis = prefs[windowPreNotifyLastRunKey(windowId)],
+                lastResult = prefs[windowPreNotifyLastResultKey(windowId)],
+                lastReason = prefs[windowPreNotifyLastReasonKey(windowId)]
+            )
+        }
+    }
+
     suspend fun getNextWindowRunTimes(windowIds: Set<String>): Map<String, Long?> {
         if (windowIds.isEmpty()) return emptyMap()
         val prefs = dataStore.data.first()
         return windowIds.associateWith { windowId ->
             prefs[windowNextRunKey(windowId)]
+        }
+    }
+
+    suspend fun getWindowPreNotifyNextRuns(windowIds: Set<String>): Map<String, Long?> {
+        if (windowIds.isEmpty()) return emptyMap()
+        val prefs = dataStore.data.first()
+        return windowIds.associateWith { windowId ->
+            prefs[windowPreNotifyNextRunKey(windowId)]
         }
     }
 
@@ -64,6 +112,16 @@ class NotificationDiagnosticsRepository @Inject constructor(
                 prefs.remove(windowNextRunKey(windowId))
             } else {
                 prefs[windowNextRunKey(windowId)] = nextRunAtMillis
+            }
+        }
+    }
+
+    suspend fun setWindowPreNotifyNextRun(windowId: String, nextRunAtMillis: Long?) {
+        dataStore.edit { prefs ->
+            if (nextRunAtMillis == null) {
+                prefs.remove(windowPreNotifyNextRunKey(windowId))
+            } else {
+                prefs[windowPreNotifyNextRunKey(windowId)] = nextRunAtMillis
             }
         }
     }
@@ -92,6 +150,30 @@ class NotificationDiagnosticsRepository @Inject constructor(
     suspend fun getRobotsNextRun(): Long? {
         val prefs = dataStore.data.first()
         return prefs[robotsNextRunKey]
+    }
+
+    suspend fun recordRobotsRun(
+        result: String,
+        reason: String?
+    ) {
+        dataStore.edit { prefs ->
+            prefs[robotsLastRunKey] = System.currentTimeMillis()
+            prefs[robotsLastResultKey] = result
+            if (reason.isNullOrBlank()) {
+                prefs.remove(robotsLastReasonKey)
+            } else {
+                prefs[robotsLastReasonKey] = reason
+            }
+        }
+    }
+
+    suspend fun getRobotsRunInfo(): RobotsRunInfo {
+        val prefs = dataStore.data.first()
+        return RobotsRunInfo(
+            lastRunAtMillis = prefs[robotsLastRunKey],
+            lastResult = prefs[robotsLastResultKey],
+            lastReason = prefs[robotsLastReasonKey]
+        )
     }
 
     suspend fun setScheduledPremarketKeys(keys: Set<String>) {
@@ -163,10 +245,25 @@ class NotificationDiagnosticsRepository @Inject constructor(
     private fun windowNextRunKey(windowId: String) =
         longPreferencesKey("notif_window_${windowId}_next_run")
 
+    private fun windowPreNotifyLastRunKey(windowId: String) =
+        longPreferencesKey("notif_window_${windowId}_pre_last_run")
+
+    private fun windowPreNotifyLastResultKey(windowId: String) =
+        stringPreferencesKey("notif_window_${windowId}_pre_last_result")
+
+    private fun windowPreNotifyLastReasonKey(windowId: String) =
+        stringPreferencesKey("notif_window_${windowId}_pre_last_reason")
+
+    private fun windowPreNotifyNextRunKey(windowId: String) =
+        longPreferencesKey("notif_window_${windowId}_pre_next_run")
+
     companion object {
         private val scheduleFingerprintKey = stringPreferencesKey("notif_schedule_fingerprint")
         private val scheduledWindowIdsKey = stringSetPreferencesKey("notif_scheduled_window_ids")
         private val robotsNextRunKey = longPreferencesKey("notif_robots_next_run")
+        private val robotsLastRunKey = longPreferencesKey("notif_robots_last_run")
+        private val robotsLastResultKey = stringPreferencesKey("notif_robots_last_result")
+        private val robotsLastReasonKey = stringPreferencesKey("notif_robots_last_reason")
         private val scheduledPremarketKeysKey = stringSetPreferencesKey("notif_scheduled_premarket_keys")
         private val lastExactAlarmAllowedKey = booleanPreferencesKey("notif_exact_alarm_allowed")
 

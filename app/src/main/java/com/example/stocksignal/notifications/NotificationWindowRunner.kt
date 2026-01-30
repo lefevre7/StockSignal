@@ -8,6 +8,7 @@ import androidx.core.app.NotificationCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import com.example.stocksignal.R
 import com.example.stocksignal.data.local.entity.WatchlistItemEntity
+import com.example.stocksignal.data.local.model.MarketMoversSnapshot
 import com.example.stocksignal.data.local.repository.WatchlistRepository
 import com.example.stocksignal.data.repository.SignalsRepository
 import com.example.stocksignal.data.repository.StockRepository
@@ -31,18 +32,20 @@ import com.example.stocksignal.domain.model.SignalResult
 import com.example.stocksignal.domain.model.StockOverview
 import com.example.stocksignal.domain.signal.IndicatorAlertEvaluator
 import com.example.stocksignal.util.DebugConfig
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import java.time.Duration
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class NotificationWindowRunner @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     private val settingsRepository: SettingsRepository,
     private val watchlistRepository: WatchlistRepository,
     private val marketMoversRepository: MarketMoversRepository,
@@ -52,6 +55,58 @@ class NotificationWindowRunner @Inject constructor(
     private val diagnosticsRepository: NotificationDiagnosticsRepository
 ) {
     private val overviewCache = mutableMapOf<String, StockOverview?>()
+
+    private data class RunDiagnostics(
+        var watchlistTotal: Int = 0,
+        var watchlistDisabled: Int = 0,
+        var watchlistSnoozed: Int = 0,
+        var watchlistFetchFailures: Int = 0,
+        var watchlistFallbacks: Int = 0,
+        var watchlistLastFetchError: String? = null,
+        val watchlistFailedTickers: MutableList<String> = mutableListOf(),
+        val watchlistStaleTickers: MutableList<String> = mutableListOf(),
+        val watchlistCacheUsedTickers: MutableList<String> = mutableListOf(),
+        val watchlistEmptyTickers: MutableList<String> = mutableListOf(),
+        val watchlistLastCandleTickers: MutableList<String> = mutableListOf(),
+        var watchlistEmpty: Int = 0,
+        var watchlistStale: Int = 0,
+        var watchlistSignalNull: Int = 0,
+        var watchlistCooldown: Int = 0,
+        var watchlistBelowThreshold: Int = 0,
+        var watchlistExceptions: Int = 0,
+        var moversListFetchFailures: Int = 0,
+        var moversListFallbacks: Int = 0,
+        var moversListLastError: String? = null,
+        val moversListErrors: MutableList<String> = mutableListOf(),
+        var moversListStale: Int = 0,
+        var moversTotal: Int = 0,
+        var moversFetchFailures: Int = 0,
+        var moversFallbacks: Int = 0,
+        var moversLastFetchError: String? = null,
+        val moversFailedTickers: MutableList<String> = mutableListOf(),
+        val moversStaleTickers: MutableList<String> = mutableListOf(),
+        val moversCacheUsedTickers: MutableList<String> = mutableListOf(),
+        val moversEmptyTickers: MutableList<String> = mutableListOf(),
+        val moversLastCandleTickers: MutableList<String> = mutableListOf(),
+        var moversEmpty: Int = 0,
+        var moversStale: Int = 0,
+        var moversSignalNull: Int = 0,
+        var moversCooldown: Int = 0,
+        var moversBelowThreshold: Int = 0,
+        var moversExceptions: Int = 0
+    )
+
+    private data class SeriesFetchOutcome(
+        val series: List<PriceCandle>?,
+        val usedFallback: Boolean,
+        val errorMessage: String?
+    )
+
+    private data class MoversSnapshotOutcome(
+        val snapshot: MarketMoversSnapshot?,
+        val usedFallback: Boolean,
+        val liveErrorMessage: String?
+    )
 
     enum class RunOutcome {
         SUCCESS,
@@ -114,12 +169,14 @@ class NotificationWindowRunner @Inject constructor(
             } ?: false
             var watchlistCandidates = 0
             var moverCandidates = 0
+            val diagnostics = RunDiagnostics()
 
             val watchlistRange = settings.selectedChartRange
             val moversRange = MarketMoverRange.ONE_DAY
             val moversChartRange = chartRangeForMarketRange(moversRange)
 
             val watchlist = watchlistRepository.getAll()
+            diagnostics.watchlistTotal = watchlist.size
             Log.i(TAG, "📊 Watchlist contains ${watchlist.size} items")
 
             if (watchlistEnabled) {
@@ -132,10 +189,12 @@ class NotificationWindowRunner @Inject constructor(
                     try {
                         if (!item.alertEnabled) {
                             Log.d(TAG, "   ⏭️ ${item.symbol} - alerts disabled")
+                            diagnostics.watchlistDisabled += 1
                             continue
                         }
                         if (item.snoozedUntil != null && item.snoozedUntil.isAfter(now)) {
                             Log.d(TAG, "   ⏭️ ${item.symbol} - snoozed until ${item.snoozedUntil}")
+                            diagnostics.watchlistSnoozed += 1
                             continue
                         }
                         val minScore = item.minScoreForNotify ?: settings.signalSensitivity.minScoreForNotify
@@ -144,27 +203,45 @@ class NotificationWindowRunner @Inject constructor(
                         // NOTE: This call to stockRepository.getSeries() automatically triggers
                         // passive accumulation of intraday data via StockRepository.accumulateIntradayData()
                         // Data is stored in IntradayDataCache for up to 1 year
-                        val result = if (usePremarketData) {
-                            Log.d(TAG, "   🌅 ${item.symbol}: Using premarket data")
-                            stockRepository.getSeriesForPremarket(
-                                item.symbol,
-                                watchlistRange,
-                                eventType = null
-                            )
-                        } else {
-                            Log.d(TAG, "   📊 ${item.symbol}: Fetching regular series")
-                            stockRepository.getSeries(
-                                item.symbol,
-                                watchlistRange,
-                                forceRefresh = true,
-                                eventType = null
-                            )
-                        }
-                        if (result is StooqResult.Success) {
-                            val series = result.data
+                        val seriesOutcome = fetchSeriesWithFallback(
+                            symbol = item.symbol,
+                            range = watchlistRange,
+                            usePremarketData = usePremarketData
+                        )
+                        if (seriesOutcome.series != null) {
+                            if (seriesOutcome.usedFallback) {
+                                diagnostics.watchlistFallbacks += 1
+                                recordTicker(diagnostics.watchlistCacheUsedTickers, item.symbol)
+                            }
+                            if (seriesOutcome.errorMessage != null) {
+                                diagnostics.watchlistFetchFailures += 1
+                                diagnostics.watchlistLastFetchError = diagnostics.watchlistLastFetchError
+                                    ?: truncateError(seriesOutcome.errorMessage)
+                                recordTicker(
+                                    diagnostics.watchlistFailedTickers,
+                                    "${item.symbol}:${truncateError(seriesOutcome.errorMessage, TICKER_ERROR_MAX)}"
+                                )
+                            }
+                            val series = seriesOutcome.series
                             Log.d(TAG, "   ✓ ${item.symbol}: Got ${series.size} candles")
+                            if (series.isEmpty()) {
+                                Log.d(TAG, "   ⏭️ ${item.symbol}: No intraday candles returned")
+                                diagnostics.watchlistEmpty += 1
+                                recordTicker(diagnostics.watchlistEmptyTickers, item.symbol)
+                                recordTicker(
+                                    diagnostics.watchlistLastCandleTickers,
+                                    "${item.symbol}:empty"
+                                )
+                                continue
+                            }
+                            recordTicker(
+                                diagnostics.watchlistLastCandleTickers,
+                                "${item.symbol}:${formatCandleTime(series.last().time)}"
+                            )
                             if (!isFresh(series, now)) {
                                 Log.d(TAG, "   ⏭️ ${item.symbol}: Data stale (last candle too old)")
+                                diagnostics.watchlistStale += 1
+                                recordTicker(diagnostics.watchlistStaleTickers, item.symbol)
                                 continue
                             }
                             
@@ -192,16 +269,19 @@ class NotificationWindowRunner @Inject constructor(
                             val signal = signalsRepository.computeSignal(item.symbol, signalSeries, watchlistRange, overview)
                             if (signal == null) {
                                 Log.d(TAG, "   ⚠️ ${item.symbol}: No signal generated")
+                                diagnostics.watchlistSignalNull += 1
                                 continue
                             }
                             val displayScore = signal.displayScore
                             Log.i(TAG, "   📈 ${item.symbol}: Signal computed - score=$displayScore, tier=${signal.tier.label}")
                             if (displayScore < minScore && displayScore > -minScore) {
                                 Log.d(TAG, "   ⏭️ ${item.symbol}: Score $displayScore below threshold $minScore")
+                                diagnostics.watchlistBelowThreshold += 1
                                 continue
                             }
                             if (signalsRepository.isInCooldown(item.symbol, signal.tier.label, signal.generatedAt)) {
                                 Log.d(TAG, "   ⏭️ ${item.symbol}: Signal ${signal.tier.label} in cooldown")
+                                diagnostics.watchlistCooldown += 1
                                 continue
                             }
                             val event = buildEvent(
@@ -217,8 +297,14 @@ class NotificationWindowRunner @Inject constructor(
                             watchlistCandidates += 1
                             Log.i(TAG, "   ✅ ${item.symbol}: CANDIDATE ADDED - ${signal.tier.label} score=$displayScore")
                         } else {
-                            val errorResult = result as? StooqResult.Error
-                            Log.w(TAG, "   ❌ ${item.symbol}: Failed to fetch series - ${errorResult?.message}")
+                            diagnostics.watchlistFetchFailures += 1
+                            diagnostics.watchlistLastFetchError = diagnostics.watchlistLastFetchError
+                                ?: truncateError(seriesOutcome.errorMessage) ?: "unknown fetch failure"
+                            recordTicker(
+                                diagnostics.watchlistFailedTickers,
+                                "${item.symbol}:${truncateError(seriesOutcome.errorMessage, TICKER_ERROR_MAX) ?: "unknown"}"
+                            )
+                            Log.w(TAG, "   ❌ ${item.symbol}: Failed to fetch series - ${seriesOutcome.errorMessage}")
                         }
                         evaluateIndicatorAlerts(
                             item = item,
@@ -228,45 +314,54 @@ class NotificationWindowRunner @Inject constructor(
                         )
                     } catch (e: Exception) {
                         Log.e(TAG, "   ❌ ${item.symbol}: Exception during processing", e)
+                        diagnostics.watchlistExceptions += 1
                     }
                 }
             }
 
             if (moversEnabled) {
                 val watchlistSymbols = watchlist.map { it.symbol }.toSet()
-                val increasersSnapshot = when (val result = marketMoversRepository.getMarketMovers(
-                    range = moversRange,
-                    direction = MarketMoverDirection.INCREASERS,
-                    forceRefresh = true
-                )) {
-                    is StooqResult.Success -> result.data
-                    is StooqResult.Error -> {
-                        Log.w(TAG, "Market movers increasers fetch failed: ${result.message}")
-                        null
-                    }
+                val increasersOutcome = fetchMarketMoversSnapshot(moversRange, MarketMoverDirection.INCREASERS)
+                val decreasersOutcome = fetchMarketMoversSnapshot(moversRange, MarketMoverDirection.DECREASERS)
+
+                if (increasersOutcome.liveErrorMessage != null) {
+                    diagnostics.moversListFetchFailures += 1
+                    diagnostics.moversListLastError = diagnostics.moversListLastError
+                        ?: truncateError(increasersOutcome.liveErrorMessage)
+                    recordTicker(
+                        diagnostics.moversListErrors,
+                        "increasers:${truncateError(increasersOutcome.liveErrorMessage, TICKER_ERROR_MAX)}"
+                    )
                 }
-                val decreasersSnapshot = when (val result = marketMoversRepository.getMarketMovers(
-                    range = moversRange,
-                    direction = MarketMoverDirection.DECREASERS,
-                    forceRefresh = true
-                )) {
-                    is StooqResult.Success -> result.data
-                    is StooqResult.Error -> {
-                        Log.w(TAG, "Market movers decreasers fetch failed: ${result.message}")
-                        null
-                    }
+                if (decreasersOutcome.liveErrorMessage != null) {
+                    diagnostics.moversListFetchFailures += 1
+                    diagnostics.moversListLastError = diagnostics.moversListLastError
+                        ?: truncateError(decreasersOutcome.liveErrorMessage)
+                    recordTicker(
+                        diagnostics.moversListErrors,
+                        "decreasers:${truncateError(decreasersOutcome.liveErrorMessage, TICKER_ERROR_MAX)}"
+                    )
                 }
+
+                if (increasersOutcome.usedFallback) diagnostics.moversListFallbacks += 1
+                if (decreasersOutcome.usedFallback) diagnostics.moversListFallbacks += 1
+
+                val increasersSnapshot = increasersOutcome.snapshot
+                val decreasersSnapshot = decreasersOutcome.snapshot
                 if (increasersSnapshot?.isStale == true) {
-                    Log.d(TAG, "Market movers increasers snapshot stale; skipping")
+                    Log.d(TAG, "Market movers increasers snapshot stale; using cached list")
+                    diagnostics.moversListStale += 1
                 }
                 if (decreasersSnapshot?.isStale == true) {
-                    Log.d(TAG, "Market movers decreasers snapshot stale; skipping")
+                    Log.d(TAG, "Market movers decreasers snapshot stale; using cached list")
+                    diagnostics.moversListStale += 1
                 }
-                val increasers = increasersSnapshot?.takeUnless { it.isStale }?.items.orEmpty()
-                val decreasers = decreasersSnapshot?.takeUnless { it.isStale }?.items.orEmpty()
+                val increasers = increasersSnapshot?.items.orEmpty()
+                val decreasers = decreasersSnapshot?.items.orEmpty()
                 val movers = (increasers.take(MAX_MOVERS) + decreasers.take(MAX_MOVERS))
                     .distinctBy { it.ticker }
                     .filterNot { watchlistSymbols.contains(it.ticker) }
+                diagnostics.moversTotal = movers.size
 
                 if (movers.isEmpty()) {
                     Log.d(TAG, "No market movers candidates to evaluate for window $windowId")
@@ -274,16 +369,44 @@ class NotificationWindowRunner @Inject constructor(
 
                 movers.forEach { mover ->
                     try {
-                        val result = stockRepository.getSeries(
-                            mover.ticker,
-                            moversChartRange,
-                            forceRefresh = true,
-                            eventType = null
+                        val seriesOutcome = fetchSeriesWithFallback(
+                            symbol = mover.ticker,
+                            range = moversChartRange,
+                            usePremarketData = false
                         )
-                        if (result is StooqResult.Success) {
-                            val series = result.data
+                        if (seriesOutcome.series != null) {
+                            if (seriesOutcome.usedFallback) {
+                                diagnostics.moversFallbacks += 1
+                                recordTicker(diagnostics.moversCacheUsedTickers, mover.ticker)
+                            }
+                            if (seriesOutcome.errorMessage != null) {
+                                diagnostics.moversFetchFailures += 1
+                                diagnostics.moversLastFetchError = diagnostics.moversLastFetchError
+                                    ?: truncateError(seriesOutcome.errorMessage)
+                                recordTicker(
+                                    diagnostics.moversFailedTickers,
+                                    "${mover.ticker}:${truncateError(seriesOutcome.errorMessage, TICKER_ERROR_MAX)}"
+                                )
+                            }
+                            val series = seriesOutcome.series
+                            if (series.isEmpty()) {
+                                Log.d(TAG, "Market mover ${mover.ticker} no intraday candles returned; skipping")
+                                diagnostics.moversEmpty += 1
+                                recordTicker(diagnostics.moversEmptyTickers, mover.ticker)
+                                recordTicker(
+                                    diagnostics.moversLastCandleTickers,
+                                    "${mover.ticker}:empty"
+                                )
+                                return@forEach
+                            }
+                            recordTicker(
+                                diagnostics.moversLastCandleTickers,
+                                "${mover.ticker}:${formatCandleTime(series.last().time)}"
+                            )
                             if (!isFresh(series, now)) {
                                 Log.d(TAG, "Market mover ${mover.ticker} data stale; skipping")
+                                diagnostics.moversStale += 1
+                                recordTicker(diagnostics.moversStaleTickers, mover.ticker)
                                 return@forEach
                             }
                             
@@ -306,6 +429,7 @@ class NotificationWindowRunner @Inject constructor(
                             val signal = signalsRepository.computeSignal(mover.ticker, signalSeries, moversChartRange, overview)
                             if (signal == null) {
                                 Log.d(TAG, "Market mover ${mover.ticker} no signal generated")
+                                diagnostics.moversSignalNull += 1
                                 return@forEach
                             }
                             val displayScore = signal.displayScore
@@ -313,10 +437,12 @@ class NotificationWindowRunner @Inject constructor(
                             val strongSell = settings.signalSensitivity.strongSellThreshold
                             if (displayScore < strongBuy && displayScore > strongSell) {
                                 Log.d(TAG, "Market mover ${mover.ticker} score $displayScore below thresholds")
+                                diagnostics.moversBelowThreshold += 1
                                 return@forEach
                             }
                             if (signalsRepository.isInCooldown(mover.ticker, signal.tier.label, signal.generatedAt)) {
                                 Log.d(TAG, "Market mover ${mover.ticker} signal ${signal.tier.label} in cooldown")
+                                diagnostics.moversCooldown += 1
                                 return@forEach
                             }
                             val event = buildEvent(
@@ -332,10 +458,18 @@ class NotificationWindowRunner @Inject constructor(
                             moverCandidates += 1
                             Log.d(TAG, "Market mover candidate ${mover.ticker} ${signal.tier.label} score=$displayScore")
                         } else {
-                            Log.w(TAG, "Market mover ${mover.ticker} failed to fetch series; skipping")
+                            diagnostics.moversFetchFailures += 1
+                            diagnostics.moversLastFetchError = diagnostics.moversLastFetchError
+                                ?: truncateError(seriesOutcome.errorMessage) ?: "unknown fetch failure"
+                            recordTicker(
+                                diagnostics.moversFailedTickers,
+                                "${mover.ticker}:${truncateError(seriesOutcome.errorMessage, TICKER_ERROR_MAX) ?: "unknown"}"
+                            )
+                            Log.w(TAG, "Market mover ${mover.ticker} failed to fetch series; skipping (${seriesOutcome.errorMessage})")
                         }
                     } catch (e: Exception) {
                         Log.w(TAG, "Error processing market mover ${mover.ticker}, skipping", e)
+                        diagnostics.moversExceptions += 1
                     }
                 }
             }
@@ -352,7 +486,12 @@ class NotificationWindowRunner @Inject constructor(
                 notificationQueueProcessor.processQueued(settings)
                 recordRun(
                     "success",
-                    "candidates=0 (watchlist=$watchlistCandidates movers=$moverCandidates)"
+                    buildRunReason(
+                        diagnostics,
+                        candidates.size,
+                        watchlistCandidates,
+                        moverCandidates
+                    )
                 )
             } else {
                 Log.i(TAG, "📬 Processing ${candidates.size} candidate(s)...")
@@ -362,7 +501,12 @@ class NotificationWindowRunner @Inject constructor(
                 notificationQueueProcessor.processCandidates(candidates, settings)
                 recordRun(
                     "success",
-                    "candidates=${candidates.size} (watchlist=$watchlistCandidates movers=$moverCandidates)"
+                    buildRunReason(
+                        diagnostics,
+                        candidates.size,
+                        watchlistCandidates,
+                        moverCandidates
+                    )
                 )
             }
             
@@ -426,6 +570,180 @@ class NotificationWindowRunner @Inject constructor(
             delivered = false,
             reasons = signal.reasons
         )
+    }
+
+    private suspend fun fetchSeriesWithFallback(
+        symbol: String,
+        range: ChartRange,
+        usePremarketData: Boolean
+    ): SeriesFetchOutcome {
+        val liveResult = fetchLiveSeriesWithRetries(symbol, range, usePremarketData)
+        if (liveResult is StooqResult.Success) {
+            return SeriesFetchOutcome(liveResult.data, usedFallback = false, errorMessage = null)
+        }
+        val liveError = (liveResult as? StooqResult.Error)?.message
+
+        val cacheResult = stockRepository.getFreshCachedSeries(symbol, range)
+        if (cacheResult is StooqResult.Success) {
+            return SeriesFetchOutcome(cacheResult.data, usedFallback = true, errorMessage = liveError)
+        }
+        val cacheError = (cacheResult as? StooqResult.Error)?.message
+        val combinedError = listOfNotNull(
+            liveError?.let { "live=$it" },
+            cacheError?.let { "cache=$it" }
+        ).joinToString("; ")
+        val errorMessage = when {
+            combinedError.isNotBlank() -> combinedError
+            liveError != null -> liveError
+            cacheError != null -> cacheError
+            else -> null
+        }
+        return SeriesFetchOutcome(
+            series = null,
+            usedFallback = true,
+            errorMessage = errorMessage
+        )
+    }
+
+    private suspend fun fetchMarketMoversSnapshot(
+        range: MarketMoverRange,
+        direction: MarketMoverDirection
+    ): MoversSnapshotOutcome {
+        val liveResult = marketMoversRepository.getMarketMovers(
+            range = range,
+            direction = direction,
+            forceRefresh = true
+        )
+        if (liveResult is StooqResult.Success && !liveResult.data.isStale) {
+            return MoversSnapshotOutcome(liveResult.data, usedFallback = false, liveErrorMessage = null)
+        }
+        val liveError = when (liveResult) {
+            is StooqResult.Error -> liveResult.message
+            is StooqResult.Success -> "live list stale"
+        }
+
+        val cachedResult = marketMoversRepository.getFreshCachedMovers(range, direction)
+        if (cachedResult is StooqResult.Success) {
+            return MoversSnapshotOutcome(cachedResult.data, usedFallback = true, liveErrorMessage = liveError)
+        }
+
+        val staleSnapshot = (liveResult as? StooqResult.Success)?.data
+        val cacheError = (cachedResult as? StooqResult.Error)?.message
+        val combinedError = listOfNotNull(
+            liveError?.let { "live=$it" },
+            cacheError?.let { "cache=$it" }
+        ).joinToString("; ")
+        val errorMessage = if (combinedError.isNotBlank()) combinedError else liveError ?: cacheError
+        return MoversSnapshotOutcome(staleSnapshot, usedFallback = true, liveErrorMessage = errorMessage)
+    }
+
+    private fun buildRunReason(
+        diagnostics: RunDiagnostics,
+        totalCandidates: Int,
+        watchlistCandidates: Int,
+        moverCandidates: Int
+    ): String {
+        val watchlistEnabled = (diagnostics.watchlistTotal -
+            diagnostics.watchlistDisabled -
+            diagnostics.watchlistSnoozed).coerceAtLeast(0)
+        val watchlistError = truncateError(diagnostics.watchlistLastFetchError)
+        val moversListError = truncateError(diagnostics.moversListLastError)
+        val moversError = truncateError(diagnostics.moversLastFetchError)
+        val watchlistLiveFailed = diagnostics.watchlistFetchFailures > 0
+        val moversLiveFailed = diagnostics.moversFetchFailures > 0
+        val moversListLiveFailed = diagnostics.moversListFetchFailures > 0
+        val watchlistFailed = formatTickerList("watchlist_failed", diagnostics.watchlistFailedTickers)
+        val watchlistStale = formatTickerList("watchlist_stale", diagnostics.watchlistStaleTickers)
+        val watchlistCache = formatTickerList("watchlist_cache", diagnostics.watchlistCacheUsedTickers)
+        val watchlistEmpty = formatTickerList("watchlist_empty", diagnostics.watchlistEmptyTickers)
+        val watchlistLast = formatTickerList("watchlist_last", diagnostics.watchlistLastCandleTickers)
+        val moversFailed = formatTickerList("movers_failed", diagnostics.moversFailedTickers)
+        val moversStale = formatTickerList("movers_stale", diagnostics.moversStaleTickers)
+        val moversCache = formatTickerList("movers_cache", diagnostics.moversCacheUsedTickers)
+        val moversEmpty = formatTickerList("movers_empty", diagnostics.moversEmptyTickers)
+        val moversLast = formatTickerList("movers_last", diagnostics.moversLastCandleTickers)
+        val moversListErrors = formatTickerList("movers_list_errors", diagnostics.moversListErrors)
+
+        return "candidates=$totalCandidates (watchlist=$watchlistCandidates movers=$moverCandidates) | " +
+            "watchlist: total=${diagnostics.watchlistTotal} enabled=$watchlistEnabled " +
+            "disabled=${diagnostics.watchlistDisabled} snoozed=${diagnostics.watchlistSnoozed} " +
+            "fetch_fail=${diagnostics.watchlistFetchFailures} cache_used=${diagnostics.watchlistFallbacks} " +
+            "live_failed=$watchlistLiveFailed " +
+            "empty=${diagnostics.watchlistEmpty} stale=${diagnostics.watchlistStale} " +
+            "signal_null=${diagnostics.watchlistSignalNull} " +
+            "cooldown=${diagnostics.watchlistCooldown} below=${diagnostics.watchlistBelowThreshold} " +
+            "exceptions=${diagnostics.watchlistExceptions} " +
+            (watchlistError?.let { "last_error=$it " } ?: "") +
+            (watchlistFailed?.let { "$it " } ?: "") +
+            (watchlistStale?.let { "$it " } ?: "") +
+            (watchlistCache?.let { "$it " } ?: "") +
+            (watchlistEmpty?.let { "$it " } ?: "") +
+            (watchlistLast?.let { "$it " } ?: "") +
+            "| movers: list_fail=${diagnostics.moversListFetchFailures} " +
+            "list_cache_used=${diagnostics.moversListFallbacks} list_stale=${diagnostics.moversListStale} " +
+            "list_live_failed=$moversListLiveFailed " +
+            "total=${diagnostics.moversTotal} fetch_fail=${diagnostics.moversFetchFailures} " +
+            "cache_used=${diagnostics.moversFallbacks} empty=${diagnostics.moversEmpty} " +
+            "stale=${diagnostics.moversStale} " +
+            "live_failed=$moversLiveFailed " +
+            "signal_null=${diagnostics.moversSignalNull} cooldown=${diagnostics.moversCooldown} " +
+            "below=${diagnostics.moversBelowThreshold} exceptions=${diagnostics.moversExceptions} " +
+            (moversListError?.let { "list_error=$it " } ?: "") +
+            (moversError?.let { "last_error=$it " } ?: "") +
+            (moversListErrors?.let { "$it " } ?: "") +
+            (moversFailed?.let { "$it " } ?: "") +
+            (moversStale?.let { "$it " } ?: "") +
+            (moversCache?.let { "$it " } ?: "") +
+            (moversEmpty?.let { "$it " } ?: "") +
+            (moversLast?.let { "$it" } ?: "")
+    }
+
+    private fun truncateError(message: String?, maxLength: Int = 120): String? {
+        if (message.isNullOrBlank()) return null
+        return if (message.length <= maxLength) message else message.take(maxLength) + "…"
+    }
+
+    private fun formatTickerList(label: String, items: List<String>): String? {
+        if (items.isEmpty()) return null
+        val display = items.take(MAX_DIAGNOSTIC_TICKERS)
+        val suffix = if (items.size > MAX_DIAGNOSTIC_TICKERS) {
+            ",+${items.size - MAX_DIAGNOSTIC_TICKERS} more"
+        } else ""
+        return "$label=[${display.joinToString(",")}$suffix]"
+    }
+
+    private fun recordTicker(list: MutableList<String>, entry: String) {
+        if (list.size >= MAX_DIAGNOSTIC_TICKERS) return
+        list.add(entry)
+    }
+
+    private fun formatCandleTime(time: LocalDateTime): String {
+        return try {
+            time.format(CANDLE_TIME_FORMATTER)
+        } catch (_: Exception) {
+            time.toString()
+        }
+    }
+
+    private suspend fun fetchLiveSeriesWithRetries(
+        symbol: String,
+        range: ChartRange,
+        usePremarketData: Boolean
+    ): StooqResult<List<PriceCandle>> {
+        var lastError: String? = null
+        repeat(LIVE_RETRY_COUNT + 1) { attempt ->
+            val result = if (usePremarketData) {
+                stockRepository.getSeriesForPremarket(symbol, range, eventType = null)
+            } else {
+                stockRepository.getSeries(symbol, range, forceRefresh = true, eventType = null)
+            }
+            if (result is StooqResult.Success) return result
+            lastError = (result as? StooqResult.Error)?.message ?: "live fetch failed"
+            if (attempt < LIVE_RETRY_COUNT) {
+                delay(LIVE_RETRY_DELAY_MS)
+            }
+        }
+        return StooqResult.Error(Exception(lastError ?: "live fetch failed"), lastError ?: "live fetch failed")
     }
 
     private suspend fun evaluateIndicatorAlerts(
@@ -629,5 +947,10 @@ class NotificationWindowRunner @Inject constructor(
         private val STALE_THRESHOLD = Duration.ofDays(7)
         private const val DEBUG_CHANNEL_ID = "debug_worker"
         private const val DEBUG_NOTIFICATION_ID_BASE = 9100
+        private const val LIVE_RETRY_COUNT = 2
+        private const val LIVE_RETRY_DELAY_MS = 250L
+        private const val MAX_DIAGNOSTIC_TICKERS = 50
+        private const val TICKER_ERROR_MAX = 40
+        private val CANDLE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
     }
 }

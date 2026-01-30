@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Card
@@ -858,12 +859,13 @@ private fun ErrorBanner(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = message,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onErrorContainer,
-                modifier = Modifier.weight(1f)
-            )
+            SelectionContainer(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onErrorContainer
+                )
+            }
             IconButton(onClick = onDismiss) {
                 Icon(
                     Icons.Filled.Close,
@@ -1054,7 +1056,7 @@ private fun ModelManagementCard(
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 androidx.compose.material3.LinearProgressIndicator(
-                    progress = modelDownloadProgress / 100f,
+                    progress = { modelDownloadProgress / 100f },
                     modifier = Modifier.fillMaxWidth()
                 )
             }

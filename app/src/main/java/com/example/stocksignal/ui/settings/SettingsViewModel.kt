@@ -284,8 +284,12 @@ class SettingsViewModel @Inject constructor(
                 val windowIds = windows.map { it.id }.toSet()
                 val nowMillis = System.currentTimeMillis()
                 val runInfoByWindow = diagnosticsRepository.getWindowRunInfo(windowIds)
+                val preNotifyRunInfoByWindow = diagnosticsRepository.getWindowPreNotifyRunInfo(windowIds)
                 val nextRuns = diagnosticsRepository.getNextWindowRunTimes(windowIds)
+                val preNotifyRuns = diagnosticsRepository.getWindowPreNotifyNextRuns(windowIds)
                 val robotsNext = diagnosticsRepository.getRobotsNextRun()
+                val robotsRunInfo = diagnosticsRepository.getRobotsRunInfo()
+                val exactAllowed = diagnosticsRepository.getLastExactAlarmAllowed()
 
                 val status = buildString {
                     appendLine("📊 Alarm Schedule Status:")
@@ -299,6 +303,20 @@ class SettingsViewModel @Inject constructor(
                             appendLine("   Window ${idx + 1}: ${window.id}")
                             val nextRun = nextRuns[window.id]
                             appendLine("     Next run: ${formatNextRun(nextRun, nowMillis)}")
+                            val preNotify = preNotifyRuns[window.id]
+                            if (preNotify != null) {
+                                appendLine("     Pre-notify: ${formatNextRun(preNotify, nowMillis)}")
+                            }
+                            val preNotifyRunInfo = preNotifyRunInfoByWindow[window.id]
+                            appendLine(
+                                "     Pre-notify last: ${formatLastRun(preNotifyRunInfo?.lastRunAtMillis, nowMillis)}"
+                            )
+                            if (!preNotifyRunInfo?.lastResult.isNullOrBlank()) {
+                                appendLine("     Pre-notify result: ${preNotifyRunInfo?.lastResult}")
+                            }
+                            if (!preNotifyRunInfo?.lastReason.isNullOrBlank()) {
+                                appendLine("     Pre-notify reason: ${preNotifyRunInfo?.lastReason}")
+                            }
                             val runInfo = runInfoByWindow[window.id]
                             appendLine(
                                 "     Last run: ${formatLastRun(runInfo?.lastRunAtMillis, nowMillis)}"
@@ -314,6 +332,16 @@ class SettingsViewModel @Inject constructor(
                     appendLine()
                     if (robotsNext != null) {
                         appendLine("Robots.txt next check: ${formatNextRun(robotsNext, nowMillis)}")
+                    }
+                    appendLine("Robots.txt last run: ${formatLastRun(robotsRunInfo.lastRunAtMillis, nowMillis)}")
+                    if (!robotsRunInfo.lastResult.isNullOrBlank()) {
+                        appendLine("Robots.txt last result: ${robotsRunInfo.lastResult}")
+                    }
+                    if (!robotsRunInfo.lastReason.isNullOrBlank()) {
+                        appendLine("Robots.txt last reason: ${robotsRunInfo.lastReason}")
+                    }
+                    if (exactAllowed != null) {
+                        appendLine("Exact alarms allowed: $exactAllowed")
                     }
                     appendLine()
                     appendLine("💡 Tap 'Force schedule' to reschedule alarms now")

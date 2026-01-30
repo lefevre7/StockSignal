@@ -8,8 +8,10 @@ object NotificationAlarmIntentFactory {
     const val EXTRA_TYPE = "extra_alarm_type"
     const val EXTRA_WINDOW_ID = "extra_window_id"
     const val EXTRA_SAMPLE_INDEX = "extra_sample_index"
+    const val EXTRA_RUN_AT_MILLIS = "extra_run_at_millis"
 
     const val TYPE_WINDOW = "window"
+    const val TYPE_PRE_NOTIFY = "pre_notify"
     const val TYPE_ROBOTS = "robots"
     const val TYPE_PREMARKET = "premarket"
 
@@ -33,6 +35,24 @@ object NotificationAlarmIntentFactory {
         return PendingIntent.getBroadcast(
             context,
             requestCodeFor("robots"),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
+    fun preNotifyPendingIntent(
+        context: Context,
+        windowId: String,
+        runAtMillis: Long
+    ): PendingIntent {
+        val intent = Intent(context, NotificationAlarmReceiver::class.java).apply {
+            putExtra(EXTRA_TYPE, TYPE_PRE_NOTIFY)
+            putExtra(EXTRA_WINDOW_ID, windowId)
+            putExtra(EXTRA_RUN_AT_MILLIS, runAtMillis)
+        }
+        return PendingIntent.getBroadcast(
+            context,
+            requestCodeFor("pre_notify:$windowId"),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )

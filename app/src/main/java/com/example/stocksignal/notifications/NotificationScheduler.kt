@@ -12,6 +12,7 @@ import com.example.stocksignal.util.DebugConfig
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.time.DayOfWeek
 import java.time.Duration
+import java.time.Clock
 import java.time.Instant
 import java.time.LocalTime
 import java.time.ZoneId
@@ -22,8 +23,9 @@ import javax.inject.Singleton
 
 @Singleton
 class NotificationScheduler @Inject constructor(
-    @ApplicationContext private val context: Context,
-    private val diagnosticsRepository: NotificationDiagnosticsRepository
+    @param:ApplicationContext private val context: Context,
+    private val diagnosticsRepository: NotificationDiagnosticsRepository,
+    private val clock: Clock = Clock.systemDefaultZone()
 ) {
 
     private val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
@@ -58,7 +60,7 @@ class NotificationScheduler @Inject constructor(
         val exactAllowed = canScheduleExactAlarms()
         diagnosticsRepository.setLastExactAlarmAllowed(exactAllowed)
         val fingerprint = scheduleFingerprint(effectiveSettings, windows, isDevMode, exactAllowed)
-        if (!force && !shouldReschedule(fingerprint, windows)) {
+        if (!force && !shouldReschedule(fingerprint, windows, effectiveFrequency)) {
             Log.d(TAG, "Schedule unchanged and alarms present; skipping reschedule")
             return
         }
@@ -83,6 +85,7 @@ class NotificationScheduler @Inject constructor(
         if (!hasNotificationSources(settings) || effectiveFrequency == NotificationFrequency.ONLY_WHEN_OPEN) {
             cancelWindowAlarm(windowId)
             diagnosticsRepository.setNextWindowRun(windowId, null)
+            diagnosticsRepository.setWindowPreNotifyNextRun(windowId, null)
             return
         }
         val windows = windowsForFrequency(effectiveSettings)
@@ -90,6 +93,7 @@ class NotificationScheduler @Inject constructor(
         if (window == null) {
             cancelWindowAlarm(windowId)
             diagnosticsRepository.setNextWindowRun(windowId, null)
+            diagnosticsRepository.setWindowPreNotifyNextRun(windowId, null)
             return
         }
         scheduleWindowAlarm(effectiveSettings, window, canScheduleExactAlarms())
@@ -105,7 +109,7 @@ class NotificationScheduler @Inject constructor(
             return
         }
         val firstWindow = windows.first()
-        val nextRunAt = nextRunAt(firstWindow, ZonedDateTime.now(), settings)
+        val nextRunAt = nextRunAt(firstWindow, ZonedDateTime.now(clock), settings)
         scheduleAlarm(
             triggerAtMillis = nextRunAt.toInstant().toEpochMilli(),
             pendingIntent = NotificationAlarmIntentFactory.robotsPendingIntent(context),
@@ -170,7 +174,7 @@ class NotificationScheduler @Inject constructor(
     }
 
     private fun resolvePremarketWindowId(settings: AppSettings): String? {
-        val now = ZonedDateTime.now()
+        val now = ZonedDateTime.now(clock)
         val marketWindow = settings.scheduleWindows.firstOrNull {
             it.type == ScheduleWindowType.MARKET_OPEN_MINUS
         } ?: return null
@@ -191,7 +195,7 @@ class NotificationScheduler @Inject constructor(
         if (window.type != ScheduleWindowType.MARKET_OPEN_MINUS) return null
         val offset = window.offsetMinutes ?: -10
         if (offset >= 0) return null
-        val now = ZonedDateTime.now()
+        val now = ZonedDateTime.now(clock)
         val windowRunAt = nextRunAt(window, now, settings)
         val firstWindow = PremarketWindowUtils.firstWindowForReference(settings, windowRunAt) ?: return null
         if (firstWindow.id != windowId) return null
@@ -202,7 +206,7 @@ class NotificationScheduler @Inject constructor(
         } else {
             Duration.ofDays(1)
         }
-        if (runAt.toInstant().isBefore(Instant.now())) {
+        if (runAt.toInstant().isBefore(Instant.now(clock))) {
             runAt = runAt.plus(interval)
         }
         return runAt
@@ -210,7 +214,11 @@ class NotificationScheduler @Inject constructor(
 
     private suspend fun cancelAllAlarms() {
         val scheduledWindowIds = diagnosticsRepository.getScheduledWindowIds()
-        scheduledWindowIds.forEach { cancelWindowAlarm(it) }
+        scheduledWindowIds.forEach {
+            cancelWindowAlarm(it)
+            diagnosticsRepository.setNextWindowRun(it, null)
+            diagnosticsRepository.setWindowPreNotifyNextRun(it, null)
+        }
         diagnosticsRepository.setScheduledWindowIds(emptySet())
         diagnosticsRepository.getScheduledPremarketKeys().forEach { key ->
             val parts = key.split(":")
@@ -233,11 +241,13 @@ class NotificationScheduler @Inject constructor(
         obsolete.forEach {
             cancelWindowAlarm(it)
             diagnosticsRepository.setNextWindowRun(it, null)
+            diagnosticsRepository.setWindowPreNotifyNextRun(it, null)
         }
         if (scheduledIds.isNotEmpty() && scheduledIds != desiredIds) {
             desiredIds.forEach {
                 cancelWindowAlarm(it)
                 diagnosticsRepository.setNextWindowRun(it, null)
+                diagnosticsRepository.setWindowPreNotifyNextRun(it, null)
             }
         }
     }
@@ -285,6 +295,7 @@ class NotificationScheduler @Inject constructor(
         val pendingIntent = NotificationAlarmIntentFactory.windowPendingIntent(context, windowId)
         alarmManager.cancel(pendingIntent)
         pendingIntent.cancel()
+        cancelPreNotifyAlarm(windowId)
     }
 
     private fun cancelPremarketAlarm(windowId: String, sampleIndex: Int) {
@@ -304,7 +315,7 @@ class NotificationScheduler @Inject constructor(
         window: ScheduleWindow,
         exactAllowed: Boolean
     ) {
-        val now = ZonedDateTime.now()
+        val now = ZonedDateTime.now(clock)
         val triggerAt = if (isDevMode(settings.frequency)) {
             now.plusMinutes(DEV_REPEAT_DELAY_MINUTES)
         } else {
@@ -317,6 +328,41 @@ class NotificationScheduler @Inject constructor(
             exactAllowed = exactAllowed
         )
         diagnosticsRepository.setNextWindowRun(window.id, triggerAtMillis)
+        schedulePreNotifyAlarm(settings, window, triggerAtMillis, exactAllowed)
+    }
+
+    private suspend fun schedulePreNotifyAlarm(
+        settings: AppSettings,
+        window: ScheduleWindow,
+        triggerAtMillis: Long,
+        exactAllowed: Boolean
+    ) {
+        val leadMinutes = if (isDevMode(settings.frequency)) {
+            DEV_PRE_NOTIFY_MINUTES
+        } else {
+            PRE_NOTIFY_MINUTES
+        }
+        val preNotifyAtMillis = triggerAtMillis - Duration.ofMinutes(leadMinutes).toMillis()
+        if (preNotifyAtMillis <= System.currentTimeMillis() + MIN_DELAY_MILLIS) {
+            diagnosticsRepository.setWindowPreNotifyNextRun(window.id, null)
+            return
+        }
+        scheduleAlarm(
+            triggerAtMillis = preNotifyAtMillis,
+            pendingIntent = NotificationAlarmIntentFactory.preNotifyPendingIntent(
+                context,
+                window.id,
+                triggerAtMillis
+            ),
+            exactAllowed = exactAllowed
+        )
+        diagnosticsRepository.setWindowPreNotifyNextRun(window.id, preNotifyAtMillis)
+    }
+
+    private fun cancelPreNotifyAlarm(windowId: String) {
+        val pendingIntent = NotificationAlarmIntentFactory.preNotifyPendingIntent(context, windowId, 0L)
+        alarmManager.cancel(pendingIntent)
+        pendingIntent.cancel()
     }
 
     private fun scheduleAlarm(
@@ -462,7 +508,8 @@ class NotificationScheduler @Inject constructor(
 
     private suspend fun shouldReschedule(
         fingerprint: String,
-        windows: List<ScheduleWindow>
+        windows: List<ScheduleWindow>,
+        frequency: NotificationFrequency
     ): Boolean {
         val lastFingerprint = diagnosticsRepository.getLastScheduleFingerprint()
         if (lastFingerprint != fingerprint) {
@@ -480,6 +527,23 @@ class NotificationScheduler @Inject constructor(
         val nextRuns = diagnosticsRepository.getNextWindowRunTimes(windowIds)
         if (windowIds.any { nextRuns[it] == null || nextRuns[it]!! <= nowMillis }) {
             Log.d(TAG, "Missing or stale next run times; rescheduling")
+            return true
+        }
+        val preNotifyRuns = diagnosticsRepository.getWindowPreNotifyNextRuns(windowIds)
+        val shouldReschedulePreNotify = windowIds.any { windowId ->
+            val nextRun = nextRuns[windowId] ?: return@any true
+            val lead = if (isDevMode(frequency)) {
+                DEV_PRE_NOTIFY_MINUTES
+            } else {
+                PRE_NOTIFY_MINUTES
+            }
+            val expectedPre = nextRun - Duration.ofMinutes(lead).toMillis()
+            val preNotify = preNotifyRuns[windowId]
+            expectedPre > nowMillis + MIN_DELAY_MILLIS &&
+                (preNotify == null || kotlin.math.abs(preNotify - expectedPre) > PRE_NOTIFY_DRIFT_MILLIS)
+        }
+        if (shouldReschedulePreNotify) {
+            Log.d(TAG, "Missing or stale pre-notify times; rescheduling")
             return true
         }
 
@@ -512,6 +576,9 @@ class NotificationScheduler @Inject constructor(
     companion object {
         private const val TAG = "NotificationScheduler"
         private const val DEV_REPEAT_DELAY_MINUTES = 5L
+        private const val PRE_NOTIFY_MINUTES = 30L
+        private const val DEV_PRE_NOTIFY_MINUTES = 2L
+        private const val PRE_NOTIFY_DRIFT_MILLIS = 60_000L
         private const val MIN_DELAY_MILLIS = 5_000L
     }
 }

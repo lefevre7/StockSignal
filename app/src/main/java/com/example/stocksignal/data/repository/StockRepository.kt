@@ -87,6 +87,25 @@ class StockRepository @Inject constructor(
         }
     }
 
+    suspend fun getFreshCachedSeries(
+        symbol: String,
+        range: ChartRange
+    ): Result<List<PriceCandle>> {
+        return try {
+            val cached = cacheRepository.getCache(symbol, range.label)
+            if (cached == null) {
+                Result.Error(Exception("No cached data for $symbol/${range.label}"), "No cached data")
+            } else if (isStale(cached, range)) {
+                Result.Error(Exception("Cached data stale for $symbol/${range.label}"), "Cached data stale")
+            } else {
+                Result.Success(PriceCandleJson.fromJson(cached.seriesJson))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to read cached series for $symbol/${range.label}", e)
+            Result.Error(e, "Failed to read cached data: ${e.message}")
+        }
+    }
+
     suspend fun getDailySeriesFallback(
         symbol: String,
         range: ChartRange,

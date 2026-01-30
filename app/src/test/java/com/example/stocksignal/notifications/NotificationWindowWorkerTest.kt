@@ -129,6 +129,32 @@ class NotificationWindowWorkerTest {
         assertEquals(80, candidatesSlot.captured.first().displayScore)
     }
 
+    @Test
+    fun `falls back to cached series when live fetch fails`() = runTest {
+        val now = LocalDateTime.now()
+        every { settingsRepository.settingsFlow } returns flowOf(defaultSettings())
+        coEvery { watchlistRepository.getAll() } returns listOf(sampleWatchlistItem("AAPL", now))
+        coEvery { stockRepository.getSeries(any(), any(), eq(true), any()) } returns StooqResult.Error(
+            Exception("network"),
+            "network"
+        )
+        coEvery { stockRepository.getFreshCachedSeries(any(), any()) } returns StooqResult.Success(
+            sampleCandles(now, 25)
+        )
+        coEvery { stockRepository.getStockOverview(any()) } returns StooqResult.Error(Exception("no overview"))
+        coEvery { signalsRepository.computeSignal(any(), any(), any(), any(), any()) } returns sampleSignal(now)
+        coEvery { signalsRepository.isInCooldown(any(), any(), any()) } returns false
+        coEvery { signalsRepository.recordEvent(any()) } just runs
+        val candidatesSlot = slot<List<com.example.stocksignal.domain.model.NotificationEvent>>()
+        coEvery { notificationQueueProcessor.processCandidates(capture(candidatesSlot), any()) } just runs
+
+        val worker = buildWorker()
+        val result = worker.doWork()
+
+        assertTrue(result is ListenableWorker.Result.Success)
+        assertTrue(candidatesSlot.captured.isNotEmpty())
+    }
+
     private fun buildWorker(): NotificationWindowWorker {
         val context = RuntimeEnvironment.getApplication()
         val runner = NotificationWindowRunner(

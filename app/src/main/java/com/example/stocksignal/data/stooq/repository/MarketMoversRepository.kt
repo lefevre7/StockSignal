@@ -71,6 +71,25 @@ class MarketMoversRepository @Inject constructor(
         }
     }
 
+    suspend fun getFreshCachedMovers(
+        range: MarketMoverRange,
+        direction: MarketMoverDirection
+    ): Result<MarketMoversSnapshot> {
+        return try {
+            val cached = cacheRepository.getCache(range.label, direction.name)
+            if (cached == null) {
+                Result.Error(Exception("No cached market movers"), "No cached market movers")
+            } else if (isStale(cached)) {
+                Result.Error(Exception("Cached market movers stale"), "Cached market movers stale")
+            } else {
+                Result.Success(snapshotFromCache(cached, isFallback = false))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to read market movers cache", e)
+            Result.Error(e, "Failed to read market movers cache: ${e.message}")
+        }
+    }
+
     private fun isStale(cache: MarketMoversCacheEntity): Boolean {
         val age = Duration.between(cache.fetchedAt, LocalDateTime.now())
         return age > CACHE_TTL

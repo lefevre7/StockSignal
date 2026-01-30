@@ -29,6 +29,7 @@ import org.robolectric.shadows.ShadowPendingIntent
 @RunWith(RobolectricTestRunner::class)
 class NotificationAlarmSchedulerTest {
 
+    @Suppress("DEPRECATION")
     @Test
     fun scheduleEnqueuesWindowAndRobotsAlarms() = runBlocking {
         val context: Context = RuntimeEnvironment.getApplication()
@@ -66,11 +67,13 @@ class NotificationAlarmSchedulerTest {
             shadowIntent.savedIntent.getStringExtra(NotificationAlarmIntentFactory.EXTRA_TYPE)
         }
 
-        assertEquals(3, types.size)
+        assertEquals(5, types.size)
         assertEquals(2, types.count { it == NotificationAlarmIntentFactory.TYPE_WINDOW })
+        assertEquals(2, types.count { it == NotificationAlarmIntentFactory.TYPE_PRE_NOTIFY })
         assertEquals(1, types.count { it == NotificationAlarmIntentFactory.TYPE_ROBOTS })
     }
 
+    @Suppress("DEPRECATION")
     @Test
     fun scheduleEnqueuesPremarketAlarmsWhenMarketWindowPresent() = runBlocking {
         val context: Context = RuntimeEnvironment.getApplication()
@@ -100,8 +103,9 @@ class NotificationAlarmSchedulerTest {
             shadowIntent.savedIntent.getStringExtra(NotificationAlarmIntentFactory.EXTRA_TYPE)
         }
 
-        assertEquals(7, types.size)
+        assertEquals(8, types.size)
         assertEquals(1, types.count { it == NotificationAlarmIntentFactory.TYPE_WINDOW })
+        assertEquals(1, types.count { it == NotificationAlarmIntentFactory.TYPE_PRE_NOTIFY })
         assertEquals(1, types.count { it == NotificationAlarmIntentFactory.TYPE_ROBOTS })
         assertEquals(5, types.count { it == NotificationAlarmIntentFactory.TYPE_PREMARKET })
     }

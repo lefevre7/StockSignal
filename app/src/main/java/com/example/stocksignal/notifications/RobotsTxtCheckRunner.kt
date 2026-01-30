@@ -17,9 +17,10 @@ import javax.inject.Singleton
 
 @Singleton
 class RobotsTxtCheckRunner @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     private val stooqApi: StooqApi,
-    private val settingsRepository: SettingsRepository
+    private val settingsRepository: SettingsRepository,
+    private val diagnosticsRepository: NotificationDiagnosticsRepository
 ) {
 
     enum class RunOutcome {
@@ -43,6 +44,9 @@ class RobotsTxtCheckRunner @Inject constructor(
                 stooqApi.getRobotsTxt()
             } catch (e: Exception) {
                 Log.e(TAG, "Network error fetching robots.txt", e)
+                runCatching {
+                    diagnosticsRepository.recordRobotsRun("failed", "network error: ${e.message}")
+                }
                 // Don't update last check date on network failure
                 return RunOutcome.FAILURE
             }
@@ -52,6 +56,9 @@ class RobotsTxtCheckRunner @Inject constructor(
                 Log.w(TAG, "Stooq's robots.txt has changed!")
                 Log.w(TAG, "Expected: <<<$EXPECTED_ROBOTS_TXT>>>")
                 Log.w(TAG, "Actual: <<<$robotsTxt>>>")
+                runCatching {
+                    diagnosticsRepository.recordRobotsRun("changed", "robots.txt changed")
+                }
 
                 // Show toast if app is in foreground, notification if in background
                 if (isAppInForeground()) {
@@ -61,6 +68,9 @@ class RobotsTxtCheckRunner @Inject constructor(
                 }
             } else {
                 Log.d(TAG, "Robots.txt check passed")
+                runCatching {
+                    diagnosticsRepository.recordRobotsRun("passed", null)
+                }
             }
 
             // Mark as successfully checked today
@@ -69,6 +79,9 @@ class RobotsTxtCheckRunner @Inject constructor(
             RunOutcome.SUCCESS
         } catch (e: Exception) {
             Log.e(TAG, "Error during robots.txt check", e)
+            runCatching {
+                diagnosticsRepository.recordRobotsRun("failed", "error: ${e.message}")
+            }
             RunOutcome.FAILURE
         }
     }

@@ -137,36 +137,73 @@ class MarketMoversViewModel @Inject constructor(
     private fun loadMarketMovers(forceRefresh: Boolean = false) {
         val direction = _uiState.value.direction
         viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true, errorMessage = null) }
-            when (val result = repository.getMarketMovers(MarketMoverRange.ONE_DAY, direction, forceRefresh)) {
-                is Result.Success -> {
-                    val data = result.data
-                    _uiState.update {
-                        it.copy(
+            if (!forceRefresh) {
+                _uiState.update { it.copy(isLoading = true, errorMessage = null) }
+                when (val cached = repository.getFreshCachedMovers(MarketMoverRange.ONE_DAY, direction)) {
+                    is Result.Success -> {
+                        val data = cached.data
+                        applyMarketMoversResult(data, isLoading = false)
+                        fetchStockDataForMovers(
                             items = data.items,
-                            isLoading = false,
-                            errorMessage = null,
-                            lastUpdated = data.fetchedAt,
-                            isStale = data.isStale,
-                            isFallback = data.isFallback
+                            forceRefresh = false,
+                            isStale = data.isStale
                         )
+                        // Refresh in background without blocking the UI.
+                        viewModelScope.launch {
+                            fetchAndApplyMarketMovers(direction, showLoading = false)
+                        }
+                        return@launch
                     }
-                    // Fetch stock data in background after market movers are loaded
-                    fetchStockDataForMovers(
-                        items = data.items,
-                        forceRefresh = forceRefresh,
-                        isStale = data.isStale
-                    )
-                }
-                is Result.Error -> {
-                    _uiState.update {
-                        it.copy(
-                            isLoading = false,
-                            errorMessage = result.message
-                        )
+                    is Result.Error -> {
+                        // No fresh cache; fall through to live fetch.
                     }
                 }
             }
+            fetchAndApplyMarketMovers(direction, showLoading = true)
+        }
+    }
+
+    private suspend fun fetchAndApplyMarketMovers(
+        direction: MarketMoverDirection,
+        showLoading: Boolean
+    ) {
+        if (showLoading) {
+            _uiState.update { it.copy(isLoading = true, errorMessage = null) }
+        }
+        when (val result = repository.getMarketMovers(MarketMoverRange.ONE_DAY, direction, true)) {
+            is Result.Success -> {
+                val data = result.data
+                applyMarketMoversResult(data, isLoading = false)
+                fetchStockDataForMovers(
+                    items = data.items,
+                    forceRefresh = true,
+                    isStale = data.isStale
+                )
+            }
+            is Result.Error -> {
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        errorMessage = result.message
+                    )
+                }
+            }
+        }
+    }
+
+    private fun applyMarketMoversResult(
+        data: com.example.stocksignal.data.local.model.MarketMoversSnapshot,
+        isLoading: Boolean
+    ) {
+        _uiState.update {
+            it.copy(
+                items = data.items,
+                isLoading = isLoading,
+                errorMessage = null,
+                lastUpdated = data.fetchedAt,
+                isStale = data.isStale,
+                isFallback = data.isFallback
+            )
         }
     }
 
