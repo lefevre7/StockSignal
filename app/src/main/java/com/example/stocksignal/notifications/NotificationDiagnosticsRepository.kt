@@ -10,6 +10,8 @@ import androidx.datastore.preferences.core.edit
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 
 @Singleton
 class NotificationDiagnosticsRepository @Inject constructor(
@@ -213,6 +215,16 @@ class NotificationDiagnosticsRepository @Inject constructor(
             blockedUntilMillis = prefs[stooqBlockedUntilKey],
             message = prefs[stooqBlockedMessageKey]
         )
+    }
+
+    fun stooqBlockedFlow(): Flow<StooqBlockedInfo> {
+        return dataStore.data.map { prefs ->
+            StooqBlockedInfo(
+                blockedAtMillis = prefs[stooqBlockedAtKey],
+                blockedUntilMillis = prefs[stooqBlockedUntilKey],
+                message = prefs[stooqBlockedMessageKey]
+            )
+        }
     }
 
     suspend fun setScheduledPremarketKeys(keys: Set<String>) {

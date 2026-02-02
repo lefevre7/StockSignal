@@ -27,9 +27,20 @@ class StooqBlockInterceptor @Inject constructor(
         enforceMinGap()
 
         return try {
-            chain.proceed(chain.request())
+            val response = chain.proceed(chain.request())
+            if (response.code in BLOCK_HTTP_CODES) {
+                blocker.blockFor(
+                    BLOCK_DURATION,
+                    "Stooq blocked (HTTP ${response.code}). Blocked for 24 hours."
+                )
+                val message = blocker.buildBlockedMessage()
+                blockReporter.reportBlocked(message, blocker.blockedUntilMillis())
+                response.close()
+                throw StooqBlockedException(message)
+            }
+            response
         } catch (e: SocketTimeoutException) {
-            blocker.blockFor(BLOCK_DURATION, "Stooq timed out.")
+            blocker.blockFor(BLOCK_DURATION, "Stooq timed out. Blocked for 24 hours.")
             val message = blocker.buildBlockedMessage()
             blockReporter.reportBlocked(message, blocker.blockedUntilMillis())
             throw StooqBlockedException(message, e)
@@ -57,5 +68,6 @@ class StooqBlockInterceptor @Inject constructor(
         private val BLOCK_DURATION = Duration.ofHours(24)
         private const val BASE_REQUEST_GAP_MS = 1000L
         private const val JITTER_MS = 400L
+        private val BLOCK_HTTP_CODES = setOf(403, 429, 503)
     }
 }

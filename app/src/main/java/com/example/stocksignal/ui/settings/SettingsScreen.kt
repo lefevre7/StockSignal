@@ -89,7 +89,7 @@ fun SettingsRoute(viewModel: SettingsViewModel = hiltViewModel()) {
         errorMessage = state.errorMessage,
         stooqBlockedMessage = state.stooqBlockedMessage,
         onClearError = viewModel::clearError,
-        onClearStooqBlocked = viewModel::clearStooqBlockedMessage,
+        onClearStooqBlocked = viewModel::clearStooqBlock,
         onRefreshStooqBlocked = viewModel::refreshStooqBlockedMessage,
         onHoldingPeriodChange = viewModel::setHoldingPeriod,
         onFrequencyChange = viewModel::setFrequency,
@@ -385,6 +385,16 @@ fun SettingsScreen(
                     text = "Check if notification alarms are scheduled to run in the background.",
                     style = MaterialTheme.typography.bodySmall
                 )
+                if (stooqBlockedMessage != null) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Stooq access is currently blocked for 24 hours. Clear the block to resume requests.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    TextButton(onClick = onClearStooqBlocked) {
+                        Text("Clear Stooq block")
+                    }
+                }
                 Spacer(modifier = Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(onClick = onCheckWorkerStatus) { 

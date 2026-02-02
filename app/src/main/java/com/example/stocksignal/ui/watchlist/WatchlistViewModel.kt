@@ -9,6 +9,7 @@ import com.example.stocksignal.data.repository.SignalsRepository
 import com.example.stocksignal.data.repository.StockRepository
 import com.example.stocksignal.data.settings.SettingsRepository
 import com.example.stocksignal.data.stooq.model.Result
+import com.example.stocksignal.data.stooq.network.StooqRequestBlocker
 import com.example.stocksignal.domain.model.AlertSettings
 import com.example.stocksignal.domain.model.ChartRange
 import com.example.stocksignal.domain.model.IndicatorAlertJson
@@ -16,6 +17,7 @@ import com.example.stocksignal.domain.model.PriceCandle
 import com.example.stocksignal.domain.model.SignalResult
 import com.example.stocksignal.domain.model.SignalSnapshot
 import com.example.stocksignal.domain.model.WatchlistItem
+import com.example.stocksignal.notifications.NotificationDiagnosticsRepository
 import com.example.stocksignal.ui.model.AiGenerationState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.async
@@ -25,6 +27,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -38,11 +41,23 @@ class WatchlistViewModel @Inject constructor(
     private val watchlistRepository: WatchlistRepository,
     private val stockRepository: StockRepository,
     private val signalsRepository: SignalsRepository,
-    private val settingsRepository: SettingsRepository
+    private val settingsRepository: SettingsRepository,
+    private val diagnosticsRepository: NotificationDiagnosticsRepository,
+    private val stooqRequestBlocker: StooqRequestBlocker
 ) : ViewModel() {
 
     private val marketData = MutableStateFlow<Map<String, WatchlistMarketData>>(emptyMap())
     private val _errorMessage = MutableStateFlow<String?>(null)
+
+    val stooqBlockedMessage: StateFlow<String?> = diagnosticsRepository.stooqBlockedFlow()
+        .map { info ->
+            val message = info.message?.takeIf { it.isNotBlank() }
+            val until = info.blockedUntilMillis
+            if (message == null) return@map null
+            if (until != null && until <= System.currentTimeMillis()) return@map null
+            message
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     val watchlistCards: StateFlow<List<WatchlistCardState>> = combine(
         watchlistRepository.watchlistFlow,
@@ -117,6 +132,13 @@ class WatchlistViewModel @Inject constructor(
 
     fun clearError() {
         _errorMessage.value = null
+    }
+
+    fun clearStooqBlock() {
+        viewModelScope.launch {
+            stooqRequestBlocker.clearBlock()
+            diagnosticsRepository.clearStooqBlocked()
+        }
     }
 
     private suspend fun refreshMarketData(items: List<WatchlistItemEntity>) = coroutineScope {

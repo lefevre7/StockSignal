@@ -13,6 +13,7 @@ import com.example.stocksignal.data.settings.ScheduleWindowType
 import com.example.stocksignal.data.settings.SettingsRepository
 import com.example.stocksignal.data.settings.SignalSensitivity
 import com.example.stocksignal.data.settings.SnoozeDurationOption
+import com.example.stocksignal.data.stooq.network.StooqRequestBlocker
 import com.example.stocksignal.data.translation.NewsTranslationService
 import com.example.stocksignal.domain.model.ChartRange
 import com.example.stocksignal.notifications.NotificationDiagnosticsRepository
@@ -38,6 +39,7 @@ class SettingsViewModel @Inject constructor(
     private val notificationTestSender: NotificationTestSender,
     private val notificationScheduler: NotificationScheduler,
     private val diagnosticsRepository: NotificationDiagnosticsRepository,
+    private val stooqRequestBlocker: StooqRequestBlocker,
     private val translationService: NewsTranslationService
 ) : ViewModel() {
 
@@ -54,7 +56,14 @@ class SettingsViewModel @Inject constructor(
         _modelDownloadProgress,
         _isDownloadingModel,
         _stooqBlockedMessage
-    ) { settings, error, toast, downloadProgress, isDownloading, stooqBlocked ->
+    ) { flows: Array<Any?> ->
+        val settings = flows[0] as AppSettings
+        val error = flows[1] as String?
+        val toast = flows[2] as String?
+        val downloadProgress = flows[3] as Int?
+        val isDownloading = flows[4] as Boolean
+        val stooqBlocked = flows[5] as String?
+        
         SettingsUiState(
             settings = settings,
             errorMessage = error,
@@ -80,10 +89,12 @@ class SettingsViewModel @Inject constructor(
         _toastMessage.value = null
     }
 
-    fun clearStooqBlockedMessage() {
+    fun clearStooqBlock() {
         viewModelScope.launch {
+            stooqRequestBlocker.clearBlock()
             diagnosticsRepository.clearStooqBlocked()
             _stooqBlockedMessage.value = null
+            showToast("Stooq block cleared")
         }
     }
 

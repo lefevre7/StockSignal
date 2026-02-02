@@ -35,6 +35,12 @@ class StooqRequestBlocker @Inject constructor() {
         Log.w(TAG, "Blocking Stooq requests until ${formatTime(until)}")
     }
 
+    fun clearBlock() {
+        blockedUntilMillis.set(0L)
+        lastReason.set(null)
+        Log.i(TAG, "Stooq block cleared manually.")
+    }
+
     fun buildBlockedMessage(): String {
         val until = blockedUntilMillis.get()
         val timeLabel = formatTime(until)

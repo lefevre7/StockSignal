@@ -86,10 +86,13 @@ fun WatchlistRoute(
 ) {
     val items by viewModel.watchlistCards.collectAsStateWithLifecycle()
     val errorMessage by viewModel.errorMessage.collectAsStateWithLifecycle()
+    val stooqBlockedMessage by viewModel.stooqBlockedMessage.collectAsStateWithLifecycle()
     WatchlistScreen(
         items = items,
         errorMessage = errorMessage,
+        stooqBlockedMessage = stooqBlockedMessage,
         onClearError = viewModel::clearError,
+        onClearStooqBlock = viewModel::clearStooqBlock,
         onReorder = viewModel::persistCustomOrder,
         onRemove = viewModel::remove,
         onSnooze = viewModel::snooze,
@@ -121,7 +124,9 @@ fun WatchlistScreen(
     items: List<WatchlistCardState>,
     modifier: Modifier = Modifier,
     errorMessage: String? = null,
+    stooqBlockedMessage: String? = null,
     onClearError: () -> Unit = {},
+    onClearStooqBlock: () -> Unit = {},
     onReorder: (List<WatchlistItem>) -> Unit = {},
     onRemove: (String) -> Unit = {},
     onSnooze: (String) -> Unit = {},
@@ -192,6 +197,14 @@ fun WatchlistScreen(
         Spacer(modifier = Modifier.height(12.dp))
         WatchlistSummary(items = items)
         Spacer(modifier = Modifier.height(16.dp))
+
+        stooqBlockedMessage?.let { message ->
+            StooqBlockedBanner(
+                message = message,
+                onClear = onClearStooqBlock
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+        }
 
         errorMessage?.let { error ->
             ErrorBanner(
@@ -719,6 +732,35 @@ private fun ErrorBanner(
                     contentDescription = "Dismiss error",
                     tint = MaterialTheme.colorScheme.onErrorContainer
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun StooqBlockedBanner(
+    message: String,
+    onClear: () -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer
+        ),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp)
+        ) {
+            Text(
+                text = "Stooq blocked: $message",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onErrorContainer
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            TextButton(onClick = onClear) {
+                Text(text = "Clear block")
             }
         }
     }
