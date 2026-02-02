@@ -42,6 +42,10 @@ class StooqRequestBlocker @Inject constructor() {
         return "$prefix Requests are paused until $timeLabel."
     }
 
+    fun blockedUntilMillis(): Long {
+        return blockedUntilMillis.get()
+    }
+
     private fun formatTime(epochMillis: Long): String {
         if (epochMillis <= 0L) return "soon"
         val localTime = Instant.ofEpochMilli(epochMillis)

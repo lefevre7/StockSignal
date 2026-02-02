@@ -21,6 +21,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -42,8 +43,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationManagerCompat
@@ -84,7 +87,10 @@ fun SettingsRoute(viewModel: SettingsViewModel = hiltViewModel()) {
     SettingsScreen(
         settings = state.settings,
         errorMessage = state.errorMessage,
+        stooqBlockedMessage = state.stooqBlockedMessage,
         onClearError = viewModel::clearError,
+        onClearStooqBlocked = viewModel::clearStooqBlockedMessage,
+        onRefreshStooqBlocked = viewModel::refreshStooqBlockedMessage,
         onHoldingPeriodChange = viewModel::setHoldingPeriod,
         onFrequencyChange = viewModel::setFrequency,
         onNotificationTypeToggle = viewModel::toggleNotificationType,
@@ -134,7 +140,10 @@ fun SettingsScreen(
     onForceScheduleWorkers: () -> Unit,
     modifier: Modifier = Modifier,
     errorMessage: String? = null,
-    onClearError: () -> Unit = {}
+    stooqBlockedMessage: String? = null,
+    onClearError: () -> Unit = {},
+    onClearStooqBlocked: () -> Unit = {},
+    onRefreshStooqBlocked: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -149,6 +158,7 @@ fun SettingsScreen(
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 exactAlarmAllowedState.value = ExactAlarmPermission.isAllowed(context)
+                onRefreshStooqBlocked()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -192,6 +202,15 @@ fun SettingsScreen(
                 text = "Notification controls and signal sensitivity.",
                 style = MaterialTheme.typography.bodySmall
             )
+        }
+
+        stooqBlockedMessage?.let { message ->
+            item {
+                ErrorBanner(
+                    message = "Stooq blocked: $message",
+                    onDismiss = onClearStooqBlocked
+                )
+            }
         }
 
         errorMessage?.let { error ->
@@ -846,6 +865,8 @@ private fun ErrorBanner(
     message: String,
     onDismiss: () -> Unit
 ) {
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
     Card(
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.errorContainer
@@ -864,6 +885,16 @@ private fun ErrorBanner(
                     text = message,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onErrorContainer
+                )
+            }
+            IconButton(onClick = {
+                clipboard.setText(AnnotatedString(message))
+                Toast.makeText(context, "Diagnostics copied", Toast.LENGTH_SHORT).show()
+            }) {
+                Icon(
+                    Icons.Filled.ContentCopy,
+                    contentDescription = "Copy diagnostics",
+                    tint = MaterialTheme.colorScheme.onErrorContainer
                 )
             }
             IconButton(onClick = onDismiss) {

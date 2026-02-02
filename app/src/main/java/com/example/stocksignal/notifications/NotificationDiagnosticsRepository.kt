@@ -34,6 +34,12 @@ class NotificationDiagnosticsRepository @Inject constructor(
         val lastReason: String?
     )
 
+    data class StooqBlockedInfo(
+        val blockedAtMillis: Long?,
+        val blockedUntilMillis: Long?,
+        val message: String?
+    )
+
     suspend fun recordWindowRun(
         windowId: String,
         result: String,
@@ -176,6 +182,39 @@ class NotificationDiagnosticsRepository @Inject constructor(
         )
     }
 
+    suspend fun recordStooqBlocked(message: String, blockedUntilMillis: Long?) {
+        dataStore.edit { prefs ->
+            prefs[stooqBlockedAtKey] = System.currentTimeMillis()
+            if (blockedUntilMillis == null || blockedUntilMillis <= 0L) {
+                prefs.remove(stooqBlockedUntilKey)
+            } else {
+                prefs[stooqBlockedUntilKey] = blockedUntilMillis
+            }
+            if (message.isBlank()) {
+                prefs.remove(stooqBlockedMessageKey)
+            } else {
+                prefs[stooqBlockedMessageKey] = message
+            }
+        }
+    }
+
+    suspend fun clearStooqBlocked() {
+        dataStore.edit { prefs ->
+            prefs.remove(stooqBlockedAtKey)
+            prefs.remove(stooqBlockedUntilKey)
+            prefs.remove(stooqBlockedMessageKey)
+        }
+    }
+
+    suspend fun getStooqBlockedInfo(): StooqBlockedInfo {
+        val prefs = dataStore.data.first()
+        return StooqBlockedInfo(
+            blockedAtMillis = prefs[stooqBlockedAtKey],
+            blockedUntilMillis = prefs[stooqBlockedUntilKey],
+            message = prefs[stooqBlockedMessageKey]
+        )
+    }
+
     suspend fun setScheduledPremarketKeys(keys: Set<String>) {
         dataStore.edit { prefs ->
             prefs[scheduledPremarketKeysKey] = keys
@@ -264,6 +303,9 @@ class NotificationDiagnosticsRepository @Inject constructor(
         private val robotsLastRunKey = longPreferencesKey("notif_robots_last_run")
         private val robotsLastResultKey = stringPreferencesKey("notif_robots_last_result")
         private val robotsLastReasonKey = stringPreferencesKey("notif_robots_last_reason")
+        private val stooqBlockedAtKey = longPreferencesKey("stooq_blocked_at")
+        private val stooqBlockedUntilKey = longPreferencesKey("stooq_blocked_until")
+        private val stooqBlockedMessageKey = stringPreferencesKey("stooq_blocked_message")
         private val scheduledPremarketKeysKey = stringSetPreferencesKey("notif_scheduled_premarket_keys")
         private val lastExactAlarmAllowedKey = booleanPreferencesKey("notif_exact_alarm_allowed")
 

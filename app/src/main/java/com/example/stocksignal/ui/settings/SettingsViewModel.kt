@@ -45,26 +45,30 @@ class SettingsViewModel @Inject constructor(
     private val _toastMessage = MutableStateFlow<String?>(null)
     private val _modelDownloadProgress = MutableStateFlow<Int?>(null)
     private val _isDownloadingModel = MutableStateFlow(false)
+    private val _stooqBlockedMessage = MutableStateFlow<String?>(null)
 
     val uiState: StateFlow<SettingsUiState> = combine(
         settingsRepository.settingsFlow,
         _errorMessage,
         _toastMessage,
         _modelDownloadProgress,
-        _isDownloadingModel
-    ) { settings, error, toast, downloadProgress, isDownloading ->
+        _isDownloadingModel,
+        _stooqBlockedMessage
+    ) { settings, error, toast, downloadProgress, isDownloading, stooqBlocked ->
         SettingsUiState(
             settings = settings,
             errorMessage = error,
             toastMessage = toast,
             modelDownloadProgress = downloadProgress,
-            isDownloadingModel = isDownloading
+            isDownloadingModel = isDownloading,
+            stooqBlockedMessage = stooqBlocked
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState(settings = defaultSettings()))
 
     init {
         viewModelScope.launch {
             forceEnableOfflineTranslation()
+            refreshStooqBlockedMessage()
         }
     }
 
@@ -74,6 +78,31 @@ class SettingsViewModel @Inject constructor(
 
     fun clearToast() {
         _toastMessage.value = null
+    }
+
+    fun clearStooqBlockedMessage() {
+        viewModelScope.launch {
+            diagnosticsRepository.clearStooqBlocked()
+            _stooqBlockedMessage.value = null
+        }
+    }
+
+    fun refreshStooqBlockedMessage() {
+        viewModelScope.launch {
+            val info = diagnosticsRepository.getStooqBlockedInfo()
+            val now = System.currentTimeMillis()
+            if (info.message.isNullOrBlank()) {
+                _stooqBlockedMessage.value = null
+                return@launch
+            }
+            val blockedUntil = info.blockedUntilMillis
+            if (blockedUntil != null && blockedUntil <= now) {
+                diagnosticsRepository.clearStooqBlocked()
+                _stooqBlockedMessage.value = null
+                return@launch
+            }
+            _stooqBlockedMessage.value = info.message
+        }
     }
 
     private fun showToast(message: String) {
@@ -290,6 +319,7 @@ class SettingsViewModel @Inject constructor(
                 val robotsNext = diagnosticsRepository.getRobotsNextRun()
                 val robotsRunInfo = diagnosticsRepository.getRobotsRunInfo()
                 val exactAllowed = diagnosticsRepository.getLastExactAlarmAllowed()
+                val stooqBlockedInfo = diagnosticsRepository.getStooqBlockedInfo()
 
                 val status = buildString {
                     appendLine("📊 Alarm Schedule Status:")
@@ -340,6 +370,11 @@ class SettingsViewModel @Inject constructor(
                     if (!robotsRunInfo.lastReason.isNullOrBlank()) {
                         appendLine("Robots.txt last reason: ${robotsRunInfo.lastReason}")
                     }
+                    val stooqMessage = stooqBlockedInfo.message
+                    val stooqUntil = stooqBlockedInfo.blockedUntilMillis
+                    if (!stooqMessage.isNullOrBlank() && (stooqUntil == null || stooqUntil > nowMillis)) {
+                        appendLine("Stooq blocked: $stooqMessage")
+                    }
                     if (exactAllowed != null) {
                         appendLine("Exact alarms allowed: $exactAllowed")
                     }
@@ -349,6 +384,7 @@ class SettingsViewModel @Inject constructor(
                 
                 Log.d(TAG, status)
                 _errorMessage.value = status
+                refreshStooqBlockedMessage()
             } catch (e: Exception) {
                 Log.e(TAG, "Error checking alarm status", e)
                 _errorMessage.value = "Error checking status: ${e.message}"
@@ -509,5 +545,6 @@ data class SettingsUiState(
     val errorMessage: String? = null,
     val toastMessage: String? = null,
     val modelDownloadProgress: Int? = null,
-    val isDownloadingModel: Boolean = false
+    val isDownloadingModel: Boolean = false,
+    val stooqBlockedMessage: String? = null
 )

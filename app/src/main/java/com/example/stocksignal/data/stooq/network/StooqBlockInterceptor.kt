@@ -4,12 +4,14 @@ import okhttp3.Interceptor
 import okhttp3.Response
 import java.net.SocketTimeoutException
 import java.time.Duration
+import kotlin.random.Random
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class StooqBlockInterceptor @Inject constructor(
-    private val blocker: StooqRequestBlocker
+    private val blocker: StooqRequestBlocker,
+    private val blockReporter: StooqBlockReporter
 ) : Interceptor {
 
     @Volatile private var lastRequestAtMillis: Long = 0L
@@ -17,7 +19,9 @@ class StooqBlockInterceptor @Inject constructor(
 
     override fun intercept(chain: Interceptor.Chain): Response {
         if (blocker.isBlocked()) {
-            throw StooqBlockedException(blocker.buildBlockedMessage())
+            val message = blocker.buildBlockedMessage()
+            blockReporter.reportBlocked(message, blocker.blockedUntilMillis())
+            throw StooqBlockedException(message)
         }
 
         enforceMinGap()
@@ -26,7 +30,9 @@ class StooqBlockInterceptor @Inject constructor(
             chain.proceed(chain.request())
         } catch (e: SocketTimeoutException) {
             blocker.blockFor(BLOCK_DURATION, "Stooq timed out.")
-            throw StooqBlockedException(blocker.buildBlockedMessage(), e)
+            val message = blocker.buildBlockedMessage()
+            blockReporter.reportBlocked(message, blocker.blockedUntilMillis())
+            throw StooqBlockedException(message, e)
         }
     }
 
@@ -34,7 +40,8 @@ class StooqBlockInterceptor @Inject constructor(
         synchronized(requestLock) {
             val now = System.currentTimeMillis()
             val elapsed = now - lastRequestAtMillis
-            val waitMs = MIN_REQUEST_GAP_MS - elapsed
+            val targetGap = BASE_REQUEST_GAP_MS + Random.nextLong(JITTER_MS + 1)
+            val waitMs = targetGap - elapsed
             if (waitMs > 0) {
                 try {
                     Thread.sleep(waitMs)
@@ -48,6 +55,7 @@ class StooqBlockInterceptor @Inject constructor(
 
     companion object {
         private val BLOCK_DURATION = Duration.ofHours(24)
-        private const val MIN_REQUEST_GAP_MS = 500L
+        private const val BASE_REQUEST_GAP_MS = 1000L
+        private const val JITTER_MS = 400L
     }
 }

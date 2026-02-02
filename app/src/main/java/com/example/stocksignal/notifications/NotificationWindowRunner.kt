@@ -35,6 +35,7 @@ import com.example.stocksignal.util.DebugConfig
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import java.time.Duration
+import java.time.Instant
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.ZoneId
@@ -68,6 +69,11 @@ class NotificationWindowRunner @Inject constructor(
         val watchlistCacheUsedTickers: MutableList<String> = mutableListOf(),
         val watchlistEmptyTickers: MutableList<String> = mutableListOf(),
         val watchlistLastCandleTickers: MutableList<String> = mutableListOf(),
+        val watchlistLiveFetchTimes: MutableList<String> = mutableListOf(),
+        val watchlistCacheFetchTimes: MutableList<String> = mutableListOf(),
+        val watchlistDailyFetchTimes: MutableList<String> = mutableListOf(),
+        val watchlistOverviewFetchTimes: MutableList<String> = mutableListOf(),
+        val watchlistTimeoutRemaining: MutableList<String> = mutableListOf(),
         var watchlistEmpty: Int = 0,
         var watchlistStale: Int = 0,
         var watchlistSignalNull: Int = 0,
@@ -88,6 +94,12 @@ class NotificationWindowRunner @Inject constructor(
         val moversCacheUsedTickers: MutableList<String> = mutableListOf(),
         val moversEmptyTickers: MutableList<String> = mutableListOf(),
         val moversLastCandleTickers: MutableList<String> = mutableListOf(),
+        val moversLiveFetchTimes: MutableList<String> = mutableListOf(),
+        val moversCacheFetchTimes: MutableList<String> = mutableListOf(),
+        val moversDailyFetchTimes: MutableList<String> = mutableListOf(),
+        val moversOverviewFetchTimes: MutableList<String> = mutableListOf(),
+        val moversListFetchTimes: MutableList<String> = mutableListOf(),
+        val moversTimeoutRemaining: MutableList<String> = mutableListOf(),
         var moversEmpty: Int = 0,
         var moversStale: Int = 0,
         var moversSignalNull: Int = 0,
@@ -112,6 +124,19 @@ class NotificationWindowRunner @Inject constructor(
         SUCCESS,
         RETRY,
         FAILURE
+    }
+
+    private class FetchTimingTracker {
+        var lastFetchEndMillis: Long? = null
+
+        fun waitMillis(startMillis: Long): Long {
+            val last = lastFetchEndMillis ?: return 0L
+            return (startMillis - last).coerceAtLeast(0L)
+        }
+
+        fun markEnd(endMillis: Long) {
+            lastFetchEndMillis = endMillis
+        }
     }
 
     suspend fun run(windowId: String, runAttemptCount: Int = 0): RunOutcome {
@@ -156,6 +181,9 @@ class NotificationWindowRunner @Inject constructor(
             Log.i(TAG, "   Watchlist: $watchlistEnabled, MarketMovers: $moversEnabled")
             val candidates = mutableListOf<NotificationEvent>()
             val now = LocalDateTime.now()
+            val runDeadlineMillis = System.currentTimeMillis() + MAX_WINDOW_RUNTIME_MINUTES * 60_000L
+            val timingTracker = FetchTimingTracker()
+            fun hasTimedOut(): Boolean = System.currentTimeMillis() >= runDeadlineMillis
             val premarketWindow = PremarketWindowUtils.resolvePremarketWindow(
                 settings,
                 windowId,
@@ -184,7 +212,14 @@ class NotificationWindowRunner @Inject constructor(
                 if (watchlist.isEmpty()) {
                     Log.w(TAG, "⚠️ No watchlist items to evaluate for window $windowId")
                 }
-                for (item in watchlist) {
+                for ((index, item) in watchlist.withIndex()) {
+                    if (hasTimedOut()) {
+                        diagnostics.watchlistTimeoutRemaining.addAll(
+                            watchlist.drop(index).map { it.symbol }
+                        )
+                        Log.w(TAG, "Window $windowId timed out; skipping remaining watchlist items")
+                        break
+                    }
                     Log.d(TAG, "   → Processing: ${item.symbol} (${item.companyName})")
                     try {
                         if (!item.alertEnabled) {
@@ -206,7 +241,10 @@ class NotificationWindowRunner @Inject constructor(
                         val seriesOutcome = fetchSeriesWithFallback(
                             symbol = item.symbol,
                             range = watchlistRange,
-                            usePremarketData = usePremarketData
+                            usePremarketData = usePremarketData,
+                            timingTracker = timingTracker,
+                            liveLog = diagnostics.watchlistLiveFetchTimes,
+                            cacheLog = diagnostics.watchlistCacheFetchTimes
                         )
                         if (seriesOutcome.series != null) {
                             if (seriesOutcome.usedFallback) {
@@ -249,7 +287,14 @@ class NotificationWindowRunner @Inject constructor(
                             // fall back to daily data which will have more history
                             val signalSeries = if (series.size < MIN_CANDLES_FOR_SIGNAL) {
                                 Log.i(TAG, "   🔄 ${item.symbol}: Insufficient candles (${series.size}), fetching daily fallback")
-                                when (val fallback = stockRepository.getDailySeriesFallback(item.symbol, ChartRange.SIX_MONTH)) {
+                                when (
+                                    val fallback = fetchDailyFallbackWithDiagnostics(
+                                        symbol = item.symbol,
+                                        range = ChartRange.SIX_MONTH,
+                                        timingTracker = timingTracker,
+                                        logList = diagnostics.watchlistDailyFetchTimes
+                                    )
+                                ) {
                                     is StooqResult.Success -> {
                                         Log.i(TAG, "   ✓ ${item.symbol}: Daily fallback got ${fallback.data.size} candles")
                                         fallback.data
@@ -265,7 +310,11 @@ class NotificationWindowRunner @Inject constructor(
                             }
                             
                             Log.d(TAG, "   🧮 ${item.symbol}: Computing signal with ${signalSeries.size} candles...")
-                            val overview = loadOverviewCached(item.symbol)
+                            val overview = loadOverviewCached(
+                                symbol = item.symbol,
+                                timingTracker = timingTracker,
+                                logList = diagnostics.watchlistOverviewFetchTimes
+                            )
                             val signal = signalsRepository.computeSignal(item.symbol, signalSeries, watchlistRange, overview)
                             if (signal == null) {
                                 Log.d(TAG, "   ⚠️ ${item.symbol}: No signal generated")
@@ -310,7 +359,10 @@ class NotificationWindowRunner @Inject constructor(
                             item = item,
                             holdingPeriod = settings.holdingPeriod,
                             now = now,
-                            candidates = candidates
+                            candidates = candidates,
+                            timingTracker = timingTracker,
+                            fetchLog = diagnostics.watchlistLiveFetchTimes,
+                            overviewLog = diagnostics.watchlistOverviewFetchTimes
                         )
                     } catch (e: Exception) {
                         Log.e(TAG, "   ❌ ${item.symbol}: Exception during processing", e)
@@ -320,156 +372,194 @@ class NotificationWindowRunner @Inject constructor(
             }
 
             if (moversEnabled) {
-                val watchlistSymbols = watchlist.map { it.symbol }.toSet()
-                val increasersOutcome = fetchMarketMoversSnapshot(moversRange, MarketMoverDirection.INCREASERS)
-                val decreasersOutcome = fetchMarketMoversSnapshot(moversRange, MarketMoverDirection.DECREASERS)
-
-                if (increasersOutcome.liveErrorMessage != null) {
-                    diagnostics.moversListFetchFailures += 1
-                    diagnostics.moversListLastError = diagnostics.moversListLastError
-                        ?: truncateError(increasersOutcome.liveErrorMessage)
-                    recordTicker(
-                        diagnostics.moversListErrors,
-                        "increasers:${truncateError(increasersOutcome.liveErrorMessage, TICKER_ERROR_MAX)}"
+                if (hasTimedOut()) {
+                    diagnostics.moversTimeoutRemaining.add("list_fetch")
+                    Log.w(TAG, "Window $windowId timed out; skipping market movers list")
+                } else {
+                    val watchlistSymbols = watchlist.map { it.symbol }.toSet()
+                    val increasersOutcome = fetchMarketMoversSnapshot(
+                        range = moversRange,
+                        direction = MarketMoverDirection.INCREASERS,
+                        timingTracker = timingTracker,
+                        logList = diagnostics.moversListFetchTimes,
+                        labelPrefix = "increasers"
                     )
-                }
-                if (decreasersOutcome.liveErrorMessage != null) {
-                    diagnostics.moversListFetchFailures += 1
-                    diagnostics.moversListLastError = diagnostics.moversListLastError
-                        ?: truncateError(decreasersOutcome.liveErrorMessage)
-                    recordTicker(
-                        diagnostics.moversListErrors,
-                        "decreasers:${truncateError(decreasersOutcome.liveErrorMessage, TICKER_ERROR_MAX)}"
+                    val decreasersOutcome = fetchMarketMoversSnapshot(
+                        range = moversRange,
+                        direction = MarketMoverDirection.DECREASERS,
+                        timingTracker = timingTracker,
+                        logList = diagnostics.moversListFetchTimes,
+                        labelPrefix = "decreasers"
                     )
-                }
 
-                if (increasersOutcome.usedFallback) diagnostics.moversListFallbacks += 1
-                if (decreasersOutcome.usedFallback) diagnostics.moversListFallbacks += 1
-
-                val increasersSnapshot = increasersOutcome.snapshot
-                val decreasersSnapshot = decreasersOutcome.snapshot
-                if (increasersSnapshot?.isStale == true) {
-                    Log.d(TAG, "Market movers increasers snapshot stale; using cached list")
-                    diagnostics.moversListStale += 1
-                }
-                if (decreasersSnapshot?.isStale == true) {
-                    Log.d(TAG, "Market movers decreasers snapshot stale; using cached list")
-                    diagnostics.moversListStale += 1
-                }
-                val increasers = increasersSnapshot?.items.orEmpty()
-                val decreasers = decreasersSnapshot?.items.orEmpty()
-                val movers = (increasers.take(MAX_MOVERS) + decreasers.take(MAX_MOVERS))
-                    .distinctBy { it.ticker }
-                    .filterNot { watchlistSymbols.contains(it.ticker) }
-                diagnostics.moversTotal = movers.size
-
-                if (movers.isEmpty()) {
-                    Log.d(TAG, "No market movers candidates to evaluate for window $windowId")
-                }
-
-                movers.forEach { mover ->
-                    try {
-                        val seriesOutcome = fetchSeriesWithFallback(
-                            symbol = mover.ticker,
-                            range = moversChartRange,
-                            usePremarketData = false
+                    if (increasersOutcome.liveErrorMessage != null) {
+                        diagnostics.moversListFetchFailures += 1
+                        diagnostics.moversListLastError = diagnostics.moversListLastError
+                            ?: truncateError(increasersOutcome.liveErrorMessage)
+                        recordTicker(
+                            diagnostics.moversListErrors,
+                            "increasers:${truncateError(increasersOutcome.liveErrorMessage, TICKER_ERROR_MAX)}"
                         )
-                        if (seriesOutcome.series != null) {
-                            if (seriesOutcome.usedFallback) {
-                                diagnostics.moversFallbacks += 1
-                                recordTicker(diagnostics.moversCacheUsedTickers, mover.ticker)
-                            }
-                            if (seriesOutcome.errorMessage != null) {
-                                diagnostics.moversFetchFailures += 1
-                                diagnostics.moversLastFetchError = diagnostics.moversLastFetchError
-                                    ?: truncateError(seriesOutcome.errorMessage)
-                                recordTicker(
-                                    diagnostics.moversFailedTickers,
-                                    "${mover.ticker}:${truncateError(seriesOutcome.errorMessage, TICKER_ERROR_MAX)}"
-                                )
-                            }
-                            val series = seriesOutcome.series
-                            if (series.isEmpty()) {
-                                Log.d(TAG, "Market mover ${mover.ticker} no intraday candles returned; skipping")
-                                diagnostics.moversEmpty += 1
-                                recordTicker(diagnostics.moversEmptyTickers, mover.ticker)
+                    }
+                    if (decreasersOutcome.liveErrorMessage != null) {
+                        diagnostics.moversListFetchFailures += 1
+                        diagnostics.moversListLastError = diagnostics.moversListLastError
+                            ?: truncateError(decreasersOutcome.liveErrorMessage)
+                        recordTicker(
+                            diagnostics.moversListErrors,
+                            "decreasers:${truncateError(decreasersOutcome.liveErrorMessage, TICKER_ERROR_MAX)}"
+                        )
+                    }
+
+                    if (increasersOutcome.usedFallback) diagnostics.moversListFallbacks += 1
+                    if (decreasersOutcome.usedFallback) diagnostics.moversListFallbacks += 1
+
+                    val increasersSnapshot = increasersOutcome.snapshot
+                    val decreasersSnapshot = decreasersOutcome.snapshot
+                    if (increasersSnapshot?.isStale == true) {
+                        Log.d(TAG, "Market movers increasers snapshot stale; using cached list")
+                        diagnostics.moversListStale += 1
+                    }
+                    if (decreasersSnapshot?.isStale == true) {
+                        Log.d(TAG, "Market movers decreasers snapshot stale; using cached list")
+                        diagnostics.moversListStale += 1
+                    }
+                    val increasers = increasersSnapshot?.items.orEmpty()
+                    val decreasers = decreasersSnapshot?.items.orEmpty()
+                    val movers = (increasers.take(MAX_MOVERS) + decreasers.take(MAX_MOVERS))
+                        .distinctBy { it.ticker }
+                        .filterNot { watchlistSymbols.contains(it.ticker) }
+                    diagnostics.moversTotal = movers.size
+
+                    if (movers.isEmpty()) {
+                        Log.d(TAG, "No market movers candidates to evaluate for window $windowId")
+                    }
+
+                    movers.forEachIndexed { index, mover ->
+                        if (hasTimedOut()) {
+                            diagnostics.moversTimeoutRemaining.addAll(
+                                movers.drop(index).map { it.ticker }
+                            )
+                            Log.w(TAG, "Window $windowId timed out; skipping remaining movers")
+                            return@forEachIndexed
+                        }
+                        try {
+                            val seriesOutcome = fetchSeriesWithFallback(
+                                symbol = mover.ticker,
+                                range = moversChartRange,
+                                usePremarketData = false,
+                                timingTracker = timingTracker,
+                                liveLog = diagnostics.moversLiveFetchTimes,
+                                cacheLog = diagnostics.moversCacheFetchTimes
+                            )
+                            if (seriesOutcome.series != null) {
+                                if (seriesOutcome.usedFallback) {
+                                    diagnostics.moversFallbacks += 1
+                                    recordTicker(diagnostics.moversCacheUsedTickers, mover.ticker)
+                                }
+                                if (seriesOutcome.errorMessage != null) {
+                                    diagnostics.moversFetchFailures += 1
+                                    diagnostics.moversLastFetchError = diagnostics.moversLastFetchError
+                                        ?: truncateError(seriesOutcome.errorMessage)
+                                    recordTicker(
+                                        diagnostics.moversFailedTickers,
+                                        "${mover.ticker}:${truncateError(seriesOutcome.errorMessage, TICKER_ERROR_MAX)}"
+                                    )
+                                }
+                                val series = seriesOutcome.series
+                                if (series.isEmpty()) {
+                                    Log.d(TAG, "Market mover ${mover.ticker} no intraday candles returned; skipping")
+                                    diagnostics.moversEmpty += 1
+                                    recordTicker(diagnostics.moversEmptyTickers, mover.ticker)
+                                    recordTicker(
+                                        diagnostics.moversLastCandleTickers,
+                                        "${mover.ticker}:empty"
+                                    )
+                                    return@forEachIndexed
+                                }
                                 recordTicker(
                                     diagnostics.moversLastCandleTickers,
-                                    "${mover.ticker}:empty"
+                                    "${mover.ticker}:${formatCandleTime(series.last().time)}"
                                 )
-                                return@forEach
-                            }
-                            recordTicker(
-                                diagnostics.moversLastCandleTickers,
-                                "${mover.ticker}:${formatCandleTime(series.last().time)}"
-                            )
-                            if (!isFresh(series, now)) {
-                                Log.d(TAG, "Market mover ${mover.ticker} data stale; skipping")
-                                diagnostics.moversStale += 1
-                                recordTicker(diagnostics.moversStaleTickers, mover.ticker)
-                                return@forEach
-                            }
-                            
-                            // If intraday data doesn't have enough candles for signal computation (need 20+),
-                            // fall back to daily data which will have more history
-                            val signalSeries = if (series.size < MIN_CANDLES_FOR_SIGNAL) {
-                                Log.d(TAG, "Market mover ${mover.ticker}: insufficient candles (${series.size}), fetching daily fallback")
-                                when (val fallback = stockRepository.getDailySeriesFallback(mover.ticker, ChartRange.SIX_MONTH)) {
-                                    is StooqResult.Success -> fallback.data
-                                    is StooqResult.Error -> {
-                                        Log.w(TAG, "Daily fallback failed for ${mover.ticker}, using limited intraday")
-                                        series
-                                    }
+                                if (!isFresh(series, now)) {
+                                    Log.d(TAG, "Market mover ${mover.ticker} data stale; skipping")
+                                    diagnostics.moversStale += 1
+                                    recordTicker(diagnostics.moversStaleTickers, mover.ticker)
+                                    return@forEachIndexed
                                 }
+
+                                // If intraday data doesn't have enough candles for signal computation (need 20+),
+                                // fall back to daily data which will have more history
+                                val signalSeries = if (series.size < MIN_CANDLES_FOR_SIGNAL) {
+                                    Log.d(TAG, "Market mover ${mover.ticker}: insufficient candles (${series.size}), fetching daily fallback")
+                                    when (
+                                        val fallback = fetchDailyFallbackWithDiagnostics(
+                                            symbol = mover.ticker,
+                                            range = ChartRange.SIX_MONTH,
+                                            timingTracker = timingTracker,
+                                            logList = diagnostics.moversDailyFetchTimes
+                                        )
+                                    ) {
+                                        is StooqResult.Success -> fallback.data
+                                        is StooqResult.Error -> {
+                                            Log.w(TAG, "Daily fallback failed for ${mover.ticker}, using limited intraday")
+                                            series
+                                        }
+                                    }
+                                } else {
+                                    series
+                                }
+
+                                val overview = loadOverviewCached(
+                                    symbol = mover.ticker,
+                                    timingTracker = timingTracker,
+                                    logList = diagnostics.moversOverviewFetchTimes
+                                )
+                                val signal = signalsRepository.computeSignal(mover.ticker, signalSeries, moversChartRange, overview)
+                                if (signal == null) {
+                                    Log.d(TAG, "Market mover ${mover.ticker} no signal generated")
+                                    diagnostics.moversSignalNull += 1
+                                    return@forEachIndexed
+                                }
+                                val displayScore = signal.displayScore
+                                val strongBuy = settings.signalSensitivity.strongBuyThreshold
+                                val strongSell = settings.signalSensitivity.strongSellThreshold
+                                if (displayScore < strongBuy && displayScore > strongSell) {
+                                    Log.d(TAG, "Market mover ${mover.ticker} score $displayScore below thresholds")
+                                    diagnostics.moversBelowThreshold += 1
+                                    return@forEachIndexed
+                                }
+                                if (signalsRepository.isInCooldown(mover.ticker, signal.tier.label, signal.generatedAt)) {
+                                    Log.d(TAG, "Market mover ${mover.ticker} signal ${signal.tier.label} in cooldown")
+                                    diagnostics.moversCooldown += 1
+                                    return@forEachIndexed
+                                }
+                                val event = buildEvent(
+                                    signal = signal,
+                                    ticker = mover.ticker,
+                                    company = mover.companyName,
+                                    price = mover.price,
+                                    percentChange = mover.percentChange,
+                                    type = NotificationEventType.MARKET_MOVER
+                                )
+                                signalsRepository.recordEvent(event)
+                                candidates.add(event)
+                                moverCandidates += 1
+                                Log.d(TAG, "Market mover candidate ${mover.ticker} ${signal.tier.label} score=$displayScore")
                             } else {
-                                series
+                                diagnostics.moversFetchFailures += 1
+                                diagnostics.moversLastFetchError = diagnostics.moversLastFetchError
+                                    ?: truncateError(seriesOutcome.errorMessage) ?: "unknown fetch failure"
+                                recordTicker(
+                                    diagnostics.moversFailedTickers,
+                                    "${mover.ticker}:${truncateError(seriesOutcome.errorMessage, TICKER_ERROR_MAX) ?: "unknown"}"
+                                )
+                                Log.w(TAG, "Market mover ${mover.ticker} failed to fetch series; skipping (${seriesOutcome.errorMessage})")
                             }
-                            
-                            val overview = loadOverviewCached(mover.ticker)
-                            val signal = signalsRepository.computeSignal(mover.ticker, signalSeries, moversChartRange, overview)
-                            if (signal == null) {
-                                Log.d(TAG, "Market mover ${mover.ticker} no signal generated")
-                                diagnostics.moversSignalNull += 1
-                                return@forEach
-                            }
-                            val displayScore = signal.displayScore
-                            val strongBuy = settings.signalSensitivity.strongBuyThreshold
-                            val strongSell = settings.signalSensitivity.strongSellThreshold
-                            if (displayScore < strongBuy && displayScore > strongSell) {
-                                Log.d(TAG, "Market mover ${mover.ticker} score $displayScore below thresholds")
-                                diagnostics.moversBelowThreshold += 1
-                                return@forEach
-                            }
-                            if (signalsRepository.isInCooldown(mover.ticker, signal.tier.label, signal.generatedAt)) {
-                                Log.d(TAG, "Market mover ${mover.ticker} signal ${signal.tier.label} in cooldown")
-                                diagnostics.moversCooldown += 1
-                                return@forEach
-                            }
-                            val event = buildEvent(
-                                signal = signal,
-                                ticker = mover.ticker,
-                                company = mover.companyName,
-                                price = mover.price,
-                                percentChange = mover.percentChange,
-                                type = NotificationEventType.MARKET_MOVER
-                            )
-                            signalsRepository.recordEvent(event)
-                            candidates.add(event)
-                            moverCandidates += 1
-                            Log.d(TAG, "Market mover candidate ${mover.ticker} ${signal.tier.label} score=$displayScore")
-                        } else {
-                            diagnostics.moversFetchFailures += 1
-                            diagnostics.moversLastFetchError = diagnostics.moversLastFetchError
-                                ?: truncateError(seriesOutcome.errorMessage) ?: "unknown fetch failure"
-                            recordTicker(
-                                diagnostics.moversFailedTickers,
-                                "${mover.ticker}:${truncateError(seriesOutcome.errorMessage, TICKER_ERROR_MAX) ?: "unknown"}"
-                            )
-                            Log.w(TAG, "Market mover ${mover.ticker} failed to fetch series; skipping (${seriesOutcome.errorMessage})")
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Error processing market mover ${mover.ticker}, skipping", e)
+                            diagnostics.moversExceptions += 1
                         }
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Error processing market mover ${mover.ticker}, skipping", e)
-                        diagnostics.moversExceptions += 1
                     }
                 }
             }
@@ -575,15 +665,30 @@ class NotificationWindowRunner @Inject constructor(
     private suspend fun fetchSeriesWithFallback(
         symbol: String,
         range: ChartRange,
-        usePremarketData: Boolean
+        usePremarketData: Boolean,
+        timingTracker: FetchTimingTracker,
+        liveLog: MutableList<String>,
+        cacheLog: MutableList<String>
     ): SeriesFetchOutcome {
-        val liveResult = fetchLiveSeriesWithRetries(symbol, range, usePremarketData)
+        val liveResult = fetchLiveSeriesWithRetries(
+            symbol = symbol,
+            range = range,
+            usePremarketData = usePremarketData,
+            timingTracker = timingTracker,
+            logList = liveLog
+        )
         if (liveResult is StooqResult.Success) {
             return SeriesFetchOutcome(liveResult.data, usedFallback = false, errorMessage = null)
         }
         val liveError = (liveResult as? StooqResult.Error)?.message
 
-        val cacheResult = stockRepository.getFreshCachedSeries(symbol, range)
+        val cacheResult = recordFetch(
+            timingTracker = timingTracker,
+            logList = cacheLog,
+            label = "${symbol}#cache"
+        ) {
+            stockRepository.getFreshCachedSeries(symbol, range)
+        }
         if (cacheResult is StooqResult.Success) {
             return SeriesFetchOutcome(cacheResult.data, usedFallback = true, errorMessage = liveError)
         }
@@ -607,13 +712,22 @@ class NotificationWindowRunner @Inject constructor(
 
     private suspend fun fetchMarketMoversSnapshot(
         range: MarketMoverRange,
-        direction: MarketMoverDirection
+        direction: MarketMoverDirection,
+        timingTracker: FetchTimingTracker,
+        logList: MutableList<String>,
+        labelPrefix: String
     ): MoversSnapshotOutcome {
-        val liveResult = marketMoversRepository.getMarketMovers(
-            range = range,
-            direction = direction,
-            forceRefresh = true
-        )
+        val liveResult = recordFetch(
+            timingTracker = timingTracker,
+            logList = logList,
+            label = "${labelPrefix}#live"
+        ) {
+            marketMoversRepository.getMarketMovers(
+                range = range,
+                direction = direction,
+                forceRefresh = true
+            )
+        }
         if (liveResult is StooqResult.Success && !liveResult.data.isStale) {
             return MoversSnapshotOutcome(liveResult.data, usedFallback = false, liveErrorMessage = null)
         }
@@ -622,7 +736,13 @@ class NotificationWindowRunner @Inject constructor(
             is StooqResult.Success -> "live list stale"
         }
 
-        val cachedResult = marketMoversRepository.getFreshCachedMovers(range, direction)
+        val cachedResult = recordFetch(
+            timingTracker = timingTracker,
+            logList = logList,
+            label = "${labelPrefix}#cache"
+        ) {
+            marketMoversRepository.getFreshCachedMovers(range, direction)
+        }
         if (cachedResult is StooqResult.Success) {
             return MoversSnapshotOutcome(cachedResult.data, usedFallback = true, liveErrorMessage = liveError)
         }
@@ -657,12 +777,24 @@ class NotificationWindowRunner @Inject constructor(
         val watchlistCache = formatTickerList("watchlist_cache", diagnostics.watchlistCacheUsedTickers)
         val watchlistEmpty = formatTickerList("watchlist_empty", diagnostics.watchlistEmptyTickers)
         val watchlistLast = formatTickerList("watchlist_last", diagnostics.watchlistLastCandleTickers)
+        val watchlistLiveFetch = formatTickerList("watchlist_live_fetch", diagnostics.watchlistLiveFetchTimes)
+        val watchlistCacheFetch = formatTickerList("watchlist_cache_fetch", diagnostics.watchlistCacheFetchTimes)
+        val watchlistDailyFetch = formatTickerList("watchlist_daily_fetch", diagnostics.watchlistDailyFetchTimes)
+        val watchlistOverviewFetch = formatTickerList("watchlist_overview_fetch", diagnostics.watchlistOverviewFetchTimes)
+        val watchlistTimeout = formatTickerList("watchlist_timeout_remaining", diagnostics.watchlistTimeoutRemaining)
         val moversFailed = formatTickerList("movers_failed", diagnostics.moversFailedTickers)
         val moversStale = formatTickerList("movers_stale", diagnostics.moversStaleTickers)
         val moversCache = formatTickerList("movers_cache", diagnostics.moversCacheUsedTickers)
         val moversEmpty = formatTickerList("movers_empty", diagnostics.moversEmptyTickers)
         val moversLast = formatTickerList("movers_last", diagnostics.moversLastCandleTickers)
         val moversListErrors = formatTickerList("movers_list_errors", diagnostics.moversListErrors)
+        val moversLiveFetch = formatTickerList("movers_live_fetch", diagnostics.moversLiveFetchTimes)
+        val moversCacheFetch = formatTickerList("movers_cache_fetch", diagnostics.moversCacheFetchTimes)
+        val moversDailyFetch = formatTickerList("movers_daily_fetch", diagnostics.moversDailyFetchTimes)
+        val moversOverviewFetch = formatTickerList("movers_overview_fetch", diagnostics.moversOverviewFetchTimes)
+        val moversListFetch = formatTickerList("movers_list_fetch", diagnostics.moversListFetchTimes)
+        val moversTimeout = formatTickerList("movers_timeout_remaining", diagnostics.moversTimeoutRemaining)
+        val timedOut = diagnostics.watchlistTimeoutRemaining.isNotEmpty() || diagnostics.moversTimeoutRemaining.isNotEmpty()
 
         return "candidates=$totalCandidates (watchlist=$watchlistCandidates movers=$moverCandidates) | " +
             "watchlist: total=${diagnostics.watchlistTotal} enabled=$watchlistEnabled " +
@@ -672,13 +804,18 @@ class NotificationWindowRunner @Inject constructor(
             "empty=${diagnostics.watchlistEmpty} stale=${diagnostics.watchlistStale} " +
             "signal_null=${diagnostics.watchlistSignalNull} " +
             "cooldown=${diagnostics.watchlistCooldown} below=${diagnostics.watchlistBelowThreshold} " +
-            "exceptions=${diagnostics.watchlistExceptions} " +
+            "exceptions=${diagnostics.watchlistExceptions} timeout=$timedOut " +
             (watchlistError?.let { "last_error=$it " } ?: "") +
             (watchlistFailed?.let { "$it " } ?: "") +
             (watchlistStale?.let { "$it " } ?: "") +
             (watchlistCache?.let { "$it " } ?: "") +
             (watchlistEmpty?.let { "$it " } ?: "") +
             (watchlistLast?.let { "$it " } ?: "") +
+            (watchlistLiveFetch?.let { "$it " } ?: "") +
+            (watchlistCacheFetch?.let { "$it " } ?: "") +
+            (watchlistDailyFetch?.let { "$it " } ?: "") +
+            (watchlistOverviewFetch?.let { "$it " } ?: "") +
+            (watchlistTimeout?.let { "$it " } ?: "") +
             "| movers: list_fail=${diagnostics.moversListFetchFailures} " +
             "list_cache_used=${diagnostics.moversListFallbacks} list_stale=${diagnostics.moversListStale} " +
             "list_live_failed=$moversListLiveFailed " +
@@ -695,26 +832,61 @@ class NotificationWindowRunner @Inject constructor(
             (moversStale?.let { "$it " } ?: "") +
             (moversCache?.let { "$it " } ?: "") +
             (moversEmpty?.let { "$it " } ?: "") +
-            (moversLast?.let { "$it" } ?: "")
+            (moversLast?.let { "$it " } ?: "") +
+            (moversLiveFetch?.let { "$it " } ?: "") +
+            (moversCacheFetch?.let { "$it " } ?: "") +
+            (moversDailyFetch?.let { "$it " } ?: "") +
+            (moversOverviewFetch?.let { "$it " } ?: "") +
+            (moversListFetch?.let { "$it " } ?: "") +
+            (moversTimeout?.let { "$it" } ?: "")
     }
 
     private fun truncateError(message: String?, maxLength: Int = 120): String? {
         if (message.isNullOrBlank()) return null
-        return if (message.length <= maxLength) message else message.take(maxLength) + "…"
+        return message
     }
 
     private fun formatTickerList(label: String, items: List<String>): String? {
         if (items.isEmpty()) return null
-        val display = items.take(MAX_DIAGNOSTIC_TICKERS)
-        val suffix = if (items.size > MAX_DIAGNOSTIC_TICKERS) {
-            ",+${items.size - MAX_DIAGNOSTIC_TICKERS} more"
-        } else ""
-        return "$label=[${display.joinToString(",")}$suffix]"
+        return "$label=[${items.joinToString(",")}]"
     }
 
     private fun recordTicker(list: MutableList<String>, entry: String) {
-        if (list.size >= MAX_DIAGNOSTIC_TICKERS) return
         list.add(entry)
+    }
+
+    private suspend fun <T> recordFetch(
+        timingTracker: FetchTimingTracker,
+        logList: MutableList<String>,
+        label: String,
+        block: suspend () -> T
+    ): T {
+        val startMillis = System.currentTimeMillis()
+        val waitMillis = timingTracker.waitMillis(startMillis)
+        return try {
+            block()
+        } finally {
+            val endMillis = System.currentTimeMillis()
+            timingTracker.markEnd(endMillis)
+            val entry = buildString {
+                append(label)
+                append(":")
+                append(formatFetchTime(startMillis))
+                append("-")
+                append(formatFetchTime(endMillis))
+                append(" wait=")
+                append(waitMillis)
+                append("ms")
+            }
+            logList.add(entry)
+        }
+    }
+
+    private fun formatFetchTime(epochMillis: Long): String {
+        val localTime = Instant.ofEpochMilli(epochMillis)
+            .atZone(ZoneId.systemDefault())
+            .toLocalTime()
+        return localTime.format(FETCH_TIME_FORMATTER)
     }
 
     private fun formatCandleTime(time: LocalDateTime): String {
@@ -728,14 +900,22 @@ class NotificationWindowRunner @Inject constructor(
     private suspend fun fetchLiveSeriesWithRetries(
         symbol: String,
         range: ChartRange,
-        usePremarketData: Boolean
+        usePremarketData: Boolean,
+        timingTracker: FetchTimingTracker,
+        logList: MutableList<String>
     ): StooqResult<List<PriceCandle>> {
         var lastError: String? = null
         repeat(LIVE_RETRY_COUNT + 1) { attempt ->
-            val result = if (usePremarketData) {
-                stockRepository.getSeriesForPremarket(symbol, range, eventType = null)
-            } else {
-                stockRepository.getSeries(symbol, range, forceRefresh = true, eventType = null)
+            val result = recordFetch(
+                timingTracker = timingTracker,
+                logList = logList,
+                label = "${symbol}#${attempt + 1}"
+            ) {
+                if (usePremarketData) {
+                    stockRepository.getSeriesForPremarket(symbol, range, eventType = null)
+                } else {
+                    stockRepository.getSeries(symbol, range, forceRefresh = true, eventType = null)
+                }
             }
             if (result is StooqResult.Success) return result
             lastError = (result as? StooqResult.Error)?.message ?: "live fetch failed"
@@ -746,23 +926,47 @@ class NotificationWindowRunner @Inject constructor(
         return StooqResult.Error(Exception(lastError ?: "live fetch failed"), lastError ?: "live fetch failed")
     }
 
+    private suspend fun fetchDailyFallbackWithDiagnostics(
+        symbol: String,
+        range: ChartRange,
+        timingTracker: FetchTimingTracker,
+        logList: MutableList<String>
+    ): StooqResult<List<PriceCandle>> {
+        return recordFetch(
+            timingTracker = timingTracker,
+            logList = logList,
+            label = "${symbol}#daily"
+        ) {
+            stockRepository.getDailySeriesFallback(symbol, range)
+        }
+    }
+
     private suspend fun evaluateIndicatorAlerts(
         item: WatchlistItemEntity,
         holdingPeriod: com.example.stocksignal.data.settings.HoldingPeriod,
         now: LocalDateTime,
-        candidates: MutableList<NotificationEvent>
+        candidates: MutableList<NotificationEvent>,
+        timingTracker: FetchTimingTracker,
+        fetchLog: MutableList<String>,
+        overviewLog: MutableList<String>
     ) {
         val alerts = IndicatorAlertJson.fromJson(item.indicatorAlertsJson).filter { it.enabled }
         if (alerts.isEmpty()) return
 
         val alertsByRange = alerts.groupBy { it.metric.defaultRange }
         for ((range, rangeAlerts) in alertsByRange) {
-            val result = stockRepository.getSeries(
-                item.symbol,
-                range,
-                forceRefresh = true,
-                eventType = null
-            )
+            val result = recordFetch(
+                timingTracker = timingTracker,
+                logList = fetchLog,
+                label = "${item.symbol}#alert_${range.name}"
+            ) {
+                stockRepository.getSeries(
+                    item.symbol,
+                    range,
+                    forceRefresh = true,
+                    eventType = null
+                )
+            }
             if (result is StooqResult.Success) {
                 val series = result.data
                 if (series.isEmpty()) {
@@ -773,7 +977,11 @@ class NotificationWindowRunner @Inject constructor(
                     Log.d(TAG, "Indicator alerts: ${item.symbol} data stale for range $range")
                     continue
                 }
-                val overview = loadOverviewCached(item.symbol)
+                val overview = loadOverviewCached(
+                    symbol = item.symbol,
+                    timingTracker = timingTracker,
+                    logList = overviewLog
+                )
                 val signal = signalsRepository.computeSignal(item.symbol, series, range, overview)
                 for (alert in rangeAlerts) {
                     val evaluation = IndicatorAlertEvaluator.evaluate(alert, series, holdingPeriod) ?: continue
@@ -885,14 +1093,24 @@ class NotificationWindowRunner @Inject constructor(
         }
     }
 
-    private suspend fun loadOverviewCached(symbol: String): StockOverview? {
+    private suspend fun loadOverviewCached(
+        symbol: String,
+        timingTracker: FetchTimingTracker,
+        logList: MutableList<String>
+    ): StockOverview? {
         val cached = overviewCache[symbol]
         if (cached != null || overviewCache.containsKey(symbol)) {
             return cached
         }
-        val overview = when (val result = stockRepository.getStockOverview(symbol)) {
-            is StooqResult.Success -> result.data
-            is StooqResult.Error -> null
+        val overview = recordFetch(
+            timingTracker = timingTracker,
+            logList = logList,
+            label = "${symbol}#overview"
+        ) {
+            when (val result = stockRepository.getStockOverview(symbol)) {
+                is StooqResult.Success -> result.data
+                is StooqResult.Error -> null
+            }
         }
         overviewCache[symbol] = overview
         return overview
@@ -945,12 +1163,13 @@ class NotificationWindowRunner @Inject constructor(
         private const val MAX_MOVERS = 3
         private const val MIN_CANDLES_FOR_SIGNAL = 20
         private val STALE_THRESHOLD = Duration.ofDays(7)
+        private const val MAX_WINDOW_RUNTIME_MINUTES = 10L
         private const val DEBUG_CHANNEL_ID = "debug_worker"
         private const val DEBUG_NOTIFICATION_ID_BASE = 9100
         private const val LIVE_RETRY_COUNT = 2
         private const val LIVE_RETRY_DELAY_MS = 250L
-        private const val MAX_DIAGNOSTIC_TICKERS = 50
         private const val TICKER_ERROR_MAX = 40
         private val CANDLE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
+        private val FETCH_TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss.SSS")
     }
 }
