@@ -118,7 +118,7 @@ fun StockSignalApp(launchIntent: Intent? = null) {
         ) { innerPadding ->
             NavHost(
                 navController = navController,
-                startDestination = if (onboardingCompleted) BottomNavScreen.Watchlist.route else ONBOARDING_ROUTE,
+                startDestination = ONBOARDING_ROUTE,
                 modifier = Modifier.padding(innerPadding)
             ) {
                 composable(ONBOARDING_ROUTE) {

@@ -5,7 +5,9 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -17,6 +19,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
@@ -43,6 +46,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -272,7 +276,7 @@ fun SettingsScreen(
 
         item {
             StockCard {
-                Text(text = "Notification frequency", style = MaterialTheme.typography.headlineMedium)
+                SettingsSectionHeader(text = "Notification frequency")
                 Spacer(modifier = Modifier.height(8.dp))
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
@@ -307,7 +311,7 @@ fun SettingsScreen(
 
         item {
             StockCard {
-                Text(text = "Notification types", style = MaterialTheme.typography.headlineMedium)
+                SettingsSectionHeader(text = "Notification types")
                 Spacer(modifier = Modifier.height(8.dp))
                 NotificationTypeRow(
                     label = "Watchlist signals",
@@ -329,7 +333,7 @@ fun SettingsScreen(
 
         item {
             StockCard {
-                Text(text = "Translation", style = MaterialTheme.typography.headlineMedium)
+                SettingsSectionHeader(text = "Translation")
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
                     text = "Enable the 1B offline model for translations. Wi-Fi required; uses ~600MB.",
@@ -366,7 +370,7 @@ fun SettingsScreen(
 
         item {
             StockCard {
-                Text(text = "Test notification", style = MaterialTheme.typography.headlineMedium)
+                SettingsSectionHeader(text = "Test notification")
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
                     text = "Sends a local alert to verify sound/vibration and delivery. Appears in Signals.",
@@ -379,7 +383,7 @@ fun SettingsScreen(
 
         item {
             StockCard {
-                Text(text = "Background alarm diagnostics", style = MaterialTheme.typography.headlineMedium)
+                SettingsSectionHeader(text = "Background alarm diagnostics")
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
                     text = "Check if notification alarms are scheduled to run in the background.",
@@ -432,7 +436,7 @@ fun SettingsScreen(
 
         item {
             StockCard {
-                Text(text = scheduleHeader(settings.frequency), style = MaterialTheme.typography.headlineMedium)
+                SettingsSectionHeader(text = scheduleHeader(settings.frequency))
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
                     text = scheduleDescription(settings.frequency),
@@ -468,7 +472,7 @@ fun SettingsScreen(
 
         item {
             StockCard {
-                Text(text = "Immediate posts", style = MaterialTheme.typography.headlineMedium)
+                SettingsSectionHeader(text = "Immediate posts")
                 Spacer(modifier = Modifier.height(6.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -493,7 +497,7 @@ fun SettingsScreen(
 
         item {
             StockCard {
-                Text(text = "Legal and attribution", style = MaterialTheme.typography.headlineMedium)
+                SettingsSectionHeader(text = "Legal and attribution")
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     text = "Signals are informational, not investment advice. We do not execute trades.",
@@ -506,6 +510,24 @@ fun SettingsScreen(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun SettingsSectionHeader(text: String) {
+    Box(
+        modifier = Modifier
+            .background(
+                color = Color.Black.copy(alpha = 0.5f),
+                shape = RoundedCornerShape(4.dp)
+            )
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.headlineMedium,
+            color = Color.White
+        )
     }
 }
 
@@ -533,7 +555,7 @@ private fun SnoozeDurationCard(
     onSelect: (SnoozeDurationOption) -> Unit
 ) {
     StockCard {
-        Text(text = "Snooze duration", style = MaterialTheme.typography.headlineMedium)
+        SettingsSectionHeader(text = "Snooze duration")
         Spacer(modifier = Modifier.height(6.dp))
         Text(
             text = "Used when you snooze a watchlist alert.",
@@ -571,7 +593,7 @@ private fun QuietHoursCard(
     val canApply = startValid && endValid
 
     StockCard {
-        Text(text = "Quiet hours", style = MaterialTheme.typography.headlineMedium)
+        SettingsSectionHeader(text = "Quiet hours")
         Spacer(modifier = Modifier.height(6.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -633,7 +655,7 @@ private fun ScheduleWindowCard(
     val canApply = if (isFixed) hour != null && minute != null else offset != null
 
     StockCard {
-        Text(text = scheduleLabel(window), style = MaterialTheme.typography.headlineMedium)
+        SettingsSectionHeader(text = scheduleLabel(window))
         Spacer(modifier = Modifier.height(6.dp))
         if (isFixed) {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -716,7 +738,7 @@ private fun SignalSensitivityCard(
     }
 
     StockCard {
-        Text(text = "Signal sensitivity", style = MaterialTheme.typography.headlineMedium)
+        SettingsSectionHeader(text = "Signal sensitivity")
         Spacer(modifier = Modifier.height(8.dp))
         SliderRow(
             label = "Min score for notify",
@@ -815,7 +837,7 @@ private fun WeeklyDayCard(
     onSelect: (DayOfWeek) -> Unit
 ) {
     StockCard {
-        Text(text = "Weekly day", style = MaterialTheme.typography.headlineMedium)
+        SettingsSectionHeader(text = "Weekly day")
         Spacer(modifier = Modifier.height(6.dp))
         FlowRow(
             modifier = Modifier.fillMaxWidth(),
@@ -978,7 +1000,7 @@ private fun NotificationPermissionCard(
     }
 
     StockCard {
-        Text(text = "Notifications", style = MaterialTheme.typography.headlineMedium)
+        SettingsSectionHeader(text = "Notifications")
         Spacer(modifier = Modifier.height(6.dp))
         Text(
             text = "Enable notifications to receive alerts when strong signals are detected.",
@@ -1041,7 +1063,7 @@ private fun ModelManagementCard(
     val (modelName, modelSize) = getModelInfo()
 
     StockCard {
-        Text(text = "AI Model Management", style = MaterialTheme.typography.headlineMedium)
+        SettingsSectionHeader(text = "AI Model Management")
         Spacer(modifier = Modifier.height(6.dp))
         Text(
             text = "Re-download or update the local LLM for offline AI signal scoring.",
@@ -1151,7 +1173,7 @@ private fun HoldingPeriodCard(
     onSelect: (HoldingPeriod) -> Unit
 ) {
     StockCard {
-        Text(text = "Investment Timeframe", style = MaterialTheme.typography.headlineMedium)
+        SettingsSectionHeader(text = "Investment Timeframe")
         Spacer(modifier = Modifier.height(6.dp))
         Text(
             text = "How long do you typically hold positions? This optimizes signals and indicators for your trading style.",

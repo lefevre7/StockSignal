@@ -344,7 +344,7 @@ fun StockDetailScreen(
     }
 
     if (state.showTranslationPrompt) {
-        val promptTitle = state.translationPromptTitle ?: "Download translation model"
+        val promptTitle = state.translationPromptTitle ?: "Download translation and scoring model"
         val promptMessage = state.translationPromptMessage
             ?: "Download the 1B offline model to translate headlines?"
         val isDownloading = state.translationDownloadInProgress
@@ -358,7 +358,7 @@ fun StockDetailScreen(
                         Spacer(modifier = Modifier.height(8.dp))
                         if (state.translationPromptType == TranslationPromptType.LOCAL_MODEL) {
                             val percent = state.translationDownloadProgress ?: 0
-                            LinearProgressIndicator(progress = (percent / 100f).coerceIn(0f, 1f))
+                            LinearProgressIndicator(progress = { (percent / 100f).coerceIn(0f, 1f) })
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(text = "$percent%")
                         } else {

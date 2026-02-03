@@ -65,6 +65,7 @@ stocksignal://stock/{TICKER}?eventId={EVENT_ID}
 ## Disclaimer and attribution
 - Signals are informational only and not investment advice. The app does not execute trades.
 - Market data is sourced from Stooq.com and may be delayed, incomplete, or inaccurate. The app does not guarantee the accuracy, completeness, or timeliness of any data.
+- This app is possible because Stooq's robots.txt explicitly allows all user agents to access all parts of the site.
 - Not affiliated with Stooq.
 - This app is provided for educational and informational purposes only.
 

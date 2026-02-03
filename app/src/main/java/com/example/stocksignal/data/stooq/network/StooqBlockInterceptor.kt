@@ -14,7 +14,7 @@ class StooqBlockInterceptor @Inject constructor(
     private val blockReporter: StooqBlockReporter
 ) : Interceptor {
 
-    @Volatile private var lastRequestAtMillis: Long = 0L
+    @Volatile private var lastRequestFinishedAtMillis: Long = 0L
     private val requestLock = Any()
 
     override fun intercept(chain: Interceptor.Chain): Response {
@@ -28,10 +28,11 @@ class StooqBlockInterceptor @Inject constructor(
 
         return try {
             val response = chain.proceed(chain.request())
-            if (response.code in BLOCK_HTTP_CODES) {
+            val blockReason = blockReasonFor(response, chain.request().url.encodedPath)
+            if (blockReason != null) {
                 blocker.blockFor(
                     BLOCK_DURATION,
-                    "Stooq blocked (HTTP ${response.code}). Blocked for 24 hours."
+                    "$blockReason Blocked for 24 hours."
                 )
                 val message = blocker.buildBlockedMessage()
                 blockReporter.reportBlocked(message, blocker.blockedUntilMillis())
@@ -44,13 +45,15 @@ class StooqBlockInterceptor @Inject constructor(
             val message = blocker.buildBlockedMessage()
             blockReporter.reportBlocked(message, blocker.blockedUntilMillis())
             throw StooqBlockedException(message, e)
+        } finally {
+            markRequestFinished()
         }
     }
 
     private fun enforceMinGap() {
         synchronized(requestLock) {
             val now = System.currentTimeMillis()
-            val elapsed = now - lastRequestAtMillis
+            val elapsed = now - lastRequestFinishedAtMillis
             val targetGap = BASE_REQUEST_GAP_MS + Random.nextLong(JITTER_MS + 1)
             val waitMs = targetGap - elapsed
             if (waitMs > 0) {
@@ -60,14 +63,37 @@ class StooqBlockInterceptor @Inject constructor(
                     Thread.currentThread().interrupt()
                 }
             }
-            lastRequestAtMillis = System.currentTimeMillis()
         }
+    }
+
+    private fun markRequestFinished() {
+        synchronized(requestLock) {
+            lastRequestFinishedAtMillis = System.currentTimeMillis()
+        }
+    }
+
+    private fun blockReasonFor(response: Response, path: String): String? {
+        if (response.code in BLOCK_HTTP_CODES) {
+            return "Stooq blocked (HTTP ${response.code})."
+        }
+        if (!CSV_LIKE_PATHS.any { path.startsWith(it) }) return null
+        val contentType = response.header("Content-Type")?.lowercase() ?: ""
+        if (contentType.contains("text/html")) {
+            return "Stooq blocked (HTML response)."
+        }
+        val peek = response.peekBody(PEEK_BODY_BYTES).string()
+        val trimmed = peek.trimStart()
+        val looksHtml = trimmed.startsWith("<!doctype", ignoreCase = true) ||
+            trimmed.startsWith("<html", ignoreCase = true)
+        return if (looksHtml) "Stooq blocked (HTML response)." else null
     }
 
     companion object {
         private val BLOCK_DURATION = Duration.ofHours(24)
-        private const val BASE_REQUEST_GAP_MS = 1000L
-        private const val JITTER_MS = 400L
+        private const val BASE_REQUEST_GAP_MS = 2000L
+        private const val JITTER_MS = 1000L
         private val BLOCK_HTTP_CODES = setOf(403, 429, 503)
+        private const val PEEK_BODY_BYTES = 2048L
+        private val CSV_LIKE_PATHS = listOf("/q/a2/d/", "/q/d/l/", "/cmp/", "/robots.txt")
     }
 }

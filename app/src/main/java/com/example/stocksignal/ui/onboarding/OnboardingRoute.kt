@@ -147,7 +147,7 @@ fun OnboardingRoute(
                         when {
                             modelDownloadState.isDownloading -> {
                                 LinearProgressIndicator(
-                                    progress = modelDownloadState.progress / 100f,
+                                    progress = { modelDownloadState.progress / 100f },
                                     modifier = Modifier.fillMaxWidth()
                                 )
                                 Spacer(modifier = Modifier.height(8.dp))

@@ -34,6 +34,7 @@ class NotificationPublisher @Inject constructor(
         val notificationId = generateNotificationId()
         val title = notificationTitle(events)
         val summary = notificationSummary(events)
+        val summaryWithHint = "$summary (swipe to dismiss)"
         val inboxStyle = NotificationCompat.InboxStyle()
         events.take(MAX_LINES).forEach { event ->
             inboxStyle.addLine("${event.ticker} ${event.tier.label} (${event.displayScore})")
@@ -56,7 +57,7 @@ class NotificationPublisher @Inject constructor(
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
-            .setContentText(summary)
+            .setContentText(summaryWithHint)
             .setStyle(inboxStyle)
             .setContentIntent(contentIntent)
             .setAutoCancel(true)
@@ -90,11 +91,6 @@ class NotificationPublisher @Inject constructor(
             R.drawable.ic_launcher_foreground,
             "View",
             contentIntent
-        )
-        builder.addAction(
-            R.drawable.ic_launcher_foreground,
-            "Dismiss",
-            NotificationIntentFactory.dismissIntent(context, notificationId, eventIds)
         )
 
         if (events.size == 1 && events.first().type == com.example.stocksignal.domain.model.NotificationEventType.MARKET_MOVER) {

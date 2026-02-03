@@ -1,5 +1,8 @@
 package com.example.stocksignal.data.stooq.network
 
+import com.example.stocksignal.notifications.NotificationDiagnosticsRepository
+import io.mockk.coEvery
+import io.mockk.mockk
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -9,7 +12,15 @@ class StooqRequestBlockerTest {
 
     @Test
     fun clearBlockResetsBlockedState() {
-        val blocker = StooqRequestBlocker()
+        val diagnostics = mockk<NotificationDiagnosticsRepository> {
+            coEvery { getStooqBlockedInfo() } returns NotificationDiagnosticsRepository.StooqBlockedInfo(
+                blockedAtMillis = null,
+                blockedUntilMillis = null,
+                message = null
+            )
+            coEvery { clearStooqBlocked() } returns Unit
+        }
+        val blocker = StooqRequestBlocker(diagnostics)
 
         blocker.blockFor(Duration.ofMinutes(5), "test block")
         assertTrue(blocker.isBlocked())

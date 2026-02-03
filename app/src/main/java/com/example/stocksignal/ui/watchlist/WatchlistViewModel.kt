@@ -20,8 +20,6 @@ import com.example.stocksignal.domain.model.WatchlistItem
 import com.example.stocksignal.notifications.NotificationDiagnosticsRepository
 import com.example.stocksignal.ui.model.AiGenerationState
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -143,10 +141,9 @@ class WatchlistViewModel @Inject constructor(
 
     private suspend fun refreshMarketData(items: List<WatchlistItemEntity>) = coroutineScope {
         val symbols = items.map { it.symbol }.toSet()
-        val tasks = symbols.map { symbol ->
-            async { fetchMarketData(symbol) }
+        for (symbol in symbols) {
+            fetchMarketData(symbol)
         }
-        tasks.awaitAll()
         marketData.update { current ->
             current.filterKeys { it in symbols }
         }

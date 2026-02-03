@@ -38,7 +38,8 @@ class NotificationPublisherTest {
         assertExtras(notification, listOf(event))
 
         val actions = notification.actions?.mapNotNull { it.title?.toString() }.orEmpty()
-        assertTrue(actions.containsAll(listOf("View", "Dismiss")))
+        assertTrue(actions.contains("View"))
+        assertTrue(actions.contains("Dismiss").not())
     }
 
     @Test
@@ -66,7 +67,7 @@ class NotificationPublisherTest {
         val title = notification.extras.getCharSequence(NotificationCompat.EXTRA_TITLE)?.toString()
         val summary = notification.extras.getCharSequence(NotificationCompat.EXTRA_TEXT)?.toString()
         assertEquals("2 new signals", title)
-        assertEquals(expectedGroupSummary(events), summary)
+        assertEquals(summaryWithHint(expectedGroupSummary(events)), summary)
 
         val lines = notification.extras.getCharSequenceArray(NotificationCompat.EXTRA_TEXT_LINES).orEmpty()
         assertEquals(2, lines.size)
@@ -77,7 +78,8 @@ class NotificationPublisherTest {
         assertExtras(notification, events)
 
         val actions = notification.actions?.mapNotNull { it.title?.toString() }.orEmpty()
-        assertTrue(actions.containsAll(listOf("View", "Dismiss")))
+        assertTrue(actions.contains("View"))
+        assertTrue(actions.contains("Dismiss").not())
     }
 
     @Test
@@ -95,7 +97,7 @@ class NotificationPublisherTest {
         val title = notification.extras.getCharSequence(NotificationCompat.EXTRA_TITLE)?.toString()
         val summary = notification.extras.getCharSequence(NotificationCompat.EXTRA_TEXT)?.toString()
         assertEquals("6 new signals", title)
-        assertEquals(expectedGroupSummary(events), summary)
+        assertEquals(summaryWithHint(expectedGroupSummary(events)), summary)
 
         val lines = notification.extras.getCharSequenceArray(NotificationCompat.EXTRA_TEXT_LINES).orEmpty()
         assertEquals(5, lines.size)
@@ -148,7 +150,7 @@ class NotificationPublisherTest {
         val tier = SignalTier.fromScore(event.score)
         val expectedSummary = "${tier.summary} • +${event.score}"
         assertEquals("${event.ticker} ${tier.label}", title)
-        assertEquals(expectedSummary, summary)
+        assertEquals(summaryWithHint(expectedSummary), summary)
         assertGroupKey(notification)
     }
 
@@ -172,6 +174,10 @@ class NotificationPublisherTest {
 
     private fun expectedGroupSummary(events: List<NotificationEvent>): String {
         return events.take(3).joinToString(", ") { "${it.ticker} ${it.tier.label}" }
+    }
+
+    private fun summaryWithHint(summary: String): String {
+        return "$summary (swipe to dismiss)"
     }
 
     private fun expectedLine(event: NotificationEvent): String {

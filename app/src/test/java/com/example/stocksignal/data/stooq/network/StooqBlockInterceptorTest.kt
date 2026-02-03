@@ -6,7 +6,9 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.ResponseBody.Companion.toResponseBody
+import com.example.stocksignal.notifications.NotificationDiagnosticsRepository
 import io.mockk.every
+import io.mockk.coEvery
 import io.mockk.mockk
 import io.mockk.verify
 import org.junit.Assert.assertTrue
@@ -17,7 +19,15 @@ class StooqBlockInterceptorTest {
 
     @Test
     fun blocksAndReportsOnHttp429() {
-        val blocker = StooqRequestBlocker()
+        val diagnostics = mockk<NotificationDiagnosticsRepository> {
+            coEvery { getStooqBlockedInfo() } returns NotificationDiagnosticsRepository.StooqBlockedInfo(
+                blockedAtMillis = null,
+                blockedUntilMillis = null,
+                message = null
+            )
+            coEvery { clearStooqBlocked() } returns Unit
+        }
+        val blocker = StooqRequestBlocker(diagnostics)
         val reporter = mockk<StooqBlockReporter>(relaxed = true)
         val interceptor = StooqBlockInterceptor(blocker, reporter)
 

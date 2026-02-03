@@ -23,6 +23,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowAlarmManager
 import org.robolectric.shadows.ShadowPendingIntent
 
 @Config(sdk = [Build.VERSION_CODES.M])
@@ -35,6 +36,7 @@ class NotificationAlarmSchedulerTest {
         val context: Context = RuntimeEnvironment.getApplication()
         val diagnostics = NotificationDiagnosticsRepository(context.settingsDataStore)
         val scheduler = NotificationScheduler(context, diagnostics)
+        clearScheduledAlarms()
         val settings = baseSettings(
             frequency = NotificationFrequency.THREE_PER_DAY,
             windows = listOf(
@@ -67,7 +69,7 @@ class NotificationAlarmSchedulerTest {
             shadowIntent.savedIntent.getStringExtra(NotificationAlarmIntentFactory.EXTRA_TYPE)
         }
 
-        assertEquals(5, types.size)
+        assertEquals("types=$types", 5, types.size)
         assertEquals(2, types.count { it == NotificationAlarmIntentFactory.TYPE_WINDOW })
         assertEquals(2, types.count { it == NotificationAlarmIntentFactory.TYPE_PRE_NOTIFY })
         assertEquals(1, types.count { it == NotificationAlarmIntentFactory.TYPE_ROBOTS })
@@ -79,6 +81,7 @@ class NotificationAlarmSchedulerTest {
         val context: Context = RuntimeEnvironment.getApplication()
         val diagnostics = NotificationDiagnosticsRepository(context.settingsDataStore)
         val scheduler = NotificationScheduler(context, diagnostics)
+        clearScheduledAlarms()
         val settings = baseSettings(
             frequency = NotificationFrequency.THREE_PER_DAY,
             windows = listOf(
@@ -140,5 +143,9 @@ class NotificationAlarmSchedulerTest {
             onboardingCompleted = true,
             holdingPeriod = HoldingPeriod.DAYS
         )
+    }
+
+    private fun clearScheduledAlarms() {
+        ShadowAlarmManager.reset()
     }
 }

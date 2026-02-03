@@ -473,8 +473,8 @@ class StockDetailViewModel @Inject constructor(
         _uiState.update {
             it.copy(
                 showTranslationPrompt = true,
-                translationPromptTitle = "Download 1B offline translation model",
-                translationPromptMessage = "Download the 1B offline model to translate headlines? " +
+                translationPromptTitle = "Download 1B offline translation and scoring model",
+                translationPromptMessage = "Download the 1B offline model to translate headlines and score stock buys/sells? " +
                     "Wi-Fi required; uses $sizeLabel.",
                 translationPromptType = TranslationPromptType.LOCAL_MODEL,
                 translationDownloadProgress = null,
@@ -548,8 +548,8 @@ class StockDetailViewModel @Inject constructor(
             _uiState.update {
                 it.copy(
                     showTranslationPrompt = true,
-                    translationPromptTitle = "Download 1B offline translation model",
-                    translationPromptMessage = "Downloading the 1B offline model for translation.",
+                    translationPromptTitle = "Download 1B offline translation and scoring model",
+                    translationPromptMessage = "Downloading the 1B offline model for translation and scoring stocks.",
                     translationPromptType = TranslationPromptType.LOCAL_MODEL,
                     translationDownloadProgress = 0,
                     translationDownloadInProgress = true,
