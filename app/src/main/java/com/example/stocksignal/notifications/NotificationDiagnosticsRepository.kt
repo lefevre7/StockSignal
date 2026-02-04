@@ -42,6 +42,11 @@ class NotificationDiagnosticsRepository @Inject constructor(
         val message: String?
     )
 
+    data class AlarmScheduleErrorInfo(
+        val lastAtMillis: Long?,
+        val reason: String?
+    )
+
     suspend fun recordWindowRun(
         windowId: String,
         result: String,
@@ -217,6 +222,32 @@ class NotificationDiagnosticsRepository @Inject constructor(
         )
     }
 
+    suspend fun recordAlarmScheduleError(reason: String?) {
+        dataStore.edit { prefs ->
+            prefs[alarmScheduleErrorAtKey] = System.currentTimeMillis()
+            if (reason.isNullOrBlank()) {
+                prefs.remove(alarmScheduleErrorReasonKey)
+            } else {
+                prefs[alarmScheduleErrorReasonKey] = reason
+            }
+        }
+    }
+
+    suspend fun clearAlarmScheduleError() {
+        dataStore.edit { prefs ->
+            prefs.remove(alarmScheduleErrorAtKey)
+            prefs.remove(alarmScheduleErrorReasonKey)
+        }
+    }
+
+    suspend fun getAlarmScheduleErrorInfo(): AlarmScheduleErrorInfo {
+        val prefs = dataStore.data.first()
+        return AlarmScheduleErrorInfo(
+            lastAtMillis = prefs[alarmScheduleErrorAtKey],
+            reason = prefs[alarmScheduleErrorReasonKey]
+        )
+    }
+
     fun stooqBlockedFlow(): Flow<StooqBlockedInfo> {
         return dataStore.data.map { prefs ->
             StooqBlockedInfo(
@@ -320,6 +351,8 @@ class NotificationDiagnosticsRepository @Inject constructor(
         private val stooqBlockedMessageKey = stringPreferencesKey("stooq_blocked_message")
         private val scheduledPremarketKeysKey = stringSetPreferencesKey("notif_scheduled_premarket_keys")
         private val lastExactAlarmAllowedKey = booleanPreferencesKey("notif_exact_alarm_allowed")
+        private val alarmScheduleErrorAtKey = longPreferencesKey("notif_alarm_schedule_error_at")
+        private val alarmScheduleErrorReasonKey = stringPreferencesKey("notif_alarm_schedule_error_reason")
 
         private fun premarketNextRunKey(key: String) =
             longPreferencesKey("notif_premarket_${key}_next_run")

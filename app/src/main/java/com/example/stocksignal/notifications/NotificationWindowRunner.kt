@@ -41,6 +41,7 @@ import java.time.LocalTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
+import kotlin.random.Random
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -80,6 +81,10 @@ class NotificationWindowRunner @Inject constructor(
         var watchlistCooldown: Int = 0,
         var watchlistBelowThreshold: Int = 0,
         var watchlistExceptions: Int = 0,
+        var aiSkipped: Int = 0,
+        val aiSkippedTickers: MutableList<String> = mutableListOf(),
+        var aiErrors: Int = 0,
+        val aiErrorTickers: MutableList<String> = mutableListOf(),
         var moversListFetchFailures: Int = 0,
         var moversListFallbacks: Int = 0,
         var moversListLastError: String? = null,
@@ -139,7 +144,19 @@ class NotificationWindowRunner @Inject constructor(
         }
     }
 
-    suspend fun run(windowId: String, runAttemptCount: Int = 0): RunOutcome {
+    private class RequestPacer {
+        suspend fun awaitGap(): Long {
+            val targetGap = REQUEST_GAP_BASE_MS + Random.nextLong(REQUEST_GAP_JITTER_MS + 1)
+            delay(targetGap)
+            return targetGap
+        }
+    }
+
+    suspend fun run(
+        windowId: String,
+        runAttemptCount: Int = 0,
+        allowAiGeneration: Boolean = true
+    ): RunOutcome {
         if (DebugConfig.ENABLE_DEV_MODE) {
             Log.i(TAG, "═══════════════════════════════════════════════════════════════")
             Log.i(TAG, "🔔 NotificationWindowRunner STARTED")
@@ -183,6 +200,7 @@ class NotificationWindowRunner @Inject constructor(
             val now = LocalDateTime.now()
             val runDeadlineMillis = System.currentTimeMillis() + MAX_WINDOW_RUNTIME_MINUTES * 60_000L
             val timingTracker = FetchTimingTracker()
+            val requestPacer = RequestPacer()
             fun hasTimedOut(): Boolean = System.currentTimeMillis() >= runDeadlineMillis
             val premarketWindow = PremarketWindowUtils.resolvePremarketWindow(
                 settings,
@@ -202,6 +220,7 @@ class NotificationWindowRunner @Inject constructor(
             val watchlistRange = settings.selectedChartRange
             val moversRange = MarketMoverRange.ONE_DAY
             val moversChartRange = chartRangeForMarketRange(moversRange)
+            val skipAiGeneration = !allowAiGeneration
 
             val watchlist = watchlistRepository.getAll()
             diagnostics.watchlistTotal = watchlist.size
@@ -243,6 +262,7 @@ class NotificationWindowRunner @Inject constructor(
                             range = watchlistRange,
                             usePremarketData = usePremarketData,
                             timingTracker = timingTracker,
+                            requestPacer = requestPacer,
                             liveLog = diagnostics.watchlistLiveFetchTimes,
                             cacheLog = diagnostics.watchlistCacheFetchTimes
                         )
@@ -292,6 +312,7 @@ class NotificationWindowRunner @Inject constructor(
                                         symbol = item.symbol,
                                         range = ChartRange.SIX_MONTH,
                                         timingTracker = timingTracker,
+                                        requestPacer = requestPacer,
                                         logList = diagnostics.watchlistDailyFetchTimes
                                     )
                                 ) {
@@ -313,9 +334,46 @@ class NotificationWindowRunner @Inject constructor(
                             val overview = loadOverviewCached(
                                 symbol = item.symbol,
                                 timingTracker = timingTracker,
+                                requestPacer = requestPacer,
                                 logList = diagnostics.watchlistOverviewFetchTimes
                             )
-                            val signal = signalsRepository.computeSignal(item.symbol, signalSeries, watchlistRange, overview)
+                            if (skipAiGeneration) {
+                                diagnostics.aiSkipped += 1
+                                recordTicker(diagnostics.aiSkippedTickers, item.symbol)
+                            }
+                            val signal = if (skipAiGeneration) {
+                                signalsRepository.computeSignal(
+                                    item.symbol,
+                                    signalSeries,
+                                    watchlistRange,
+                                    overview,
+                                    skipAiGeneration = true
+                                )
+                            } else {
+                                try {
+                                    signalsRepository.computeSignal(
+                                        item.symbol,
+                                        signalSeries,
+                                        watchlistRange,
+                                        overview,
+                                        skipAiGeneration = false
+                                    )
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "   ❌ ${item.symbol}: AI scoring failed; retrying without AI", e)
+                                    diagnostics.aiErrors += 1
+                                    recordTicker(
+                                        diagnostics.aiErrorTickers,
+                                        "${item.symbol}:${truncateError(e.message, TICKER_ERROR_MAX) ?: "unknown"}"
+                                    )
+                                    signalsRepository.computeSignal(
+                                        item.symbol,
+                                        signalSeries,
+                                        watchlistRange,
+                                        overview,
+                                        skipAiGeneration = true
+                                    )
+                                }
+                            }
                             if (signal == null) {
                                 Log.d(TAG, "   ⚠️ ${item.symbol}: No signal generated")
                                 diagnostics.watchlistSignalNull += 1
@@ -361,6 +419,7 @@ class NotificationWindowRunner @Inject constructor(
                             now = now,
                             candidates = candidates,
                             timingTracker = timingTracker,
+                            requestPacer = requestPacer,
                             fetchLog = diagnostics.watchlistLiveFetchTimes,
                             overviewLog = diagnostics.watchlistOverviewFetchTimes
                         )
@@ -381,6 +440,7 @@ class NotificationWindowRunner @Inject constructor(
                         range = moversRange,
                         direction = MarketMoverDirection.INCREASERS,
                         timingTracker = timingTracker,
+                        requestPacer = requestPacer,
                         logList = diagnostics.moversListFetchTimes,
                         labelPrefix = "increasers"
                     )
@@ -388,6 +448,7 @@ class NotificationWindowRunner @Inject constructor(
                         range = moversRange,
                         direction = MarketMoverDirection.DECREASERS,
                         timingTracker = timingTracker,
+                        requestPacer = requestPacer,
                         logList = diagnostics.moversListFetchTimes,
                         labelPrefix = "decreasers"
                     )
@@ -449,6 +510,7 @@ class NotificationWindowRunner @Inject constructor(
                                 range = moversChartRange,
                                 usePremarketData = false,
                                 timingTracker = timingTracker,
+                                requestPacer = requestPacer,
                                 liveLog = diagnostics.moversLiveFetchTimes,
                                 cacheLog = diagnostics.moversCacheFetchTimes
                             )
@@ -497,6 +559,7 @@ class NotificationWindowRunner @Inject constructor(
                                             symbol = mover.ticker,
                                             range = ChartRange.SIX_MONTH,
                                             timingTracker = timingTracker,
+                                            requestPacer = requestPacer,
                                             logList = diagnostics.moversDailyFetchTimes
                                         )
                                     ) {
@@ -513,9 +576,46 @@ class NotificationWindowRunner @Inject constructor(
                                 val overview = loadOverviewCached(
                                     symbol = mover.ticker,
                                     timingTracker = timingTracker,
+                                    requestPacer = requestPacer,
                                     logList = diagnostics.moversOverviewFetchTimes
                                 )
-                                val signal = signalsRepository.computeSignal(mover.ticker, signalSeries, moversChartRange, overview)
+                                if (skipAiGeneration) {
+                                    diagnostics.aiSkipped += 1
+                                    recordTicker(diagnostics.aiSkippedTickers, mover.ticker)
+                                }
+                                val signal = if (skipAiGeneration) {
+                                    signalsRepository.computeSignal(
+                                        mover.ticker,
+                                        signalSeries,
+                                        moversChartRange,
+                                        overview,
+                                        skipAiGeneration = true
+                                    )
+                                } else {
+                                    try {
+                                        signalsRepository.computeSignal(
+                                            mover.ticker,
+                                            signalSeries,
+                                            moversChartRange,
+                                            overview,
+                                            skipAiGeneration = false
+                                        )
+                                    } catch (e: Exception) {
+                                        Log.e(TAG, "Market mover ${mover.ticker} AI scoring failed; retrying without AI", e)
+                                        diagnostics.aiErrors += 1
+                                        recordTicker(
+                                            diagnostics.aiErrorTickers,
+                                            "${mover.ticker}:${truncateError(e.message, TICKER_ERROR_MAX) ?: "unknown"}"
+                                        )
+                                        signalsRepository.computeSignal(
+                                            mover.ticker,
+                                            signalSeries,
+                                            moversChartRange,
+                                            overview,
+                                            skipAiGeneration = true
+                                        )
+                                    }
+                                }
                                 if (signal == null) {
                                     Log.d(TAG, "Market mover ${mover.ticker} no signal generated")
                                     diagnostics.moversSignalNull += 1
@@ -667,6 +767,7 @@ class NotificationWindowRunner @Inject constructor(
         range: ChartRange,
         usePremarketData: Boolean,
         timingTracker: FetchTimingTracker,
+        requestPacer: RequestPacer,
         liveLog: MutableList<String>,
         cacheLog: MutableList<String>
     ): SeriesFetchOutcome {
@@ -675,6 +776,7 @@ class NotificationWindowRunner @Inject constructor(
             range = range,
             usePremarketData = usePremarketData,
             timingTracker = timingTracker,
+            requestPacer = requestPacer,
             logList = liveLog
         )
         if (liveResult is StooqResult.Success) {
@@ -714,11 +816,13 @@ class NotificationWindowRunner @Inject constructor(
         range: MarketMoverRange,
         direction: MarketMoverDirection,
         timingTracker: FetchTimingTracker,
+        requestPacer: RequestPacer,
         logList: MutableList<String>,
         labelPrefix: String
     ): MoversSnapshotOutcome {
-        val liveResult = recordFetch(
+        val liveResult = recordNetworkFetch(
             timingTracker = timingTracker,
+            requestPacer = requestPacer,
             logList = logList,
             label = "${labelPrefix}#live"
         ) {
@@ -787,6 +891,8 @@ class NotificationWindowRunner @Inject constructor(
         val moversCache = formatTickerList("movers_cache", diagnostics.moversCacheUsedTickers)
         val moversEmpty = formatTickerList("movers_empty", diagnostics.moversEmptyTickers)
         val moversLast = formatTickerList("movers_last", diagnostics.moversLastCandleTickers)
+        val aiSkipped = formatTickerList("ai_skipped", diagnostics.aiSkippedTickers)
+        val aiErrors = formatTickerList("ai_errors", diagnostics.aiErrorTickers)
         val moversListErrors = formatTickerList("movers_list_errors", diagnostics.moversListErrors)
         val moversLiveFetch = formatTickerList("movers_live_fetch", diagnostics.moversLiveFetchTimes)
         val moversCacheFetch = formatTickerList("movers_cache_fetch", diagnostics.moversCacheFetchTimes)
@@ -797,6 +903,7 @@ class NotificationWindowRunner @Inject constructor(
         val timedOut = diagnostics.watchlistTimeoutRemaining.isNotEmpty() || diagnostics.moversTimeoutRemaining.isNotEmpty()
 
         return "candidates=$totalCandidates (watchlist=$watchlistCandidates movers=$moverCandidates) | " +
+            "ai_skipped=${diagnostics.aiSkipped} ai_errors=${diagnostics.aiErrors} " +
             "watchlist: total=${diagnostics.watchlistTotal} enabled=$watchlistEnabled " +
             "disabled=${diagnostics.watchlistDisabled} snoozed=${diagnostics.watchlistSnoozed} " +
             "fetch_fail=${diagnostics.watchlistFetchFailures} cache_used=${diagnostics.watchlistFallbacks} " +
@@ -816,6 +923,8 @@ class NotificationWindowRunner @Inject constructor(
             (watchlistDailyFetch?.let { "$it " } ?: "") +
             (watchlistOverviewFetch?.let { "$it " } ?: "") +
             (watchlistTimeout?.let { "$it " } ?: "") +
+            (aiSkipped?.let { "$it " } ?: "") +
+            (aiErrors?.let { "$it " } ?: "") +
             "| movers: list_fail=${diagnostics.moversListFetchFailures} " +
             "list_cache_used=${diagnostics.moversListFallbacks} list_stale=${diagnostics.moversListStale} " +
             "list_live_failed=$moversListLiveFailed " +
@@ -859,10 +968,11 @@ class NotificationWindowRunner @Inject constructor(
         timingTracker: FetchTimingTracker,
         logList: MutableList<String>,
         label: String,
+        waitOverrideMs: Long? = null,
         block: suspend () -> T
     ): T {
         val startMillis = System.currentTimeMillis()
-        val waitMillis = timingTracker.waitMillis(startMillis)
+        val waitMillis = waitOverrideMs ?: timingTracker.waitMillis(startMillis)
         return try {
             block()
         } finally {
@@ -880,6 +990,23 @@ class NotificationWindowRunner @Inject constructor(
             }
             logList.add(entry)
         }
+    }
+
+    private suspend fun <T> recordNetworkFetch(
+        timingTracker: FetchTimingTracker,
+        requestPacer: RequestPacer,
+        logList: MutableList<String>,
+        label: String,
+        block: suspend () -> T
+    ): T {
+        val pacerWait = requestPacer.awaitGap()
+        return recordFetch(
+            timingTracker = timingTracker,
+            logList = logList,
+            label = label,
+            waitOverrideMs = pacerWait,
+            block = block
+        )
     }
 
     private fun formatFetchTime(epochMillis: Long): String {
@@ -902,12 +1029,14 @@ class NotificationWindowRunner @Inject constructor(
         range: ChartRange,
         usePremarketData: Boolean,
         timingTracker: FetchTimingTracker,
+        requestPacer: RequestPacer,
         logList: MutableList<String>
     ): StooqResult<List<PriceCandle>> {
         var lastError: String? = null
         repeat(LIVE_RETRY_COUNT + 1) { attempt ->
-            val result = recordFetch(
+            val result = recordNetworkFetch(
                 timingTracker = timingTracker,
+                requestPacer = requestPacer,
                 logList = logList,
                 label = "${symbol}#${attempt + 1}"
             ) {
@@ -930,10 +1059,12 @@ class NotificationWindowRunner @Inject constructor(
         symbol: String,
         range: ChartRange,
         timingTracker: FetchTimingTracker,
+        requestPacer: RequestPacer,
         logList: MutableList<String>
     ): StooqResult<List<PriceCandle>> {
-        return recordFetch(
+        return recordNetworkFetch(
             timingTracker = timingTracker,
+            requestPacer = requestPacer,
             logList = logList,
             label = "${symbol}#daily"
         ) {
@@ -947,6 +1078,7 @@ class NotificationWindowRunner @Inject constructor(
         now: LocalDateTime,
         candidates: MutableList<NotificationEvent>,
         timingTracker: FetchTimingTracker,
+        requestPacer: RequestPacer,
         fetchLog: MutableList<String>,
         overviewLog: MutableList<String>
     ) {
@@ -955,8 +1087,9 @@ class NotificationWindowRunner @Inject constructor(
 
         val alertsByRange = alerts.groupBy { it.metric.defaultRange }
         for ((range, rangeAlerts) in alertsByRange) {
-            val result = recordFetch(
+            val result = recordNetworkFetch(
                 timingTracker = timingTracker,
+                requestPacer = requestPacer,
                 logList = fetchLog,
                 label = "${item.symbol}#alert_${range.name}"
             ) {
@@ -980,6 +1113,7 @@ class NotificationWindowRunner @Inject constructor(
                 val overview = loadOverviewCached(
                     symbol = item.symbol,
                     timingTracker = timingTracker,
+                    requestPacer = requestPacer,
                     logList = overviewLog
                 )
                 val signal = signalsRepository.computeSignal(item.symbol, series, range, overview)
@@ -1096,14 +1230,16 @@ class NotificationWindowRunner @Inject constructor(
     private suspend fun loadOverviewCached(
         symbol: String,
         timingTracker: FetchTimingTracker,
+        requestPacer: RequestPacer,
         logList: MutableList<String>
     ): StockOverview? {
         val cached = overviewCache[symbol]
         if (cached != null || overviewCache.containsKey(symbol)) {
             return cached
         }
-        val overview = recordFetch(
+        val overview = recordNetworkFetch(
             timingTracker = timingTracker,
+            requestPacer = requestPacer,
             logList = logList,
             label = "${symbol}#overview"
         ) {
@@ -1169,6 +1305,8 @@ class NotificationWindowRunner @Inject constructor(
         private const val LIVE_RETRY_COUNT = 2
         private const val LIVE_RETRY_DELAY_MS = 250L
         private const val TICKER_ERROR_MAX = 40
+        private const val REQUEST_GAP_BASE_MS = 3000L
+        private const val REQUEST_GAP_JITTER_MS = 2000L
         private val CANDLE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
         private val FETCH_TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss.SSS")
     }

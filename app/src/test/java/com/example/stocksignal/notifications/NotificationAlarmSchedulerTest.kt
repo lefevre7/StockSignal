@@ -15,6 +15,7 @@ import com.example.stocksignal.data.settings.SnoozeDurationOption
 import com.example.stocksignal.data.settings.settingsDataStore
 import com.example.stocksignal.domain.model.ChartRange
 import java.time.DayOfWeek
+import java.time.LocalTime
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -37,22 +38,29 @@ class NotificationAlarmSchedulerTest {
         val diagnostics = NotificationDiagnosticsRepository(context.settingsDataStore)
         val scheduler = NotificationScheduler(context, diagnostics)
         clearScheduledAlarms()
+        
+        // Use times that are guaranteed to be at least 2 hours in the future
+        // to ensure pre-notify alarms can be scheduled (30 min lead time)
+        val now = LocalTime.now()
+        val firstWindowTime = now.plusHours(2)
+        val secondWindowTime = now.plusHours(5)
+        
         val settings = baseSettings(
             frequency = NotificationFrequency.THREE_PER_DAY,
             windows = listOf(
                 ScheduleWindow(
-                    id = "local_1100",
+                    id = "local_future_1",
                     type = ScheduleWindowType.FIXED_LOCAL,
-                    hour = 11,
-                    minute = 0,
+                    hour = firstWindowTime.hour,
+                    minute = firstWindowTime.minute,
                     zoneId = null,
                     offsetMinutes = null
                 ),
                 ScheduleWindow(
-                    id = "local_1400",
+                    id = "local_future_2",
                     type = ScheduleWindowType.FIXED_LOCAL,
-                    hour = 14,
-                    minute = 0,
+                    hour = secondWindowTime.hour,
+                    minute = secondWindowTime.minute,
                     zoneId = null,
                     offsetMinutes = null
                 )

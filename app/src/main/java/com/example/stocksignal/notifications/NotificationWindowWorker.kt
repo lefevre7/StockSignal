@@ -16,7 +16,7 @@ class NotificationWindowWorker @AssistedInject constructor(
 
     override suspend fun doWork(): Result {
         val windowId = inputData.getString(KEY_WINDOW_ID) ?: return Result.failure()
-        return when (runner.run(windowId, runAttemptCount)) {
+        return when (runner.run(windowId, runAttemptCount, allowAiGeneration = false)) {
             NotificationWindowRunner.RunOutcome.SUCCESS -> Result.success()
             NotificationWindowRunner.RunOutcome.RETRY -> Result.retry()
             NotificationWindowRunner.RunOutcome.FAILURE -> Result.failure()

@@ -73,7 +73,7 @@ class WindowPreNotifyService : Service() {
                         recordPreNotify(windowId, "skipped", "already ran")
                     } else {
                         val settings = settingsRepository.settingsFlow.first()
-                        val outcome = windowRunner.run(windowId)
+                        val outcome = windowRunner.run(windowId, allowAiGeneration = false)
                         val result = when (outcome) {
                             NotificationWindowRunner.RunOutcome.SUCCESS -> "ran"
                             NotificationWindowRunner.RunOutcome.RETRY -> "retry"

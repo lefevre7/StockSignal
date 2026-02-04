@@ -25,9 +25,9 @@ class NotificationAlarmReceiver : BroadcastReceiver() {
         )
         val settingsRepository = entryPoint.settingsRepository()
         val scheduler = entryPoint.notificationScheduler()
-        val windowRunner = entryPoint.notificationWindowRunner()
         val robotsRunner = entryPoint.robotsTxtCheckRunner()
         val premarketRunner = entryPoint.premarketQuoteRunner()
+        val diagnosticsRepository = entryPoint.notificationDiagnosticsRepository()
 
         CoroutineScope(Dispatchers.IO).launch {
             try {
@@ -43,7 +43,17 @@ class NotificationAlarmReceiver : BroadcastReceiver() {
                                 putExtra(NotificationAlarmIntentFactory.EXTRA_WINDOW_ID, windowId)
                                 putExtra(NotificationAlarmIntentFactory.EXTRA_RUN_AT_MILLIS, System.currentTimeMillis())
                             }
-                            ContextCompat.startForegroundService(appContext, serviceIntent)
+                            try {
+                                ContextCompat.startForegroundService(appContext, serviceIntent)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Failed to start window service for $windowId", e)
+                                diagnosticsRepository.recordWindowRun(
+                                    windowId,
+                                    "start_failed",
+                                    "fgs_start_failed:${e::class.java.simpleName}:${e.message}"
+                                )
+                                scheduler.scheduleNextWindow(settings, windowId)
+                            }
                         }
                     }
                     NotificationAlarmIntentFactory.TYPE_PRE_NOTIFY -> {
@@ -56,7 +66,17 @@ class NotificationAlarmReceiver : BroadcastReceiver() {
                                 putExtra(NotificationAlarmIntentFactory.EXTRA_WINDOW_ID, windowId)
                                 putExtra(NotificationAlarmIntentFactory.EXTRA_RUN_AT_MILLIS, runAtMillis)
                             }
-                            ContextCompat.startForegroundService(appContext, serviceIntent)
+                            try {
+                                ContextCompat.startForegroundService(appContext, serviceIntent)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Failed to start pre-notify service for $windowId", e)
+                                diagnosticsRepository.recordWindowPreNotifyRun(
+                                    windowId,
+                                    "start_failed",
+                                    "fgs_start_failed:${e::class.java.simpleName}:${e.message}"
+                                )
+                                scheduler.scheduleNextWindow(settings, windowId)
+                            }
                         }
                     }
                     NotificationAlarmIntentFactory.TYPE_ROBOTS -> {
@@ -88,9 +108,9 @@ class NotificationAlarmReceiver : BroadcastReceiver() {
     interface NotificationAlarmEntryPoint {
         fun settingsRepository(): com.example.stocksignal.data.settings.SettingsRepository
         fun notificationScheduler(): NotificationScheduler
-        fun notificationWindowRunner(): NotificationWindowRunner
         fun robotsTxtCheckRunner(): RobotsTxtCheckRunner
         fun premarketQuoteRunner(): PremarketQuoteRunner
+        fun notificationDiagnosticsRepository(): NotificationDiagnosticsRepository
     }
 
     companion object {

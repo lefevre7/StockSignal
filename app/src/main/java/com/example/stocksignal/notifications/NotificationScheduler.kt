@@ -33,6 +33,7 @@ class NotificationScheduler @Inject constructor(
     suspend fun schedule(settings: AppSettings, force: Boolean = false) {
         Log.d(TAG, "=== Notification Scheduler Start ===")
         Log.d(TAG, "Frequency: ${settings.frequency}, Types: ${settings.notificationTypes}")
+        diagnosticsRepository.clearAlarmScheduleError()
 
         if (!hasNotificationSources(settings)) {
             cancelAllAlarms()
@@ -110,12 +111,20 @@ class NotificationScheduler @Inject constructor(
         }
         val firstWindow = windows.first()
         val nextRunAt = nextRunAt(firstWindow, ZonedDateTime.now(clock), settings)
-        scheduleAlarm(
-            triggerAtMillis = nextRunAt.toInstant().toEpochMilli(),
-            pendingIntent = NotificationAlarmIntentFactory.robotsPendingIntent(context),
-            exactAllowed = canScheduleExactAlarms()
-        )
-        diagnosticsRepository.setRobotsNextRun(nextRunAt.toInstant().toEpochMilli())
+        try {
+            scheduleAlarm(
+                triggerAtMillis = nextRunAt.toInstant().toEpochMilli(),
+                pendingIntent = NotificationAlarmIntentFactory.robotsPendingIntent(context),
+                exactAllowed = canScheduleExactAlarms()
+            )
+            diagnosticsRepository.setRobotsNextRun(nextRunAt.toInstant().toEpochMilli())
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to schedule robots.txt alarm", e)
+            diagnosticsRepository.recordAlarmScheduleError(
+                "robots ${e::class.java.simpleName}: ${e.message}"
+            )
+            diagnosticsRepository.setRobotsNextRun(null)
+        }
     }
 
     suspend fun schedulePremarketSample(settings: AppSettings, windowId: String, sampleIndex: Int) {
@@ -125,18 +134,29 @@ class NotificationScheduler @Inject constructor(
             return
         }
         val nextRunAt = nextPremarketSampleAt(settings, windowId, sampleIndex) ?: return
-        scheduleAlarm(
-            triggerAtMillis = nextRunAt.toInstant().toEpochMilli(),
-            pendingIntent = NotificationAlarmIntentFactory.premarketPendingIntent(context, windowId, sampleIndex),
-            exactAllowed = canScheduleExactAlarms()
-        )
-        diagnosticsRepository.setPremarketNextRun(
-            NotificationAlarmIntentFactory.premarketKey(windowId, sampleIndex),
-            nextRunAt.toInstant().toEpochMilli()
-        )
-        val scheduled = diagnosticsRepository.getScheduledPremarketKeys() +
-            NotificationAlarmIntentFactory.premarketKey(windowId, sampleIndex)
-        diagnosticsRepository.setScheduledPremarketKeys(scheduled)
+        try {
+            scheduleAlarm(
+                triggerAtMillis = nextRunAt.toInstant().toEpochMilli(),
+                pendingIntent = NotificationAlarmIntentFactory.premarketPendingIntent(context, windowId, sampleIndex),
+                exactAllowed = canScheduleExactAlarms()
+            )
+            diagnosticsRepository.setPremarketNextRun(
+                NotificationAlarmIntentFactory.premarketKey(windowId, sampleIndex),
+                nextRunAt.toInstant().toEpochMilli()
+            )
+            val scheduled = diagnosticsRepository.getScheduledPremarketKeys() +
+                NotificationAlarmIntentFactory.premarketKey(windowId, sampleIndex)
+            diagnosticsRepository.setScheduledPremarketKeys(scheduled)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to schedule premarket alarm for $windowId/$sampleIndex", e)
+            diagnosticsRepository.recordAlarmScheduleError(
+                "premarket:${windowId}#${sampleIndex} ${e::class.java.simpleName}: ${e.message}"
+            )
+            diagnosticsRepository.setPremarketNextRun(
+                NotificationAlarmIntentFactory.premarketKey(windowId, sampleIndex),
+                null
+            )
+        }
     }
 
     private suspend fun schedulePremarketQuotes(settings: AppSettings) {
@@ -154,15 +174,26 @@ class NotificationScheduler @Inject constructor(
         cancelObsoletePremarketAlarms(expectedKeys)
         (0..4).forEach { index ->
             val nextRunAt = nextPremarketSampleAt(settings, windowId, index) ?: return@forEach
-            scheduleAlarm(
-                triggerAtMillis = nextRunAt.toInstant().toEpochMilli(),
-                pendingIntent = NotificationAlarmIntentFactory.premarketPendingIntent(context, windowId, index),
-                exactAllowed = canScheduleExactAlarms()
-            )
-            diagnosticsRepository.setPremarketNextRun(
-                NotificationAlarmIntentFactory.premarketKey(windowId, index),
-                nextRunAt.toInstant().toEpochMilli()
-            )
+            try {
+                scheduleAlarm(
+                    triggerAtMillis = nextRunAt.toInstant().toEpochMilli(),
+                    pendingIntent = NotificationAlarmIntentFactory.premarketPendingIntent(context, windowId, index),
+                    exactAllowed = canScheduleExactAlarms()
+                )
+                diagnosticsRepository.setPremarketNextRun(
+                    NotificationAlarmIntentFactory.premarketKey(windowId, index),
+                    nextRunAt.toInstant().toEpochMilli()
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to schedule premarket alarm for $windowId/$index", e)
+                diagnosticsRepository.recordAlarmScheduleError(
+                    "premarket:${windowId}#${index} ${e::class.java.simpleName}: ${e.message}"
+                )
+                diagnosticsRepository.setPremarketNextRun(
+                    NotificationAlarmIntentFactory.premarketKey(windowId, index),
+                    null
+                )
+            }
         }
         diagnosticsRepository.setScheduledPremarketKeys(expectedKeys)
     }
@@ -322,13 +353,22 @@ class NotificationScheduler @Inject constructor(
             nextRunAt(window, now, settings)
         }
         val triggerAtMillis = triggerAt.toInstant().toEpochMilli()
-        scheduleAlarm(
-            triggerAtMillis = triggerAtMillis,
-            pendingIntent = NotificationAlarmIntentFactory.windowPendingIntent(context, window.id),
-            exactAllowed = exactAllowed
-        )
-        diagnosticsRepository.setNextWindowRun(window.id, triggerAtMillis)
-        schedulePreNotifyAlarm(settings, window, triggerAtMillis, exactAllowed)
+        try {
+            scheduleAlarm(
+                triggerAtMillis = triggerAtMillis,
+                pendingIntent = NotificationAlarmIntentFactory.windowPendingIntent(context, window.id),
+                exactAllowed = exactAllowed
+            )
+            diagnosticsRepository.setNextWindowRun(window.id, triggerAtMillis)
+            schedulePreNotifyAlarm(settings, window, triggerAtMillis, exactAllowed)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to schedule window alarm for ${window.id}", e)
+            diagnosticsRepository.recordAlarmScheduleError(
+                "window:${window.id} ${e::class.java.simpleName}: ${e.message}"
+            )
+            diagnosticsRepository.setNextWindowRun(window.id, null)
+            diagnosticsRepository.setWindowPreNotifyNextRun(window.id, null)
+        }
     }
 
     private suspend fun schedulePreNotifyAlarm(
@@ -347,16 +387,24 @@ class NotificationScheduler @Inject constructor(
             diagnosticsRepository.setWindowPreNotifyNextRun(window.id, null)
             return
         }
-        scheduleAlarm(
-            triggerAtMillis = preNotifyAtMillis,
-            pendingIntent = NotificationAlarmIntentFactory.preNotifyPendingIntent(
-                context,
-                window.id,
-                triggerAtMillis
-            ),
-            exactAllowed = exactAllowed
-        )
-        diagnosticsRepository.setWindowPreNotifyNextRun(window.id, preNotifyAtMillis)
+        try {
+            scheduleAlarm(
+                triggerAtMillis = preNotifyAtMillis,
+                pendingIntent = NotificationAlarmIntentFactory.preNotifyPendingIntent(
+                    context,
+                    window.id,
+                    triggerAtMillis
+                ),
+                exactAllowed = exactAllowed
+            )
+            diagnosticsRepository.setWindowPreNotifyNextRun(window.id, preNotifyAtMillis)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to schedule pre-notify alarm for ${window.id}", e)
+            diagnosticsRepository.recordAlarmScheduleError(
+                "pre_notify:${window.id} ${e::class.java.simpleName}: ${e.message}"
+            )
+            diagnosticsRepository.setWindowPreNotifyNextRun(window.id, null)
+        }
     }
 
     private fun cancelPreNotifyAlarm(windowId: String) {

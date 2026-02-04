@@ -55,7 +55,7 @@ class WindowRunService : Service() {
                         Log.d(TAG, "Skipping window run for $windowId; already ran")
                     } else {
                         val settings = settingsRepository.settingsFlow.first()
-                        windowRunner.run(windowId)
+                        windowRunner.run(windowId, allowAiGeneration = false)
                         scheduler.scheduleNextWindow(settings, windowId)
                     }
                 } catch (e: Exception) {

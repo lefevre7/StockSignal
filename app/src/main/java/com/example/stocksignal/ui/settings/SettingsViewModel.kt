@@ -331,6 +331,7 @@ class SettingsViewModel @Inject constructor(
                 val robotsRunInfo = diagnosticsRepository.getRobotsRunInfo()
                 val exactAllowed = diagnosticsRepository.getLastExactAlarmAllowed()
                 val stooqBlockedInfo = diagnosticsRepository.getStooqBlockedInfo()
+                val alarmScheduleError = diagnosticsRepository.getAlarmScheduleErrorInfo()
 
                 val status = buildString {
                     appendLine("📊 Alarm Schedule Status:")
@@ -388,6 +389,13 @@ class SettingsViewModel @Inject constructor(
                     }
                     if (exactAllowed != null) {
                         appendLine("Exact alarms allowed: $exactAllowed")
+                    }
+                    if (!alarmScheduleError.reason.isNullOrBlank()) {
+                        appendLine(
+                            "Alarm schedule error: " +
+                                "${formatLastRun(alarmScheduleError.lastAtMillis, nowMillis)} - " +
+                                alarmScheduleError.reason
+                        )
                     }
                     appendLine()
                     appendLine("💡 Tap 'Force schedule' to reschedule alarms now")

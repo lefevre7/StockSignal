@@ -14,7 +14,7 @@ class StooqBlockInterceptor @Inject constructor(
     private val blockReporter: StooqBlockReporter
 ) : Interceptor {
 
-    @Volatile private var lastRequestFinishedAtMillis: Long = 0L
+    @Volatile private var nextRequestAtMillis: Long = 0L
     private val requestLock = Any()
 
     override fun intercept(chain: Interceptor.Chain): Response {
@@ -45,17 +45,13 @@ class StooqBlockInterceptor @Inject constructor(
             val message = blocker.buildBlockedMessage()
             blockReporter.reportBlocked(message, blocker.blockedUntilMillis())
             throw StooqBlockedException(message, e)
-        } finally {
-            markRequestFinished()
         }
     }
 
     private fun enforceMinGap() {
         synchronized(requestLock) {
             val now = System.currentTimeMillis()
-            val elapsed = now - lastRequestFinishedAtMillis
-            val targetGap = BASE_REQUEST_GAP_MS + Random.nextLong(JITTER_MS + 1)
-            val waitMs = targetGap - elapsed
+            val waitMs = (nextRequestAtMillis - now).coerceAtLeast(0L)
             if (waitMs > 0) {
                 try {
                     Thread.sleep(waitMs)
@@ -63,12 +59,8 @@ class StooqBlockInterceptor @Inject constructor(
                     Thread.currentThread().interrupt()
                 }
             }
-        }
-    }
-
-    private fun markRequestFinished() {
-        synchronized(requestLock) {
-            lastRequestFinishedAtMillis = System.currentTimeMillis()
+            val targetGap = BASE_REQUEST_GAP_MS + Random.nextLong(JITTER_MS + 1)
+            nextRequestAtMillis = System.currentTimeMillis() + targetGap
         }
     }
 
@@ -90,8 +82,8 @@ class StooqBlockInterceptor @Inject constructor(
 
     companion object {
         private val BLOCK_DURATION = Duration.ofHours(24)
-        private const val BASE_REQUEST_GAP_MS = 2000L
-        private const val JITTER_MS = 1000L
+        private const val BASE_REQUEST_GAP_MS = 200L
+        private const val JITTER_MS = 200L
         private val BLOCK_HTTP_CODES = setOf(403, 429, 503)
         private const val PEEK_BODY_BYTES = 2048L
         private val CSV_LIKE_PATHS = listOf("/q/a2/d/", "/q/d/l/", "/cmp/", "/robots.txt")

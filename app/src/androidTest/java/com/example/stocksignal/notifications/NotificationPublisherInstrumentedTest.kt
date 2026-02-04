@@ -180,7 +180,7 @@ class NotificationPublisherInstrumentedTest {
         val title = notification.extras.getCharSequence(NotificationCompat.EXTRA_TITLE)?.toString()
         val summary = notification.extras.getCharSequence(NotificationCompat.EXTRA_TEXT)?.toString()
         val tier = SignalTier.fromScore(event.score)
-        val expectedSummary = "${tier.summary} • +${event.score}"
+        val expectedSummary = "${tier.summary} • +${event.score} (swipe to dismiss)"
         assertEquals("${event.ticker} ${tier.label}", title)
         assertEquals(expectedSummary, summary)
     }
@@ -204,7 +204,7 @@ class NotificationPublisherInstrumentedTest {
     }
 
     private fun expectedGroupSummary(events: List<NotificationEvent>): String {
-        return events.take(3).joinToString(", ") { "${it.ticker} ${it.tier.label}" }
+        return events.take(3).joinToString(", ") { "${it.ticker} ${it.tier.label}" } + " (swipe to dismiss)"
     }
 
     private fun expectedLine(event: NotificationEvent): String {

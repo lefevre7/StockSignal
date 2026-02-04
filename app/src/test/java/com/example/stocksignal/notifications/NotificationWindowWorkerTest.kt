@@ -102,7 +102,7 @@ class NotificationWindowWorkerTest {
     }
 
     @Test
-    fun `uses ai score for watchlist thresholds`() = runTest {
+    fun `skips ai generation in background runs`() = runTest {
         val now = LocalDateTime.now()
         every { settingsRepository.settingsFlow } returns flowOf(defaultSettings())
         coEvery { watchlistRepository.getAll() } returns listOf(sampleWatchlistItem("AAPL", now))
@@ -110,11 +110,11 @@ class NotificationWindowWorkerTest {
             sampleCandles(now, 25)
         )
         coEvery { stockRepository.getStockOverview(any()) } returns StooqResult.Error(Exception("no overview"))
-        coEvery { signalsRepository.computeSignal(any(), any(), any(), any(), any()) } returns sampleSignal(
+        coEvery { signalsRepository.computeSignal(any(), any(), any(), any(), true) } returns sampleSignal(
             now,
-            score = 10,
-            aiScore = 80,
-            aiConfidence = 88
+            score = 80,
+            aiScore = null,
+            aiConfidence = null
         )
         coEvery { signalsRepository.isInCooldown(any(), any(), any()) } returns false
         coEvery { signalsRepository.recordEvent(any()) } just runs
@@ -127,6 +127,12 @@ class NotificationWindowWorkerTest {
         assertTrue(result is ListenableWorker.Result.Success)
         assertTrue(candidatesSlot.captured.isNotEmpty())
         assertEquals(80, candidatesSlot.captured.first().displayScore)
+        coVerify {
+            signalsRepository.computeSignal(any(), any(), any(), any(), true)
+        }
+        coVerify(exactly = 0) {
+            signalsRepository.computeSignal(any(), any(), any(), any(), false)
+        }
     }
 
     @Test
