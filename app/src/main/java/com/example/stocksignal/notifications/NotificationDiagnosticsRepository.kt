@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.edit
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -40,6 +41,11 @@ class NotificationDiagnosticsRepository @Inject constructor(
         val blockedAtMillis: Long?,
         val blockedUntilMillis: Long?,
         val message: String?
+    )
+
+    data class StooqTimeoutStreakInfo(
+        val count: Int,
+        val lastAtMillis: Long?
     )
 
     data class AlarmScheduleErrorInfo(
@@ -222,6 +228,33 @@ class NotificationDiagnosticsRepository @Inject constructor(
         )
     }
 
+    suspend fun recordStooqTimeoutStreak(count: Int) {
+        dataStore.edit { prefs ->
+            if (count <= 0) {
+                prefs.remove(stooqTimeoutStreakCountKey)
+                prefs.remove(stooqTimeoutStreakAtKey)
+            } else {
+                prefs[stooqTimeoutStreakCountKey] = count
+                prefs[stooqTimeoutStreakAtKey] = System.currentTimeMillis()
+            }
+        }
+    }
+
+    suspend fun clearStooqTimeoutStreak() {
+        dataStore.edit { prefs ->
+            prefs.remove(stooqTimeoutStreakCountKey)
+            prefs.remove(stooqTimeoutStreakAtKey)
+        }
+    }
+
+    suspend fun getStooqTimeoutStreakInfo(): StooqTimeoutStreakInfo {
+        val prefs = dataStore.data.first()
+        return StooqTimeoutStreakInfo(
+            count = prefs[stooqTimeoutStreakCountKey] ?: 0,
+            lastAtMillis = prefs[stooqTimeoutStreakAtKey]
+        )
+    }
+
     suspend fun recordAlarmScheduleError(reason: String?) {
         dataStore.edit { prefs ->
             prefs[alarmScheduleErrorAtKey] = System.currentTimeMillis()
@@ -349,6 +382,8 @@ class NotificationDiagnosticsRepository @Inject constructor(
         private val stooqBlockedAtKey = longPreferencesKey("stooq_blocked_at")
         private val stooqBlockedUntilKey = longPreferencesKey("stooq_blocked_until")
         private val stooqBlockedMessageKey = stringPreferencesKey("stooq_blocked_message")
+        private val stooqTimeoutStreakCountKey = intPreferencesKey("stooq_timeout_streak_count")
+        private val stooqTimeoutStreakAtKey = longPreferencesKey("stooq_timeout_streak_at")
         private val scheduledPremarketKeysKey = stringSetPreferencesKey("notif_scheduled_premarket_keys")
         private val lastExactAlarmAllowedKey = booleanPreferencesKey("notif_exact_alarm_allowed")
         private val alarmScheduleErrorAtKey = longPreferencesKey("notif_alarm_schedule_error_at")

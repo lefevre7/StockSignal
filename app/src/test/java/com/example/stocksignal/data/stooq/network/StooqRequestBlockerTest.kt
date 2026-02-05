@@ -12,7 +12,7 @@ class StooqRequestBlockerTest {
 
     @Test
     fun clearBlockResetsBlockedState() {
-        val diagnostics = mockk<NotificationDiagnosticsRepository> {
+        val diagnostics = mockk<NotificationDiagnosticsRepository>(relaxed = true) {
             coEvery { getStooqBlockedInfo() } returns NotificationDiagnosticsRepository.StooqBlockedInfo(
                 blockedAtMillis = null,
                 blockedUntilMillis = null,

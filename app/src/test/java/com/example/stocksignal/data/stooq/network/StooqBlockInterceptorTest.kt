@@ -12,14 +12,16 @@ import io.mockk.coEvery
 import io.mockk.mockk
 import io.mockk.verify
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Test
+import java.net.SocketTimeoutException
 
 class StooqBlockInterceptorTest {
 
     @Test
     fun blocksAndReportsOnHttp429() {
-        val diagnostics = mockk<NotificationDiagnosticsRepository> {
+        val diagnostics = mockk<NotificationDiagnosticsRepository>(relaxed = true) {
             coEvery { getStooqBlockedInfo() } returns NotificationDiagnosticsRepository.StooqBlockedInfo(
                 blockedAtMillis = null,
                 blockedUntilMillis = null,
@@ -29,7 +31,7 @@ class StooqBlockInterceptorTest {
         }
         val blocker = StooqRequestBlocker(diagnostics)
         val reporter = mockk<StooqBlockReporter>(relaxed = true)
-        val interceptor = StooqBlockInterceptor(blocker, reporter)
+        val interceptor = StooqBlockInterceptor(blocker, reporter, diagnostics)
 
         val request = Request.Builder()
             .url("https://stooq.com/")
@@ -55,5 +57,101 @@ class StooqBlockInterceptorTest {
         verify {
             reporter.reportBlocked(match { it.contains("HTTP 429") }, any())
         }
+    }
+
+    @Test
+    fun blocksAfterFiveTimeoutsInRow() {
+        val diagnostics = mockk<NotificationDiagnosticsRepository>(relaxed = true) {
+            coEvery { getStooqBlockedInfo() } returns NotificationDiagnosticsRepository.StooqBlockedInfo(
+                blockedAtMillis = null,
+                blockedUntilMillis = null,
+                message = null
+            )
+            coEvery { clearStooqBlocked() } returns Unit
+        }
+        val blocker = StooqRequestBlocker(diagnostics)
+        val reporter = mockk<StooqBlockReporter>(relaxed = true)
+        val interceptor = StooqBlockInterceptor(blocker, reporter, diagnostics)
+
+        val request = Request.Builder()
+            .url("https://stooq.com/q/d/l/")
+            .build()
+        val chain = mockk<Interceptor.Chain> {
+            every { request() } returns request
+            every { proceed(any()) } throws SocketTimeoutException("timeout")
+        }
+
+        repeat(4) {
+            assertThrows(SocketTimeoutException::class.java) {
+                interceptor.intercept(chain)
+            }
+        }
+        assertFalse(blocker.isBlocked())
+        verify(exactly = 0) { reporter.reportBlocked(any(), any()) }
+
+        assertThrows(StooqBlockedException::class.java) {
+            interceptor.intercept(chain)
+        }
+
+        assertTrue(blocker.isBlocked())
+        verify(exactly = 1) {
+            reporter.reportBlocked(match { it.contains("timed out") }, any())
+        }
+    }
+
+    @Test
+    fun resetsTimeoutStreakOnSuccess() {
+        val diagnostics = mockk<NotificationDiagnosticsRepository>(relaxed = true) {
+            coEvery { getStooqBlockedInfo() } returns NotificationDiagnosticsRepository.StooqBlockedInfo(
+                blockedAtMillis = null,
+                blockedUntilMillis = null,
+                message = null
+            )
+            coEvery { clearStooqBlocked() } returns Unit
+        }
+        val blocker = StooqRequestBlocker(diagnostics)
+        val reporter = mockk<StooqBlockReporter>(relaxed = true)
+        val interceptor = StooqBlockInterceptor(blocker, reporter, diagnostics)
+
+        val request = Request.Builder()
+            .url("https://stooq.com/q/d/l/")
+            .build()
+        val timeoutChain = mockk<Interceptor.Chain> {
+            every { request() } returns request
+            every { proceed(any()) } throws SocketTimeoutException("timeout")
+        }
+        val response = Response.Builder()
+            .request(request)
+            .protocol(Protocol.HTTP_1_1)
+            .code(200)
+            .message("OK")
+            .body("ticker,price".toResponseBody("text/plain".toMediaType()))
+            .build()
+        val successChain = mockk<Interceptor.Chain> {
+            every { request() } returns request
+            every { proceed(any()) } returns response
+        }
+
+        repeat(2) {
+            assertThrows(SocketTimeoutException::class.java) {
+                interceptor.intercept(timeoutChain)
+            }
+        }
+        assertFalse(blocker.isBlocked())
+
+        val ok = interceptor.intercept(successChain)
+        ok.close()
+
+        repeat(4) {
+            assertThrows(SocketTimeoutException::class.java) {
+                interceptor.intercept(timeoutChain)
+            }
+        }
+        assertFalse(blocker.isBlocked())
+
+        assertThrows(StooqBlockedException::class.java) {
+            interceptor.intercept(timeoutChain)
+        }
+        assertTrue(blocker.isBlocked())
     }
 }

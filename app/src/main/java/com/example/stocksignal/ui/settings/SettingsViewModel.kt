@@ -331,6 +331,7 @@ class SettingsViewModel @Inject constructor(
                 val robotsRunInfo = diagnosticsRepository.getRobotsRunInfo()
                 val exactAllowed = diagnosticsRepository.getLastExactAlarmAllowed()
                 val stooqBlockedInfo = diagnosticsRepository.getStooqBlockedInfo()
+                val stooqTimeoutStreak = diagnosticsRepository.getStooqTimeoutStreakInfo()
                 val alarmScheduleError = diagnosticsRepository.getAlarmScheduleErrorInfo()
 
                 val status = buildString {
@@ -386,6 +387,12 @@ class SettingsViewModel @Inject constructor(
                     val stooqUntil = stooqBlockedInfo.blockedUntilMillis
                     if (!stooqMessage.isNullOrBlank() && (stooqUntil == null || stooqUntil > nowMillis)) {
                         appendLine("Stooq blocked: $stooqMessage")
+                    }
+                    if (stooqTimeoutStreak.count > 0) {
+                        appendLine(
+                            "Stooq timeout streak: ${stooqTimeoutStreak.count}/5 " +
+                                "(last: ${formatLastRun(stooqTimeoutStreak.lastAtMillis, nowMillis)})"
+                        )
                     }
                     if (exactAllowed != null) {
                         appendLine("Exact alarms allowed: $exactAllowed")

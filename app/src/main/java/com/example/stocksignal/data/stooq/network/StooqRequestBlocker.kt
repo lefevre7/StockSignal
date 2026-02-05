@@ -34,7 +34,10 @@ class StooqRequestBlocker @Inject constructor(
             if (until != 0L) {
                 blockedUntilMillis.set(0L)
                 lastReason.set(null)
-                scope.launch { diagnosticsRepository.clearStooqBlocked() }
+                scope.launch {
+                    diagnosticsRepository.clearStooqBlocked()
+                    diagnosticsRepository.clearStooqTimeoutStreak()
+                }
             }
             return false
         }
@@ -56,6 +59,7 @@ class StooqRequestBlocker @Inject constructor(
     fun clearBlock() {
         blockedUntilMillis.set(0L)
         lastReason.set(null)
+        scope.launch { diagnosticsRepository.clearStooqTimeoutStreak() }
         Log.i(TAG, "Stooq block cleared manually.")
     }
 
