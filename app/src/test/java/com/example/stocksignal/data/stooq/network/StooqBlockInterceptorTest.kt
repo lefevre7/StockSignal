@@ -34,7 +34,7 @@ class StooqBlockInterceptorTest {
         val interceptor = StooqBlockInterceptor(blocker, reporter, diagnostics)
 
         val request = Request.Builder()
-            .url("https://stooq.com/")
+            .url("https://stooq.com/q/d/l/")
             .build()
         val response = Response.Builder()
             .request(request)
@@ -57,6 +57,42 @@ class StooqBlockInterceptorTest {
         verify {
             reporter.reportBlocked(match { it.contains("HTTP 429") }, any())
         }
+    }
+
+    @Test
+    fun doesNotBlockOnHttp429ForNonBlockingPath() {
+        val diagnostics = mockk<NotificationDiagnosticsRepository>(relaxed = true) {
+            coEvery { getStooqBlockedInfo() } returns NotificationDiagnosticsRepository.StooqBlockedInfo(
+                blockedAtMillis = null,
+                blockedUntilMillis = null,
+                message = null
+            )
+            coEvery { clearStooqBlocked() } returns Unit
+        }
+        val blocker = StooqRequestBlocker(diagnostics)
+        val reporter = mockk<StooqBlockReporter>(relaxed = true)
+        val interceptor = StooqBlockInterceptor(blocker, reporter, diagnostics)
+
+        val request = Request.Builder()
+            .url("https://stooq.com/cmp/")
+            .build()
+        val response = Response.Builder()
+            .request(request)
+            .protocol(Protocol.HTTP_1_1)
+            .code(429)
+            .message("Too Many Requests")
+            .body("".toResponseBody("text/plain".toMediaType()))
+            .build()
+
+        val chain = mockk<Interceptor.Chain> {
+            every { request() } returns request
+            every { proceed(any()) } returns response
+        }
+
+        val result = interceptor.intercept(chain)
+        assertFalse(blocker.isBlocked())
+        verify(exactly = 0) { reporter.reportBlocked(any(), any()) }
+        result.close()
     }
 
     @Test

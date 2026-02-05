@@ -27,6 +27,7 @@ class StooqBlockInterceptor @Inject constructor(
     private val diagnosticsScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun intercept(chain: Interceptor.Chain): Response {
+        val path = chain.request().url.encodedPath
         if (blocker.isBlocked()) {
             val message = blocker.buildBlockedMessage()
             blockReporter.reportBlocked(message, blocker.blockedUntilMillis())
@@ -37,7 +38,7 @@ class StooqBlockInterceptor @Inject constructor(
 
         return try {
             val response = chain.proceed(chain.request())
-            val blockReason = blockReasonFor(response, chain.request().url.encodedPath)
+            val blockReason = blockReasonFor(response, path)
             if (blockReason != null) {
                 clearTimeoutStreakIfNeeded()
                 blocker.blockFor(
@@ -52,6 +53,9 @@ class StooqBlockInterceptor @Inject constructor(
             clearTimeoutStreakIfNeeded()
             response
         } catch (e: SocketTimeoutException) {
+            if (!isBlockingPath(path)) {
+                throw e
+            }
             val count = consecutiveTimeouts.incrementAndGet()
             recordTimeoutStreak(count)
             if (count < TIMEOUT_BLOCK_THRESHOLD) {
@@ -85,19 +89,15 @@ class StooqBlockInterceptor @Inject constructor(
     }
 
     private fun blockReasonFor(response: Response, path: String): String? {
+        if (!isBlockingPath(path)) return null
         if (response.code in BLOCK_HTTP_CODES) {
-            return "Stooq blocked (HTTP ${response.code})."
+            return "Stooq blocked (HTTP ${response.code} at $path)."
         }
-        if (!CSV_LIKE_PATHS.any { path.startsWith(it) }) return null
-        val contentType = response.header("Content-Type")?.lowercase() ?: ""
-        if (contentType.contains("text/html")) {
-            return "Stooq blocked (HTML response)."
-        }
-        val peek = response.peekBody(PEEK_BODY_BYTES).string()
-        val trimmed = peek.trimStart()
-        val looksHtml = trimmed.startsWith("<!doctype", ignoreCase = true) ||
-            trimmed.startsWith("<html", ignoreCase = true)
-        return if (looksHtml) "Stooq blocked (HTML response)." else null
+        return null
+    }
+
+    private fun isBlockingPath(path: String): Boolean {
+        return BLOCKING_PATHS.any { path.startsWith(it) }
     }
 
     private fun clearTimeoutStreakIfNeeded() {
@@ -117,8 +117,7 @@ class StooqBlockInterceptor @Inject constructor(
         private const val BASE_REQUEST_GAP_MS = 200L
         private const val JITTER_MS = 200L
         private val BLOCK_HTTP_CODES = setOf(403, 429, 503)
-        private const val PEEK_BODY_BYTES = 2048L
-        private val CSV_LIKE_PATHS = listOf("/q/a2/d/", "/q/d/l/", "/cmp/", "/robots.txt")
+        private val BLOCKING_PATHS = listOf("/q/a2/d/", "/q/d/l/")
         private const val TIMEOUT_BLOCK_THRESHOLD = 5
     }
 }
