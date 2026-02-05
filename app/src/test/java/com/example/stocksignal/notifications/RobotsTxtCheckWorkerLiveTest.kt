@@ -60,8 +60,8 @@ class RobotsTxtCheckWorkerLiveTest {
         }
 
         val okHttpClient = OkHttpClient.Builder()
-            .connectTimeout(30, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
+            .connectTimeout(120, TimeUnit.SECONDS)
+            .readTimeout(120, TimeUnit.SECONDS)
             .addInterceptor(loggingInterceptor)
             .addInterceptor(userAgentInterceptor)
             .addInterceptor(rateLimitInterceptor)
