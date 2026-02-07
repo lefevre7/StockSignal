@@ -43,6 +43,17 @@ class NotificationDiagnosticsRepository @Inject constructor(
         val message: String?
     )
 
+    data class PremarketRunInfo(
+        val lastStartAtMillis: Long?,
+        val lastRunAtMillis: Long?,
+        val lastResult: String?,
+        val lastReason: String?,
+        val lastCandleLabel: String?,
+        val lastUpsertedCount: Int?,
+        val lastQuoteCount: Int?,
+        val lastErrorCount: Int?
+    )
+
     data class StooqTimeoutStreakInfo(
         val count: Int,
         val lastAtMillis: Long?
@@ -228,6 +239,69 @@ class NotificationDiagnosticsRepository @Inject constructor(
         )
     }
 
+    suspend fun recordPremarketRunStarted(key: String) {
+        dataStore.edit { prefs ->
+            prefs[premarketLastStartKey(key)] = System.currentTimeMillis()
+        }
+    }
+
+    suspend fun recordPremarketRunResult(
+        key: String,
+        result: String,
+        reason: String?,
+        candleLabel: String?,
+        upsertedCount: Int?,
+        quoteCount: Int?,
+        errorCount: Int?
+    ) {
+        dataStore.edit { prefs ->
+            prefs[premarketLastRunKey(key)] = System.currentTimeMillis()
+            prefs[premarketLastResultKey(key)] = result
+            if (reason.isNullOrBlank()) {
+                prefs.remove(premarketLastReasonKey(key))
+            } else {
+                prefs[premarketLastReasonKey(key)] = reason
+            }
+            if (candleLabel.isNullOrBlank()) {
+                prefs.remove(premarketLastCandleKey(key))
+            } else {
+                prefs[premarketLastCandleKey(key)] = candleLabel
+            }
+            if (upsertedCount == null) {
+                prefs.remove(premarketLastUpsertedKey(key))
+            } else {
+                prefs[premarketLastUpsertedKey(key)] = upsertedCount
+            }
+            if (quoteCount == null) {
+                prefs.remove(premarketLastQuoteCountKey(key))
+            } else {
+                prefs[premarketLastQuoteCountKey(key)] = quoteCount
+            }
+            if (errorCount == null) {
+                prefs.remove(premarketLastErrorCountKey(key))
+            } else {
+                prefs[premarketLastErrorCountKey(key)] = errorCount
+            }
+        }
+    }
+
+    suspend fun getPremarketRunInfo(keys: Set<String>): Map<String, PremarketRunInfo> {
+        if (keys.isEmpty()) return emptyMap()
+        val prefs = dataStore.data.first()
+        return keys.associateWith { key ->
+            PremarketRunInfo(
+                lastStartAtMillis = prefs[premarketLastStartKey(key)],
+                lastRunAtMillis = prefs[premarketLastRunKey(key)],
+                lastResult = prefs[premarketLastResultKey(key)],
+                lastReason = prefs[premarketLastReasonKey(key)],
+                lastCandleLabel = prefs[premarketLastCandleKey(key)],
+                lastUpsertedCount = prefs[premarketLastUpsertedKey(key)],
+                lastQuoteCount = prefs[premarketLastQuoteCountKey(key)],
+                lastErrorCount = prefs[premarketLastErrorCountKey(key)]
+            )
+        }
+    }
+
     suspend fun recordStooqTimeoutStreak(count: Int) {
         dataStore.edit { prefs ->
             if (count <= 0) {
@@ -371,6 +445,30 @@ class NotificationDiagnosticsRepository @Inject constructor(
 
     private fun windowPreNotifyNextRunKey(windowId: String) =
         longPreferencesKey("notif_window_${windowId}_pre_next_run")
+
+    private fun premarketLastStartKey(key: String) =
+        longPreferencesKey("premarket_${key}_last_start")
+
+    private fun premarketLastRunKey(key: String) =
+        longPreferencesKey("premarket_${key}_last_run")
+
+    private fun premarketLastResultKey(key: String) =
+        stringPreferencesKey("premarket_${key}_last_result")
+
+    private fun premarketLastReasonKey(key: String) =
+        stringPreferencesKey("premarket_${key}_last_reason")
+
+    private fun premarketLastCandleKey(key: String) =
+        stringPreferencesKey("premarket_${key}_last_candle")
+
+    private fun premarketLastUpsertedKey(key: String) =
+        intPreferencesKey("premarket_${key}_last_upserted")
+
+    private fun premarketLastQuoteCountKey(key: String) =
+        intPreferencesKey("premarket_${key}_last_quotes")
+
+    private fun premarketLastErrorCountKey(key: String) =
+        intPreferencesKey("premarket_${key}_last_errors")
 
     companion object {
         private val scheduleFingerprintKey = stringPreferencesKey("notif_schedule_fingerprint")

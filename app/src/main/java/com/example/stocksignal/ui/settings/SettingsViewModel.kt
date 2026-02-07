@@ -333,6 +333,9 @@ class SettingsViewModel @Inject constructor(
                 val stooqBlockedInfo = diagnosticsRepository.getStooqBlockedInfo()
                 val stooqTimeoutStreak = diagnosticsRepository.getStooqTimeoutStreakInfo()
                 val alarmScheduleError = diagnosticsRepository.getAlarmScheduleErrorInfo()
+                val premarketKeys = diagnosticsRepository.getScheduledPremarketKeys()
+                val premarketNextRuns = diagnosticsRepository.getPremarketNextRuns(premarketKeys)
+                val premarketRunInfo = diagnosticsRepository.getPremarketRunInfo(premarketKeys)
 
                 val status = buildString {
                     appendLine("📊 Alarm Schedule Status:")
@@ -369,6 +372,37 @@ class SettingsViewModel @Inject constructor(
                             }
                             if (!runInfo?.lastReason.isNullOrBlank()) {
                                 appendLine("     Last reason: ${runInfo?.lastReason}")
+                            }
+                        }
+                    }
+                    if (premarketKeys.isNotEmpty()) {
+                        appendLine()
+                        appendLine("Premarket samples: ${premarketKeys.size}")
+                        premarketKeys.sorted().forEach { key ->
+                            appendLine("   Sample: $key")
+                            val nextRun = premarketNextRuns[key]
+                            appendLine("     Next run: ${formatNextRun(nextRun, nowMillis)}")
+                            val runInfo = premarketRunInfo[key]
+                            appendLine(
+                                "     Last start: ${formatLastRun(runInfo?.lastStartAtMillis, nowMillis)}"
+                            )
+                            if (!runInfo?.lastResult.isNullOrBlank()) {
+                                appendLine("     Last result: ${runInfo?.lastResult}")
+                            }
+                            if (!runInfo?.lastCandleLabel.isNullOrBlank()) {
+                                appendLine("     Candle: ${runInfo?.lastCandleLabel}")
+                            }
+                            val upserted = runInfo?.lastUpsertedCount
+                            val quotes = runInfo?.lastQuoteCount
+                            if (upserted != null || quotes != null) {
+                                appendLine("     Upserted: ${upserted ?: 0}/${quotes ?: 0}")
+                            }
+                            val errors = runInfo?.lastErrorCount ?: 0
+                            if (errors > 0) {
+                                appendLine("     Errors: $errors")
+                            }
+                            if (!runInfo?.lastReason.isNullOrBlank()) {
+                                appendLine("     Reason: ${runInfo?.lastReason}")
                             }
                         }
                     }
