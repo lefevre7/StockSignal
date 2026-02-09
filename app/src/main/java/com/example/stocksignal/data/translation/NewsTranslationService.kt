@@ -482,7 +482,7 @@ class NewsTranslationService @Inject constructor(
             appendLine("<user_turn>")
             appendLine("Translate the Polish text to English.")
             appendLine("Reply ONLY with one-line JSON exactly like:")
-            appendLine("{\"translation\":\"<english>\"}")
+            appendLine("{\"englishTranslation\":\"<english>\"}")
             appendLine("No extra words.")
             appendLine("End with </model_turn>.")
             appendLine("Polish: $input")
@@ -496,7 +496,7 @@ class NewsTranslationService @Inject constructor(
             appendLine("<user_turn>")
             appendLine("Your previous response was invalid JSON.")
             appendLine("Reply ONLY with one-line JSON exactly like:")
-            appendLine("{\"translation\":\"<english>\"}")
+            appendLine("{\"englishTranslation\":\"<english>\"}")
             appendLine("No extra words.")
             appendLine("End with </model_turn>.")
             appendLine("Polish: $input")
@@ -509,7 +509,7 @@ class NewsTranslationService @Inject constructor(
         val normalized = normalizeTranslationJson(raw) ?: return null
         return try {
             val json = JSONObject(normalized)
-            val translation = json.optString("translation").trim()
+            val translation = json.optString("englishTranslation").trim()
             translation.ifBlank { null }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to parse translation JSON: ${e.message}")

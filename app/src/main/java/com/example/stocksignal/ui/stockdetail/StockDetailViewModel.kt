@@ -820,15 +820,7 @@ class StockDetailViewModel @Inject constructor(
     }
 
     private fun buildTranslationInput(item: StockNewsItem): String {
-        val title = item.title.trim()
-        val date = item.publishedAtText.trim()
-        val source = item.source?.trim().orEmpty()
-        return when {
-            date.isNotBlank() && source.isNotBlank() -> "$title. $date * $source"
-            date.isNotBlank() -> "$title. $date"
-            source.isNotBlank() -> "$title. $source"
-            else -> title
-        }
+        return item.title.trim()
     }
 
     private fun isTranslationAcceptable(input: String, translated: String): Boolean {
