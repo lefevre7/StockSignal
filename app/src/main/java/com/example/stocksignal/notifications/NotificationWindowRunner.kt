@@ -220,7 +220,7 @@ class NotificationWindowRunner @Inject constructor(
             val watchlistRange = settings.selectedChartRange
             val moversRange = MarketMoverRange.ONE_DAY
             val moversChartRange = chartRangeForMarketRange(moversRange)
-            val skipAiGeneration = !allowAiGeneration
+            val skipAiGeneration = !allowAiGeneration || usePremarketData
 
             val watchlist = watchlistRepository.getAll()
             diagnostics.watchlistTotal = watchlist.size

@@ -28,13 +28,17 @@ class StooqBlockInterceptor @Inject constructor(
 
     override fun intercept(chain: Interceptor.Chain): Response {
         val path = chain.request().url.encodedPath
+        val method = chain.request().method
         if (blocker.isBlocked()) {
             val message = blocker.buildBlockedMessage()
             blockReporter.reportBlocked(message, blocker.blockedUntilMillis())
             throw StooqBlockedException(message)
         }
 
-        enforceMinGap()
+        val waitMs = enforceMinGap()
+        diagnosticsScope.launch {
+            diagnosticsRepository.recordStooqRequest(path, method, waitMs)
+        }
 
         return try {
             val response = chain.proceed(chain.request())
@@ -72,8 +76,8 @@ class StooqBlockInterceptor @Inject constructor(
         }
     }
 
-    private fun enforceMinGap() {
-        synchronized(requestLock) {
+    private fun enforceMinGap(): Long {
+        return synchronized(requestLock) {
             val now = System.currentTimeMillis()
             val waitMs = (nextRequestAtMillis - now).coerceAtLeast(0L)
             if (waitMs > 0) {
@@ -85,6 +89,7 @@ class StooqBlockInterceptor @Inject constructor(
             }
             val targetGap = BASE_REQUEST_GAP_MS + Random.nextLong(JITTER_MS + 1)
             nextRequestAtMillis = System.currentTimeMillis() + targetGap
+            waitMs
         }
     }
 
@@ -114,8 +119,8 @@ class StooqBlockInterceptor @Inject constructor(
 
     companion object {
         private val BLOCK_DURATION = Duration.ofHours(24)
-        private const val BASE_REQUEST_GAP_MS = 200L
-        private const val JITTER_MS = 200L
+        private const val BASE_REQUEST_GAP_MS = 3000L
+        private const val JITTER_MS = 2000L
         private val BLOCK_HTTP_CODES = setOf(403, 429, 503)
         private val BLOCKING_PATHS = listOf("/q/a2/d/", "/q/d/l/")
         private const val TIMEOUT_BLOCK_THRESHOLD = 5

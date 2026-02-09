@@ -23,6 +23,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONObject
 import kotlin.coroutines.resume
 
 @Singleton
@@ -47,6 +48,7 @@ class NewsTranslationService @Inject constructor(
     private val legacyModelFile: File by lazy { File(localModelDir, LEGACY_MODEL_FILE_NAME) }
     private val localDownloadMutex = Mutex()
     private val localRuntimeLock = Mutex()
+    private val localInferenceMutex = Mutex()
     private var localRuntime: LocalLlmRuntime? = null
     private var localRuntimeSpec: LocalModelSpec? = null
     @Volatile private var cachedPrimaryModelLastModified: Long = -1L
@@ -387,12 +389,25 @@ class NewsTranslationService @Inject constructor(
             return null
         }
         val prompt = buildTranslationPrompt(input)
-        return generateLocalResponse(
+        val response = generateLocalResponse(
             prompt = prompt,
             temperature = 0.2f,
             topK = 40,
             topP = DEFAULT_TOP_P
         )
+        val parsed = response?.let { parseTranslationJson(it) }
+        if (parsed != null) return parsed
+        if (response.isNullOrBlank()) return null
+        Log.w(TAG, "Translation response did not match JSON schema; retrying once.")
+        val retryPrompt = buildTranslationRetryPrompt(input)
+        val retryResponse = generateLocalResponse(
+            prompt = retryPrompt,
+            temperature = 0.2f,
+            topK = 40,
+            topP = DEFAULT_TOP_P
+        )
+        val retryParsed = retryResponse?.let { parseTranslationJson(it) }
+        return retryParsed ?: retryResponse?.let { stripTurnTags(it).trim() }
     }
 
     suspend fun generateLocalResponse(
@@ -433,37 +448,95 @@ class NewsTranslationService @Inject constructor(
                 topP = normalizedTopP.toDouble(),
                 temperature = temperature.toDouble()
             )
-            try {
-                val response = runtime.generate(truncatedPrompt, sampling)
-                if (response.isBlank()) {
-                    Log.w(TAG, "Local model returned an empty response.")
-                } else {
-                    Log.d(TAG, "Local model response chars=${response.length}.")
-                    if (Log.isLoggable(TAG, Log.VERBOSE)) {
-                        Log.v(TAG, "Local model response preview: ${response.take(200)}")
+            localInferenceMutex.withLock {
+                try {
+                    val response = runtime.generate(truncatedPrompt, sampling)
+                    if (response.isBlank()) {
+                        Log.w(TAG, "Local model returned an empty response.")
+                    } else {
+                        Log.d(TAG, "Local model response chars=${response.length}.")
+                        if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                            Log.v(TAG, "Local model response preview: ${response.take(200)}")
+                        }
                     }
+                    response.trim()
+                } catch (e: IllegalArgumentException) {
+                    Log.w(TAG, "Local model input validation failed: ${e.message}")
+                    if (isCompatibilityError(e)) {
+                        markModelIncompatible(localRuntimeSpec ?: primaryModelSpec, e)
+                    }
+                    null
+                } catch (e: Exception) {
+                    Log.e(TAG, "Local model generation failed.", e)
+                    if (isCompatibilityError(e)) {
+                        markModelIncompatible(localRuntimeSpec ?: primaryModelSpec, e)
+                    }
+                    null
                 }
-                response.trim()
-            } catch (e: IllegalArgumentException) {
-                Log.w(TAG, "Local model input validation failed: ${e.message}")
-                if (isCompatibilityError(e)) {
-                    markModelIncompatible(localRuntimeSpec ?: primaryModelSpec, e)
-                }
-                null
-            } catch (e: Exception) {
-                Log.e(TAG, "Local model generation failed.", e)
-                if (isCompatibilityError(e)) {
-                    markModelIncompatible(localRuntimeSpec ?: primaryModelSpec, e)
-                }
-                null
             }
         }
     }
 
     private fun buildTranslationPrompt(input: String): String {
-        return "Please translate this sentence from Polish to English. " +
-            "Please return just the translation of the string (no extra words, no quotes, " +
-            "single line): $input"
+        return buildString {
+            appendLine("<user_turn>")
+            appendLine("Translate the Polish text to English.")
+            appendLine("Reply ONLY with one-line JSON exactly like:")
+            appendLine("{\"translation\":\"<english>\"}")
+            appendLine("No extra words.")
+            appendLine("End with </model_turn>.")
+            appendLine("Polish: $input")
+            appendLine("</user_turn>")
+            append("<model_turn>")
+        }
+    }
+
+    private fun buildTranslationRetryPrompt(input: String): String {
+        return buildString {
+            appendLine("<user_turn>")
+            appendLine("Your previous response was invalid JSON.")
+            appendLine("Reply ONLY with one-line JSON exactly like:")
+            appendLine("{\"translation\":\"<english>\"}")
+            appendLine("No extra words.")
+            appendLine("End with </model_turn>.")
+            appendLine("Polish: $input")
+            appendLine("</user_turn>")
+            append("<model_turn>")
+        }
+    }
+
+    private fun parseTranslationJson(raw: String): String? {
+        val normalized = normalizeTranslationJson(raw) ?: return null
+        return try {
+            val json = JSONObject(normalized)
+            val translation = json.optString("translation").trim()
+            translation.ifBlank { null }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to parse translation JSON: ${e.message}")
+            null
+        }
+    }
+
+    private fun normalizeTranslationJson(raw: String): String? {
+        val stripped = stripTurnTags(raw)
+            .replace("```json", "", ignoreCase = true)
+            .replace("```", "")
+            .trim()
+        val start = stripped.indexOf('{')
+        val end = stripped.lastIndexOf('}')
+        if (start == -1 || end <= start) return null
+        return stripped.substring(start, end + 1)
+            .replace("\u201C", "\"")
+            .replace("\u201D", "\"")
+            .replace("\u2019", "'")
+    }
+
+    private fun stripTurnTags(raw: String): String {
+        return raw
+            .replace("<user_turn>", "", ignoreCase = true)
+            .replace("</user_turn>", "", ignoreCase = true)
+            .replace("<model_turn>", "", ignoreCase = true)
+            .replace("</model_turn>", "", ignoreCase = true)
     }
 
     private fun copyFromAssetPack(location: AssetPackLocation, spec: LocalModelSpec): Boolean {

@@ -332,6 +332,7 @@ class SettingsViewModel @Inject constructor(
                 val exactAllowed = diagnosticsRepository.getLastExactAlarmAllowed()
                 val stooqBlockedInfo = diagnosticsRepository.getStooqBlockedInfo()
                 val stooqTimeoutStreak = diagnosticsRepository.getStooqTimeoutStreakInfo()
+                val stooqRequests = diagnosticsRepository.getStooqRequestLog()
                 val alarmScheduleError = diagnosticsRepository.getAlarmScheduleErrorInfo()
                 val premarketKeys = diagnosticsRepository.getScheduledPremarketKeys()
                 val premarketNextRuns = diagnosticsRepository.getPremarketNextRuns(premarketKeys)
@@ -427,6 +428,13 @@ class SettingsViewModel @Inject constructor(
                             "Stooq timeout streak: ${stooqTimeoutStreak.count}/5 " +
                                 "(last: ${formatLastRun(stooqTimeoutStreak.lastAtMillis, nowMillis)})"
                         )
+                    }
+                    if (stooqRequests.isNotEmpty()) {
+                        appendLine()
+                        appendLine("Stooq request pacing (recent):")
+                        stooqRequests.forEach { entry ->
+                            appendLine("  $entry")
+                        }
                     }
                     if (exactAllowed != null) {
                         appendLine("Exact alarms allowed: $exactAllowed")

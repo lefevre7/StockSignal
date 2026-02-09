@@ -616,11 +616,31 @@ private fun OverviewTab(state: StockDetailUiState) {
             )
         } else {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                KeyStat(label = "Market Cap", value = formatOverviewMarketCap(state.marketCap))
-                KeyStat(label = "P/E", value = formatOverviewDecimal(state.peRatio))
-                KeyStat(label = "Dividend", value = formatOverviewPercent(state.dividend))
-                KeyStat(label = "52W High", value = formatOverviewPrice(state.week52High))
-                KeyStat(label = "52W Low", value = formatOverviewPrice(state.week52Low))
+                KeyStat(
+                    label = "Market Cap",
+                    value = formatOverviewMarketCap(state.marketCap),
+                    explanation = MetricExplanations.MARKET_CAP
+                )
+                KeyStat(
+                    label = "P/E",
+                    value = formatOverviewDecimal(state.peRatio),
+                    explanation = MetricExplanations.PE_RATIO
+                )
+                KeyStat(
+                    label = "Dividend",
+                    value = formatOverviewPercent(state.dividend),
+                    explanation = MetricExplanations.DIVIDEND_YIELD
+                )
+                KeyStat(
+                    label = "52W High",
+                    value = formatOverviewPrice(state.week52High),
+                    explanation = MetricExplanations.WEEK_52_HIGH
+                )
+                KeyStat(
+                    label = "52W Low",
+                    value = formatOverviewPrice(state.week52Low),
+                    explanation = MetricExplanations.WEEK_52_LOW
+                )
             }
         }
     }
@@ -1510,9 +1530,19 @@ private fun AiReasonRow(reason: AiScoreReason) {
 }
 
 @Composable
-private fun KeyStat(label: String, value: String) {
+private fun KeyStat(
+    label: String,
+    value: String,
+    explanation: String? = null
+) {
     Column {
-        Text(text = label, style = MaterialTheme.typography.bodySmall)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(text = label, style = MaterialTheme.typography.bodySmall)
+            if (explanation != null) {
+                Spacer(modifier = Modifier.width(4.dp))
+                InfoIconButton(explanation = explanation)
+            }
+        }
         Text(
             text = value,
             style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace)

@@ -248,7 +248,14 @@ class StockRepository @Inject constructor(
                     accumulateIntradayData(symbol, map)
                     if (eventType != null) {
                         val overview = loadOverviewOrNull(symbol)
-                        signalsRepository.evaluateAndStoreSignal(symbol, merged, range, overview, eventType)
+                        signalsRepository.evaluateAndStoreSignal(
+                            symbol,
+                            merged,
+                            range,
+                            overview,
+                            eventType,
+                            skipAiGeneration = true
+                        )
                     }
                     cacheRepository.upsert(
                         StockDetailCacheEntity(

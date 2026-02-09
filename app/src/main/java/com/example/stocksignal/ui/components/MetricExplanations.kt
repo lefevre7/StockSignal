@@ -146,6 +146,55 @@ object MetricExplanations {
         • Bands widen: Increasing volatility<br/>
         • Bands narrow: Decreasing volatility (potential breakout coming)
     """
+
+    const val MARKET_CAP = """
+        <strong>Market Cap</strong><br/><br/>
+        
+        Total market value of all outstanding shares (share price x shares outstanding).<br/><br/>
+        
+        <strong>Why it matters:</strong><br/>
+        • Larger caps tend to be more stable<br/>
+        • Smaller caps can be more volatile with higher growth potential
+    """
+
+    const val PE_RATIO = """
+        <strong>P/E Ratio (Price-to-Earnings)</strong><br/><br/>
+        
+        Shows how much investors are paying for $1 of earnings.<br/><br/>
+        
+        <strong>How to read it:</strong><br/>
+        • Higher P/E can signal growth expectations or overvaluation<br/>
+        • Lower P/E can signal value or slower growth<br/>
+        • Negative P/E means the company is unprofitable
+    """
+
+    const val DIVIDEND_YIELD = """
+        <strong>Dividend Yield</strong><br/><br/>
+        
+        Annual dividend payments as a percentage of the current share price.<br/><br/>
+        
+        <strong>How to read it:</strong><br/>
+        • Higher yields provide more income<br/>
+        • Extremely high yields can signal payout risk
+    """
+
+    const val WEEK_52_HIGH = """
+        <strong>52-Week High</strong><br/><br/>
+        
+        The highest trading price over the last 52 weeks (1 year).<br/><br/>
+        
+        <strong>How to use it:</strong><br/>
+        • Near the high: strong momentum or potential resistance
+    """
+
+    const val WEEK_52_LOW = """
+        <strong>52-Week Low</strong><br/><br/>
+        
+        The lowest trading price over the last 52 weeks (1 year).<br/><br/>
+        
+        <strong>How to use it:</strong><br/>
+        • Near the low: weakness or potential support
+    """
     
     // Signal tier explanations
     const val STRONG_BUY = """

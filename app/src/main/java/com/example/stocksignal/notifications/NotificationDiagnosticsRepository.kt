@@ -13,6 +13,9 @@ import javax.inject.Singleton
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 @Singleton
 class NotificationDiagnosticsRepository @Inject constructor(
@@ -329,6 +332,36 @@ class NotificationDiagnosticsRepository @Inject constructor(
         )
     }
 
+    suspend fun recordStooqRequest(path: String, method: String, waitMs: Long) {
+        val timeLabel = Instant.ofEpochMilli(System.currentTimeMillis())
+            .atZone(ZoneId.systemDefault())
+            .toLocalTime()
+            .format(STOOQ_REQUEST_TIME_FORMATTER)
+        val entry = "$timeLabel $method $path wait=${waitMs}ms"
+        dataStore.edit { prefs ->
+            val existing = prefs[stooqRequestLogKey]
+            val entries = if (existing.isNullOrBlank()) {
+                mutableListOf()
+            } else {
+                existing.split('\n').filter { it.isNotBlank() }.toMutableList()
+            }
+            entries.add(entry)
+            val trimmed = if (entries.size > STOOQ_REQUEST_LOG_LIMIT) {
+                entries.takeLast(STOOQ_REQUEST_LOG_LIMIT)
+            } else {
+                entries
+            }
+            prefs[stooqRequestLogKey] = trimmed.joinToString("\n")
+        }
+    }
+
+    suspend fun getStooqRequestLog(): List<String> {
+        val prefs = dataStore.data.first()
+        val raw = prefs[stooqRequestLogKey] ?: return emptyList()
+        if (raw.isBlank()) return emptyList()
+        return raw.split('\n').filter { it.isNotBlank() }
+    }
+
     suspend fun recordAlarmScheduleError(reason: String?) {
         dataStore.edit { prefs ->
             prefs[alarmScheduleErrorAtKey] = System.currentTimeMillis()
@@ -482,10 +515,13 @@ class NotificationDiagnosticsRepository @Inject constructor(
         private val stooqBlockedMessageKey = stringPreferencesKey("stooq_blocked_message")
         private val stooqTimeoutStreakCountKey = intPreferencesKey("stooq_timeout_streak_count")
         private val stooqTimeoutStreakAtKey = longPreferencesKey("stooq_timeout_streak_at")
+        private val stooqRequestLogKey = stringPreferencesKey("stooq_request_log")
         private val scheduledPremarketKeysKey = stringSetPreferencesKey("notif_scheduled_premarket_keys")
         private val lastExactAlarmAllowedKey = booleanPreferencesKey("notif_exact_alarm_allowed")
         private val alarmScheduleErrorAtKey = longPreferencesKey("notif_alarm_schedule_error_at")
         private val alarmScheduleErrorReasonKey = stringPreferencesKey("notif_alarm_schedule_error_reason")
+        private const val STOOQ_REQUEST_LOG_LIMIT = 50
+        private val STOOQ_REQUEST_TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss.SSS")
 
         private fun premarketNextRunKey(key: String) =
             longPreferencesKey("notif_premarket_${key}_next_run")

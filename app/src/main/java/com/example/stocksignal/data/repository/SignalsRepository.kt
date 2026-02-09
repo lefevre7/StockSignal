@@ -138,7 +138,8 @@ class SignalsRepository @Inject constructor(
         candles: List<PriceCandle>,
         range: ChartRange,
         overview: StockOverview? = null,
-        type: NotificationEventType = NotificationEventType.WATCHLIST_SIGNAL
+        type: NotificationEventType = NotificationEventType.WATCHLIST_SIGNAL,
+        skipAiGeneration: Boolean = false
     ): SignalResult? {
         try {
             val settings = settingsRepository.settingsFlow.first()
@@ -149,7 +150,8 @@ class SignalsRepository @Inject constructor(
                 range = range,
                 holdingPeriod = settings.holdingPeriod,
                 ruleSignal = result,
-                overview = overview
+                overview = overview,
+                cacheOnly = skipAiGeneration
             )
             val merged = if (aiResult != null) {
                 result.copy(
