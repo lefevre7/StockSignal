@@ -12,6 +12,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
+import java.net.SocketTimeoutException
 import java.time.LocalDate
 import java.time.LocalDateTime
 
@@ -303,6 +304,18 @@ class StooqRepositoryTest {
     }
 
     @Test
+    fun `getIntradayData stops batch after timeout failure`() = runTest {
+        coEvery { api.getIntradayData("a", 10) } throws SocketTimeoutException("timeout")
+
+        val result = repository.getIntradayData(tickers = listOf("A", "B", "C"))
+
+        assertTrue(result.isError)
+        coVerify(exactly = 1) { api.getIntradayData("a", 10) }
+        coVerify(exactly = 0) { api.getIntradayData("b", 10) }
+        coVerify(exactly = 0) { api.getIntradayData("c", 10) }
+    }
+
+    @Test
     fun `getIntradayData returns error when no tickers yield data`() = runTest {
         coEvery { api.getIntradayData(any(), any()) } returns "no header here"
 
@@ -311,5 +324,16 @@ class StooqRepositoryTest {
         assertTrue(result.isError)
         val error = result as Result.Error
         assertTrue(error.message.contains("Failed to fetch intraday data for all"))
+    }
+
+    @Test
+    fun `getPremarketQuotes stops batch after timeout failure`() = runTest {
+        coEvery { api.getQuotePage("a") } throws SocketTimeoutException("timeout")
+
+        val result = repository.getPremarketQuotes(listOf("A", "B"))
+
+        assertTrue(result.isError)
+        coVerify(exactly = 1) { api.getQuotePage("a") }
+        coVerify(exactly = 0) { api.getQuotePage("b") }
     }
 }

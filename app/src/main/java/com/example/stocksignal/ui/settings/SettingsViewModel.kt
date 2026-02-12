@@ -333,6 +333,8 @@ class SettingsViewModel @Inject constructor(
                 val stooqBlockedInfo = diagnosticsRepository.getStooqBlockedInfo()
                 val stooqTimeoutStreak = diagnosticsRepository.getStooqTimeoutStreakInfo()
                 val stooqRequests = diagnosticsRepository.getStooqRequestLog()
+                val workerLog = diagnosticsRepository.getBackgroundWorkerLog()
+                val serialGateLog = diagnosticsRepository.getSerialGateMetricsLog()
                 val alarmScheduleError = diagnosticsRepository.getAlarmScheduleErrorInfo()
                 val premarketKeys = diagnosticsRepository.getScheduledPremarketKeys()
                 val premarketNextRuns = diagnosticsRepository.getPremarketNextRuns(premarketKeys)
@@ -433,6 +435,20 @@ class SettingsViewModel @Inject constructor(
                         appendLine()
                         appendLine("Stooq request pacing (recent):")
                         stooqRequests.forEach { entry ->
+                            appendLine("  $entry")
+                        }
+                    }
+                    if (workerLog.isNotEmpty()) {
+                        appendLine()
+                        appendLine("Background worker queue (recent):")
+                        workerLog.forEach { entry ->
+                            appendLine("  $entry")
+                        }
+                    }
+                    if (serialGateLog.isNotEmpty()) {
+                        appendLine()
+                        appendLine("Serial gate timing (recent):")
+                        serialGateLog.forEach { entry ->
                             appendLine("  $entry")
                         }
                     }

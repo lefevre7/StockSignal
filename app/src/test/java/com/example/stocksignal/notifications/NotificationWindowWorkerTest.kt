@@ -38,6 +38,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import java.net.SocketTimeoutException
 import java.time.DayOfWeek
 import java.time.LocalDateTime
 
@@ -159,6 +160,33 @@ class NotificationWindowWorkerTest {
 
         assertTrue(result is ListenableWorker.Result.Success)
         assertTrue(candidatesSlot.captured.isNotEmpty())
+    }
+
+    @Test
+    fun `stops live watchlist fetches after timeout to avoid request storm`() = runTest {
+        val now = LocalDateTime.now()
+        every { settingsRepository.settingsFlow } returns flowOf(defaultSettings())
+        coEvery { watchlistRepository.getAll() } returns listOf(
+            sampleWatchlistItem("AAPL", now),
+            sampleWatchlistItem("MSFT", now)
+        )
+        coEvery { stockRepository.getSeries(any(), any(), eq(true), any()) } returns StooqResult.Error(
+            SocketTimeoutException("timeout"),
+            "timeout"
+        )
+        coEvery { stockRepository.getFreshCachedSeries(any(), any()) } returns StooqResult.Error(
+            Exception("stale"),
+            "Cached data stale"
+        )
+        coEvery { notificationQueueProcessor.processQueued(any()) } just runs
+
+        val worker = buildWorker()
+        val result = worker.doWork()
+
+        assertTrue(result is ListenableWorker.Result.Success)
+        coVerify(exactly = 1) {
+            stockRepository.getSeries(any(), any(), eq(true), any())
+        }
     }
 
     private fun buildWorker(): NotificationWindowWorker {

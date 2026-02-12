@@ -2,6 +2,7 @@ package com.example.stocksignal.data.translation
 
 import android.content.Context
 import android.util.Log
+import com.example.stocksignal.core.ExternalExecutionGate
 import io.mockk.every
 import io.mockk.mockkStatic
 import java.io.File
@@ -31,7 +32,7 @@ class NewsTranslationServiceTest {
     @Test
     fun `local model file path uses litertlm extension`() {
         val context: Context = RuntimeEnvironment.getApplication()
-        val service = NewsTranslationService(context, FakeRuntimeFactory())
+        val service = NewsTranslationService(context, FakeRuntimeFactory(), ExternalExecutionGate())
 
         assertTrue(service.getLocalModelFilePath().endsWith(".litertlm"))
     }
@@ -44,7 +45,7 @@ class NewsTranslationServiceTest {
     @Test
     fun `local model validation caches size and sha`() = runTest {
         val context: Context = RuntimeEnvironment.getApplication()
-        val service = NewsTranslationService(context, FakeRuntimeFactory())
+        val service = NewsTranslationService(context, FakeRuntimeFactory(), ExternalExecutionGate())
         val modelDir = File(context.filesDir, "llm")
         modelDir.mkdirs()
         val modelFile = File(modelDir, "gemma3-1b-it-int4.litertlm")

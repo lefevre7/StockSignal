@@ -333,33 +333,49 @@ class NotificationDiagnosticsRepository @Inject constructor(
     }
 
     suspend fun recordStooqRequest(path: String, method: String, waitMs: Long) {
-        val timeLabel = Instant.ofEpochMilli(System.currentTimeMillis())
-            .atZone(ZoneId.systemDefault())
-            .toLocalTime()
-            .format(STOOQ_REQUEST_TIME_FORMATTER)
-        val entry = "$timeLabel $method $path wait=${waitMs}ms"
-        dataStore.edit { prefs ->
-            val existing = prefs[stooqRequestLogKey]
-            val entries = if (existing.isNullOrBlank()) {
-                mutableListOf()
-            } else {
-                existing.split('\n').filter { it.isNotBlank() }.toMutableList()
-            }
-            entries.add(entry)
-            val trimmed = if (entries.size > STOOQ_REQUEST_LOG_LIMIT) {
-                entries.takeLast(STOOQ_REQUEST_LOG_LIMIT)
-            } else {
-                entries
-            }
-            prefs[stooqRequestLogKey] = trimmed.joinToString("\n")
-        }
+        val entry = "${timeLabel()} $method $path wait=${waitMs}ms"
+        appendLogEntry(stooqRequestLogKey, STOOQ_REQUEST_LOG_LIMIT, entry)
     }
 
     suspend fun getStooqRequestLog(): List<String> {
-        val prefs = dataStore.data.first()
-        val raw = prefs[stooqRequestLogKey] ?: return emptyList()
-        if (raw.isBlank()) return emptyList()
-        return raw.split('\n').filter { it.isNotBlank() }
+        return readLogEntries(stooqRequestLogKey)
+    }
+
+    suspend fun recordBackgroundWorkerEvent(
+        worker: String,
+        phase: String,
+        key: String? = null,
+        note: String? = null
+    ) {
+        val entry = buildString {
+            append(timeLabel())
+            append(" ")
+            append(worker)
+            append(" ")
+            append(phase)
+            if (!key.isNullOrBlank()) {
+                append(" key=")
+                append(key)
+            }
+            if (!note.isNullOrBlank()) {
+                append(" ")
+                append(note)
+            }
+        }
+        appendLogEntry(backgroundWorkerLogKey, BACKGROUND_WORKER_LOG_LIMIT, entry)
+    }
+
+    suspend fun getBackgroundWorkerLog(): List<String> {
+        return readLogEntries(backgroundWorkerLogKey)
+    }
+
+    suspend fun recordSerialGateMetric(scope: String, waitMs: Long, holdMs: Long) {
+        val entry = "${timeLabel()} $scope wait=${waitMs}ms hold=${holdMs}ms"
+        appendLogEntry(serialGateMetricsLogKey, SERIAL_GATE_METRICS_LOG_LIMIT, entry)
+    }
+
+    suspend fun getSerialGateMetricsLog(): List<String> {
+        return readLogEntries(serialGateMetricsLogKey)
     }
 
     suspend fun recordAlarmScheduleError(reason: String?) {
@@ -455,6 +471,40 @@ class NotificationDiagnosticsRepository @Inject constructor(
         }
     }
 
+    private suspend fun appendLogEntry(
+        key: Preferences.Key<String>,
+        limit: Int,
+        entry: String
+    ) {
+        dataStore.edit { prefs ->
+            val entries = readLogEntries(prefs[key]).toMutableList()
+            entries.add(entry)
+            val trimmed = if (entries.size > limit) {
+                entries.takeLast(limit)
+            } else {
+                entries
+            }
+            prefs[key] = trimmed.joinToString("\n")
+        }
+    }
+
+    private suspend fun readLogEntries(key: Preferences.Key<String>): List<String> {
+        val prefs = dataStore.data.first()
+        return readLogEntries(prefs[key])
+    }
+
+    private fun readLogEntries(raw: String?): List<String> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return raw.split('\n').filter { it.isNotBlank() }
+    }
+
+    private fun timeLabel(): String {
+        return Instant.ofEpochMilli(System.currentTimeMillis())
+            .atZone(ZoneId.systemDefault())
+            .toLocalTime()
+            .format(STOOQ_REQUEST_TIME_FORMATTER)
+    }
+
     private fun windowLastRunKey(windowId: String) =
         longPreferencesKey("notif_window_${windowId}_last_run")
 
@@ -516,11 +566,15 @@ class NotificationDiagnosticsRepository @Inject constructor(
         private val stooqTimeoutStreakCountKey = intPreferencesKey("stooq_timeout_streak_count")
         private val stooqTimeoutStreakAtKey = longPreferencesKey("stooq_timeout_streak_at")
         private val stooqRequestLogKey = stringPreferencesKey("stooq_request_log")
+        private val backgroundWorkerLogKey = stringPreferencesKey("background_worker_log")
+        private val serialGateMetricsLogKey = stringPreferencesKey("serial_gate_metrics_log")
         private val scheduledPremarketKeysKey = stringSetPreferencesKey("notif_scheduled_premarket_keys")
         private val lastExactAlarmAllowedKey = booleanPreferencesKey("notif_exact_alarm_allowed")
         private val alarmScheduleErrorAtKey = longPreferencesKey("notif_alarm_schedule_error_at")
         private val alarmScheduleErrorReasonKey = stringPreferencesKey("notif_alarm_schedule_error_reason")
         private const val STOOQ_REQUEST_LOG_LIMIT = 50
+        private const val BACKGROUND_WORKER_LOG_LIMIT = 80
+        private const val SERIAL_GATE_METRICS_LOG_LIMIT = 80
         private val STOOQ_REQUEST_TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss.SSS")
 
         private fun premarketNextRunKey(key: String) =

@@ -18,6 +18,7 @@ import com.example.stocksignal.data.settings.SettingsRepository
 import com.example.stocksignal.data.settings.AppSettings
 import com.example.stocksignal.data.stooq.model.MarketMoverDirection
 import com.example.stocksignal.data.stooq.model.MarketMoverRange
+import com.example.stocksignal.data.stooq.network.StooqBlockedException
 import com.example.stocksignal.data.stooq.model.Result as StooqResult
 import com.example.stocksignal.data.stooq.repository.MarketMoversRepository
 import com.example.stocksignal.domain.model.ChartRange
@@ -41,6 +42,7 @@ import java.time.LocalTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
+import java.net.SocketTimeoutException
 import kotlin.random.Random
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -116,13 +118,15 @@ class NotificationWindowRunner @Inject constructor(
     private data class SeriesFetchOutcome(
         val series: List<PriceCandle>?,
         val usedFallback: Boolean,
-        val errorMessage: String?
+        val errorMessage: String?,
+        val liveException: Throwable?
     )
 
     private data class MoversSnapshotOutcome(
         val snapshot: MarketMoversSnapshot?,
         val usedFallback: Boolean,
-        val liveErrorMessage: String?
+        val liveErrorMessage: String?,
+        val liveException: Throwable?
     )
 
     enum class RunOutcome {
@@ -231,7 +235,18 @@ class NotificationWindowRunner @Inject constructor(
                 if (watchlist.isEmpty()) {
                     Log.w(TAG, "⚠️ No watchlist items to evaluate for window $windowId")
                 }
+                var stopLiveWatchlistFetches = false
                 for ((index, item) in watchlist.withIndex()) {
+                    if (stopLiveWatchlistFetches) {
+                        diagnostics.watchlistTimeoutRemaining.addAll(
+                            watchlist.drop(index).map { it.symbol }
+                        )
+                        Log.w(
+                            TAG,
+                            "Stopping live watchlist fetches after Stooq timeout/block; using cached-only mode"
+                        )
+                        break
+                    }
                     if (hasTimedOut()) {
                         diagnostics.watchlistTimeoutRemaining.addAll(
                             watchlist.drop(index).map { it.symbol }
@@ -266,6 +281,7 @@ class NotificationWindowRunner @Inject constructor(
                             liveLog = diagnostics.watchlistLiveFetchTimes,
                             cacheLog = diagnostics.watchlistCacheFetchTimes
                         )
+                        val terminalLiveFailure = isTerminalStooqFailure(seriesOutcome.liveException)
                         if (seriesOutcome.series != null) {
                             if (seriesOutcome.usedFallback) {
                                 diagnostics.watchlistFallbacks += 1
@@ -413,16 +429,21 @@ class NotificationWindowRunner @Inject constructor(
                             )
                             Log.w(TAG, "   ❌ ${item.symbol}: Failed to fetch series - ${seriesOutcome.errorMessage}")
                         }
-                        evaluateIndicatorAlerts(
-                            item = item,
-                            holdingPeriod = settings.holdingPeriod,
-                            now = now,
-                            candidates = candidates,
-                            timingTracker = timingTracker,
-                            requestPacer = requestPacer,
-                            fetchLog = diagnostics.watchlistLiveFetchTimes,
-                            overviewLog = diagnostics.watchlistOverviewFetchTimes
-                        )
+                        if (seriesOutcome.series != null && !terminalLiveFailure) {
+                            evaluateIndicatorAlerts(
+                                item = item,
+                                holdingPeriod = settings.holdingPeriod,
+                                now = now,
+                                candidates = candidates,
+                                timingTracker = timingTracker,
+                                requestPacer = requestPacer,
+                                fetchLog = diagnostics.watchlistLiveFetchTimes,
+                                overviewLog = diagnostics.watchlistOverviewFetchTimes
+                            )
+                        }
+                        if (terminalLiveFailure) {
+                            stopLiveWatchlistFetches = true
+                        }
                     } catch (e: Exception) {
                         Log.e(TAG, "   ❌ ${item.symbol}: Exception during processing", e)
                         diagnostics.watchlistExceptions += 1
@@ -452,6 +473,8 @@ class NotificationWindowRunner @Inject constructor(
                         logList = diagnostics.moversListFetchTimes,
                         labelPrefix = "decreasers"
                     )
+                    val stopLiveMoverFetches = isTerminalStooqFailure(increasersOutcome.liveException) ||
+                        isTerminalStooqFailure(decreasersOutcome.liveException)
 
                     if (increasersOutcome.liveErrorMessage != null) {
                         diagnostics.moversListFetchFailures += 1
@@ -496,13 +519,23 @@ class NotificationWindowRunner @Inject constructor(
                         Log.d(TAG, "No market movers candidates to evaluate for window $windowId")
                     }
 
-                    movers.forEachIndexed { index, mover ->
+                    for ((index, mover) in movers.withIndex()) {
+                        if (stopLiveMoverFetches) {
+                            diagnostics.moversTimeoutRemaining.addAll(
+                                movers.drop(index).map { it.ticker }
+                            )
+                            Log.w(
+                                TAG,
+                                "Stopping live market-mover fetches after Stooq timeout/block; using cached-only mode"
+                            )
+                            break
+                        }
                         if (hasTimedOut()) {
                             diagnostics.moversTimeoutRemaining.addAll(
                                 movers.drop(index).map { it.ticker }
                             )
                             Log.w(TAG, "Window $windowId timed out; skipping remaining movers")
-                            return@forEachIndexed
+                            break
                         }
                         try {
                             val seriesOutcome = fetchSeriesWithFallback(
@@ -514,6 +547,7 @@ class NotificationWindowRunner @Inject constructor(
                                 liveLog = diagnostics.moversLiveFetchTimes,
                                 cacheLog = diagnostics.moversCacheFetchTimes
                             )
+                            val terminalLiveFailure = isTerminalStooqFailure(seriesOutcome.liveException)
                             if (seriesOutcome.series != null) {
                                 if (seriesOutcome.usedFallback) {
                                     diagnostics.moversFallbacks += 1
@@ -537,7 +571,14 @@ class NotificationWindowRunner @Inject constructor(
                                         diagnostics.moversLastCandleTickers,
                                         "${mover.ticker}:empty"
                                     )
-                                    return@forEachIndexed
+                                    if (terminalLiveFailure) {
+                                        diagnostics.moversTimeoutRemaining.addAll(
+                                            movers.drop(index + 1).map { it.ticker }
+                                        )
+                                        Log.w(TAG, "Stopping movers after terminal Stooq failure on ${mover.ticker}")
+                                        break
+                                    }
+                                    continue
                                 }
                                 recordTicker(
                                     diagnostics.moversLastCandleTickers,
@@ -547,7 +588,14 @@ class NotificationWindowRunner @Inject constructor(
                                     Log.d(TAG, "Market mover ${mover.ticker} data stale; skipping")
                                     diagnostics.moversStale += 1
                                     recordTicker(diagnostics.moversStaleTickers, mover.ticker)
-                                    return@forEachIndexed
+                                    if (terminalLiveFailure) {
+                                        diagnostics.moversTimeoutRemaining.addAll(
+                                            movers.drop(index + 1).map { it.ticker }
+                                        )
+                                        Log.w(TAG, "Stopping movers after terminal Stooq failure on ${mover.ticker}")
+                                        break
+                                    }
+                                    continue
                                 }
 
                                 // If intraday data doesn't have enough candles for signal computation (need 20+),
@@ -619,7 +667,14 @@ class NotificationWindowRunner @Inject constructor(
                                 if (signal == null) {
                                     Log.d(TAG, "Market mover ${mover.ticker} no signal generated")
                                     diagnostics.moversSignalNull += 1
-                                    return@forEachIndexed
+                                    if (terminalLiveFailure) {
+                                        diagnostics.moversTimeoutRemaining.addAll(
+                                            movers.drop(index + 1).map { it.ticker }
+                                        )
+                                        Log.w(TAG, "Stopping movers after terminal Stooq failure on ${mover.ticker}")
+                                        break
+                                    }
+                                    continue
                                 }
                                 val displayScore = signal.displayScore
                                 val strongBuy = settings.signalSensitivity.strongBuyThreshold
@@ -627,12 +682,26 @@ class NotificationWindowRunner @Inject constructor(
                                 if (displayScore < strongBuy && displayScore > strongSell) {
                                     Log.d(TAG, "Market mover ${mover.ticker} score $displayScore below thresholds")
                                     diagnostics.moversBelowThreshold += 1
-                                    return@forEachIndexed
+                                    if (terminalLiveFailure) {
+                                        diagnostics.moversTimeoutRemaining.addAll(
+                                            movers.drop(index + 1).map { it.ticker }
+                                        )
+                                        Log.w(TAG, "Stopping movers after terminal Stooq failure on ${mover.ticker}")
+                                        break
+                                    }
+                                    continue
                                 }
                                 if (signalsRepository.isInCooldown(mover.ticker, signal.tier.label, signal.generatedAt)) {
                                     Log.d(TAG, "Market mover ${mover.ticker} signal ${signal.tier.label} in cooldown")
                                     diagnostics.moversCooldown += 1
-                                    return@forEachIndexed
+                                    if (terminalLiveFailure) {
+                                        diagnostics.moversTimeoutRemaining.addAll(
+                                            movers.drop(index + 1).map { it.ticker }
+                                        )
+                                        Log.w(TAG, "Stopping movers after terminal Stooq failure on ${mover.ticker}")
+                                        break
+                                    }
+                                    continue
                                 }
                                 val event = buildEvent(
                                     signal = signal,
@@ -655,6 +724,13 @@ class NotificationWindowRunner @Inject constructor(
                                     "${mover.ticker}:${truncateError(seriesOutcome.errorMessage, TICKER_ERROR_MAX) ?: "unknown"}"
                                 )
                                 Log.w(TAG, "Market mover ${mover.ticker} failed to fetch series; skipping (${seriesOutcome.errorMessage})")
+                                if (terminalLiveFailure) {
+                                    diagnostics.moversTimeoutRemaining.addAll(
+                                        movers.drop(index + 1).map { it.ticker }
+                                    )
+                                    Log.w(TAG, "Stopping movers after terminal Stooq failure on ${mover.ticker}")
+                                    break
+                                }
                             }
                         } catch (e: Exception) {
                             Log.w(TAG, "Error processing market mover ${mover.ticker}, skipping", e)
@@ -780,9 +856,15 @@ class NotificationWindowRunner @Inject constructor(
             logList = liveLog
         )
         if (liveResult is StooqResult.Success) {
-            return SeriesFetchOutcome(liveResult.data, usedFallback = false, errorMessage = null)
+            return SeriesFetchOutcome(
+                series = liveResult.data,
+                usedFallback = false,
+                errorMessage = null,
+                liveException = null
+            )
         }
-        val liveError = (liveResult as? StooqResult.Error)?.message
+        val liveErrorResult = liveResult as? StooqResult.Error
+        val liveError = liveErrorResult?.message
 
         val cacheResult = recordFetch(
             timingTracker = timingTracker,
@@ -792,7 +874,12 @@ class NotificationWindowRunner @Inject constructor(
             stockRepository.getFreshCachedSeries(symbol, range)
         }
         if (cacheResult is StooqResult.Success) {
-            return SeriesFetchOutcome(cacheResult.data, usedFallback = true, errorMessage = liveError)
+            return SeriesFetchOutcome(
+                series = cacheResult.data,
+                usedFallback = true,
+                errorMessage = liveError,
+                liveException = liveErrorResult?.exception
+            )
         }
         val cacheError = (cacheResult as? StooqResult.Error)?.message
         val combinedError = listOfNotNull(
@@ -808,7 +895,8 @@ class NotificationWindowRunner @Inject constructor(
         return SeriesFetchOutcome(
             series = null,
             usedFallback = true,
-            errorMessage = errorMessage
+            errorMessage = errorMessage,
+            liveException = liveErrorResult?.exception
         )
     }
 
@@ -833,8 +921,14 @@ class NotificationWindowRunner @Inject constructor(
             )
         }
         if (liveResult is StooqResult.Success && !liveResult.data.isStale) {
-            return MoversSnapshotOutcome(liveResult.data, usedFallback = false, liveErrorMessage = null)
+            return MoversSnapshotOutcome(
+                snapshot = liveResult.data,
+                usedFallback = false,
+                liveErrorMessage = null,
+                liveException = null
+            )
         }
+        val liveErrorResult = liveResult as? StooqResult.Error
         val liveError = when (liveResult) {
             is StooqResult.Error -> liveResult.message
             is StooqResult.Success -> "live list stale"
@@ -848,7 +942,12 @@ class NotificationWindowRunner @Inject constructor(
             marketMoversRepository.getFreshCachedMovers(range, direction)
         }
         if (cachedResult is StooqResult.Success) {
-            return MoversSnapshotOutcome(cachedResult.data, usedFallback = true, liveErrorMessage = liveError)
+            return MoversSnapshotOutcome(
+                snapshot = cachedResult.data,
+                usedFallback = true,
+                liveErrorMessage = liveError,
+                liveException = liveErrorResult?.exception
+            )
         }
 
         val staleSnapshot = (liveResult as? StooqResult.Success)?.data
@@ -858,7 +957,12 @@ class NotificationWindowRunner @Inject constructor(
             cacheError?.let { "cache=$it" }
         ).joinToString("; ")
         val errorMessage = if (combinedError.isNotBlank()) combinedError else liveError ?: cacheError
-        return MoversSnapshotOutcome(staleSnapshot, usedFallback = true, liveErrorMessage = errorMessage)
+        return MoversSnapshotOutcome(
+            snapshot = staleSnapshot,
+            usedFallback = true,
+            liveErrorMessage = errorMessage,
+            liveException = liveErrorResult?.exception
+        )
     }
 
     private fun buildRunReason(
@@ -1032,7 +1136,7 @@ class NotificationWindowRunner @Inject constructor(
         requestPacer: RequestPacer,
         logList: MutableList<String>
     ): StooqResult<List<PriceCandle>> {
-        var lastError: String? = null
+        var lastError: StooqResult.Error? = null
         repeat(LIVE_RETRY_COUNT + 1) { attempt ->
             val result = recordNetworkFetch(
                 timingTracker = timingTracker,
@@ -1047,12 +1151,28 @@ class NotificationWindowRunner @Inject constructor(
                 }
             }
             if (result is StooqResult.Success) return result
-            lastError = (result as? StooqResult.Error)?.message ?: "live fetch failed"
+            val errorResult = (result as? StooqResult.Error)
+                ?: StooqResult.Error(Exception("live fetch failed"), "live fetch failed")
+            lastError = errorResult
+            if (isTerminalStooqFailure(errorResult.exception)) {
+                return errorResult
+            }
             if (attempt < LIVE_RETRY_COUNT) {
                 delay(LIVE_RETRY_DELAY_MS)
             }
         }
-        return StooqResult.Error(Exception(lastError ?: "live fetch failed"), lastError ?: "live fetch failed")
+        return lastError ?: StooqResult.Error(Exception("live fetch failed"), "live fetch failed")
+    }
+
+    private fun isTerminalStooqFailure(error: Throwable?): Boolean {
+        var current = error
+        while (current != null) {
+            if (current is SocketTimeoutException || current is StooqBlockedException) {
+                return true
+            }
+            current = current.cause
+        }
+        return false
     }
 
     private suspend fun fetchDailyFallbackWithDiagnostics(
@@ -1302,7 +1422,7 @@ class NotificationWindowRunner @Inject constructor(
         private const val MAX_WINDOW_RUNTIME_MINUTES = 10L
         private const val DEBUG_CHANNEL_ID = "debug_worker"
         private const val DEBUG_NOTIFICATION_ID_BASE = 9100
-        private const val LIVE_RETRY_COUNT = 2
+        private const val LIVE_RETRY_COUNT = 1
         private const val LIVE_RETRY_DELAY_MS = 250L
         private const val TICKER_ERROR_MAX = 40
         private const val REQUEST_GAP_BASE_MS = 3000L

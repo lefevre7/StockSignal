@@ -2,6 +2,7 @@ package com.example.stocksignal.data.translation
 
 import android.content.Context
 import android.util.Log
+import com.example.stocksignal.core.ExternalExecutionGate
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import kotlinx.coroutines.runBlocking
@@ -19,7 +20,11 @@ class NewsTranslationServiceLiveTest {
     fun translatePolishHeadlineToEnglish() {
         runBlocking {
             val context = ApplicationProvider.getApplicationContext<Context>()
-            val service = NewsTranslationService(context, LiteRtLlmRuntimeFactory())
+            val service = NewsTranslationService(
+                context,
+                LiteRtLlmRuntimeFactory(),
+                ExternalExecutionGate()
+            )
             val localUsable = service.isLocalModelUsable()
             assumeTrue("Local LiteRT-LM model not usable on this device.", localUsable)
 

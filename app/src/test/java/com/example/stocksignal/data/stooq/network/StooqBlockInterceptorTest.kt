@@ -1,5 +1,6 @@
 package com.example.stocksignal.data.stooq.network
 
+import com.example.stocksignal.core.ExternalExecutionGate
 import okhttp3.Interceptor
 import okhttp3.Protocol
 import okhttp3.Request
@@ -31,7 +32,12 @@ class StooqBlockInterceptorTest {
         }
         val blocker = StooqRequestBlocker(diagnostics)
         val reporter = mockk<StooqBlockReporter>(relaxed = true)
-        val interceptor = StooqBlockInterceptor(blocker, reporter, diagnostics)
+        val interceptor = StooqBlockInterceptor(
+            blocker = blocker,
+            blockReporter = reporter,
+            diagnosticsRepository = diagnostics,
+            executionGate = ExternalExecutionGate()
+        )
 
         val request = Request.Builder()
             .url("https://stooq.com/q/d/l/")
@@ -71,7 +77,12 @@ class StooqBlockInterceptorTest {
         }
         val blocker = StooqRequestBlocker(diagnostics)
         val reporter = mockk<StooqBlockReporter>(relaxed = true)
-        val interceptor = StooqBlockInterceptor(blocker, reporter, diagnostics)
+        val interceptor = StooqBlockInterceptor(
+            blocker = blocker,
+            blockReporter = reporter,
+            diagnosticsRepository = diagnostics,
+            executionGate = ExternalExecutionGate()
+        )
 
         val request = Request.Builder()
             .url("https://stooq.com/cmp/")
@@ -107,7 +118,12 @@ class StooqBlockInterceptorTest {
         }
         val blocker = StooqRequestBlocker(diagnostics)
         val reporter = mockk<StooqBlockReporter>(relaxed = true)
-        val interceptor = StooqBlockInterceptor(blocker, reporter, diagnostics)
+        val interceptor = StooqBlockInterceptor(
+            blocker = blocker,
+            blockReporter = reporter,
+            diagnosticsRepository = diagnostics,
+            executionGate = ExternalExecutionGate()
+        )
 
         val request = Request.Builder()
             .url("https://stooq.com/q/d/l/")
@@ -147,7 +163,12 @@ class StooqBlockInterceptorTest {
         }
         val blocker = StooqRequestBlocker(diagnostics)
         val reporter = mockk<StooqBlockReporter>(relaxed = true)
-        val interceptor = StooqBlockInterceptor(blocker, reporter, diagnostics)
+        val interceptor = StooqBlockInterceptor(
+            blocker = blocker,
+            blockReporter = reporter,
+            diagnosticsRepository = diagnostics,
+            executionGate = ExternalExecutionGate()
+        )
 
         val request = Request.Builder()
             .url("https://stooq.com/q/d/l/")

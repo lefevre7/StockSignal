@@ -6,6 +6,7 @@ import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.storage.StorageManager
 import android.util.Log
+import com.example.stocksignal.core.ExternalExecutionGate
 import com.google.android.play.core.assetpacks.AssetPackLocation
 import com.google.android.play.core.assetpacks.AssetPackManagerFactory
 import com.google.android.play.core.assetpacks.AssetPackStateUpdateListener
@@ -29,7 +30,8 @@ import kotlin.coroutines.resume
 @Singleton
 class NewsTranslationService @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val runtimeFactory: LocalLlmRuntimeFactory
+    private val runtimeFactory: LocalLlmRuntimeFactory,
+    private val executionGate: ExternalExecutionGate
 ) {
     private val storageManager: StorageManager by lazy {
         context.getSystemService(StorageManager::class.java)
@@ -437,41 +439,43 @@ class NewsTranslationService @Inject constructor(
             prompt
         }
         
-        return withContext(Dispatchers.Default) {
-            logModelPresenceOnce()
-            val runtime = getOrCreateLocalRuntime() ?: return@withContext null
-            Log.d(TAG, "Local model runtime ready (model=${localRuntimeSpec?.label ?: "unknown"}).")
-            val normalizedTopK = topK.coerceAtLeast(1).coerceAtMost(MAX_TOP_K)
-            val normalizedTopP = topP.coerceIn(0.0f, 1.0f)
-            val sampling = LlmSamplingConfig(
-                topK = normalizedTopK,
-                topP = normalizedTopP.toDouble(),
-                temperature = temperature.toDouble()
-            )
-            localInferenceMutex.withLock {
-                try {
-                    val response = runtime.generate(truncatedPrompt, sampling)
-                    if (response.isBlank()) {
-                        Log.w(TAG, "Local model returned an empty response.")
-                    } else {
-                        Log.d(TAG, "Local model response chars=${response.length}.")
-                        if (Log.isLoggable(TAG, Log.VERBOSE)) {
-                            Log.v(TAG, "Local model response preview: ${response.take(200)}")
+        return executionGate.withPermit(scope = "llm_inference") {
+            withContext(Dispatchers.Default) {
+                logModelPresenceOnce()
+                val runtime = getOrCreateLocalRuntime() ?: return@withContext null
+                Log.d(TAG, "Local model runtime ready (model=${localRuntimeSpec?.label ?: "unknown"}).")
+                val normalizedTopK = topK.coerceAtLeast(1).coerceAtMost(MAX_TOP_K)
+                val normalizedTopP = topP.coerceIn(0.0f, 1.0f)
+                val sampling = LlmSamplingConfig(
+                    topK = normalizedTopK,
+                    topP = normalizedTopP.toDouble(),
+                    temperature = temperature.toDouble()
+                )
+                localInferenceMutex.withLock {
+                    try {
+                        val response = runtime.generate(truncatedPrompt, sampling)
+                        if (response.isBlank()) {
+                            Log.w(TAG, "Local model returned an empty response.")
+                        } else {
+                            Log.d(TAG, "Local model response chars=${response.length}.")
+                            if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                                Log.v(TAG, "Local model response preview: ${response.take(200)}")
+                            }
                         }
+                        response.trim()
+                    } catch (e: IllegalArgumentException) {
+                        Log.w(TAG, "Local model input validation failed: ${e.message}")
+                        if (isCompatibilityError(e)) {
+                            markModelIncompatible(localRuntimeSpec ?: primaryModelSpec, e)
+                        }
+                        null
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Local model generation failed.", e)
+                        if (isCompatibilityError(e)) {
+                            markModelIncompatible(localRuntimeSpec ?: primaryModelSpec, e)
+                        }
+                        null
                     }
-                    response.trim()
-                } catch (e: IllegalArgumentException) {
-                    Log.w(TAG, "Local model input validation failed: ${e.message}")
-                    if (isCompatibilityError(e)) {
-                        markModelIncompatible(localRuntimeSpec ?: primaryModelSpec, e)
-                    }
-                    null
-                } catch (e: Exception) {
-                    Log.e(TAG, "Local model generation failed.", e)
-                    if (isCompatibilityError(e)) {
-                        markModelIncompatible(localRuntimeSpec ?: primaryModelSpec, e)
-                    }
-                    null
                 }
             }
         }

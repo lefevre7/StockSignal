@@ -9,11 +9,13 @@ import com.example.stocksignal.data.stooq.model.Result
 import com.example.stocksignal.data.stooq.model.StockData
 import com.example.stocksignal.data.stooq.model.StockDataMap
 import com.example.stocksignal.data.stooq.network.StooqApi
+import com.example.stocksignal.data.stooq.network.StooqBlockedException
 import com.example.stocksignal.data.stooq.parser.PremarketQuoteParser
 import kotlinx.coroutines.delay
 import org.apache.commons.csv.CSVFormat
 import org.apache.commons.csv.CSVParser
 import java.io.StringReader
+import java.net.SocketTimeoutException
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
@@ -58,6 +60,10 @@ class StooqRepository(private val api: StooqApi) {
             for (ticker in tickers) {
                 val result = fetchDataForTicker(ticker, startDateStr, endDateStr)
                 results.add(ticker to result)
+                if (result is Result.Error && isTerminalStooqFailure(result.exception)) {
+                    Log.w(TAG, "Stopping daily fetch batch early after terminal Stooq failure for $ticker")
+                    break
+                }
                 
                 // Random delay between 1-3 seconds to respect rate limits
                 if (ticker != tickers.last()) {
@@ -139,6 +145,10 @@ class StooqRepository(private val api: StooqApi) {
             for (ticker in tickers) {
                 val result = fetchIntradayDataForTicker(ticker, intervalMinutes, start, end)
                 results.add(ticker to result)
+                if (result is Result.Error && isTerminalStooqFailure(result.exception)) {
+                    Log.w(TAG, "Stopping intraday fetch batch early after terminal Stooq failure for $ticker")
+                    break
+                }
                 
                 // Random delay between 1-3 seconds to respect rate limits
                 if (ticker != tickers.last()) {
@@ -567,6 +577,10 @@ class StooqRepository(private val api: StooqApi) {
             for (ticker in tickers) {
                 val result = fetchPremarketQuoteForTicker(ticker)
                 results.add(ticker to result)
+                if (result is Result.Error && isTerminalStooqFailure(result.exception)) {
+                    Log.w(TAG, "Stopping premarket quote batch early after terminal Stooq failure for $ticker")
+                    break
+                }
                 if (ticker != tickers.last()) {
                     val delayMs = Random.nextLong(1000, 3001)
                     Log.d(TAG, "Rate limit delay: ${delayMs}ms before next ticker")
@@ -623,5 +637,16 @@ class StooqRepository(private val api: StooqApi) {
             Log.e(TAG, "Error fetching premarket quote for $ticker", e)
             Result.Error(e, "Failed to fetch premarket quote for $ticker: ${e.message}")
         }
+    }
+
+    private fun isTerminalStooqFailure(error: Throwable): Boolean {
+        var current: Throwable? = error
+        while (current != null) {
+            if (current is SocketTimeoutException || current is StooqBlockedException) {
+                return true
+            }
+            current = current.cause
+        }
+        return false
     }
 }

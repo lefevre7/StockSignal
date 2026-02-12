@@ -1,5 +1,6 @@
 package com.example.stocksignal.data.stooq.network
 
+import com.example.stocksignal.core.ExternalExecutionGate
 import okhttp3.Interceptor
 import okhttp3.Response
 import java.net.SocketTimeoutException
@@ -18,7 +19,8 @@ import kotlinx.coroutines.launch
 class StooqBlockInterceptor @Inject constructor(
     private val blocker: StooqRequestBlocker,
     private val blockReporter: StooqBlockReporter,
-    private val diagnosticsRepository: NotificationDiagnosticsRepository
+    private val diagnosticsRepository: NotificationDiagnosticsRepository,
+    private val executionGate: ExternalExecutionGate
 ) : Interceptor {
 
     @Volatile private var nextRequestAtMillis: Long = 0L
@@ -27,6 +29,12 @@ class StooqBlockInterceptor @Inject constructor(
     private val diagnosticsScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun intercept(chain: Interceptor.Chain): Response {
+        return executionGate.withPermitBlocking(scope = "stooq_http") {
+            interceptSerialized(chain)
+        }
+    }
+
+    private fun interceptSerialized(chain: Interceptor.Chain): Response {
         val path = chain.request().url.encodedPath
         val method = chain.request().method
         if (blocker.isBlocked()) {
