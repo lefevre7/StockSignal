@@ -57,12 +57,18 @@ class StooqRepository(private val api: StooqApi) {
 
             // Fetch data for all tickers sequentially to avoid rate limiting
             val results = mutableListOf<Pair<String, Result<Map<LocalDate, StockData>>>>()
+            var firstError: Result.Error? = null
+            var terminalError: Result.Error? = null
             for (ticker in tickers) {
                 val result = fetchDataForTicker(ticker, startDateStr, endDateStr)
                 results.add(ticker to result)
-                if (result is Result.Error && isTerminalStooqFailure(result.exception)) {
-                    Log.w(TAG, "Stopping daily fetch batch early after terminal Stooq failure for $ticker")
-                    break
+                if (result is Result.Error) {
+                    if (firstError == null) firstError = result
+                    if (isTerminalStooqFailure(result.exception)) {
+                        terminalError = result
+                        Log.w(TAG, "Stopping daily fetch batch early after terminal Stooq failure for $ticker")
+                        break
+                    }
                 }
                 
                 // Random delay between 1-3 seconds to respect rate limits
@@ -101,9 +107,13 @@ class StooqRepository(private val api: StooqApi) {
             }
 
             if (successfulData.isEmpty()) {
+                val representative = terminalError ?: firstError
                 Result.Error(
-                    Exception("No data could be fetched for any ticker"),
-                    "Failed to fetch data for all ${tickers.size} tickers"
+                    representative?.exception ?: Exception("No data could be fetched for any ticker"),
+                    buildAllFailedMessage(
+                        baseMessage = "Failed to fetch data for all ${tickers.size} tickers",
+                        representative = representative?.message
+                    )
                 )
             } else {
                 Result.Success(successfulData)
@@ -142,12 +152,18 @@ class StooqRepository(private val api: StooqApi) {
 
             // Fetch data for all tickers sequentially to avoid rate limiting
             val results = mutableListOf<Pair<String, Result<Map<LocalDateTime, IntradayStockData>>>>()
+            var firstError: Result.Error? = null
+            var terminalError: Result.Error? = null
             for (ticker in tickers) {
                 val result = fetchIntradayDataForTicker(ticker, intervalMinutes, start, end)
                 results.add(ticker to result)
-                if (result is Result.Error && isTerminalStooqFailure(result.exception)) {
-                    Log.w(TAG, "Stopping intraday fetch batch early after terminal Stooq failure for $ticker")
-                    break
+                if (result is Result.Error) {
+                    if (firstError == null) firstError = result
+                    if (isTerminalStooqFailure(result.exception)) {
+                        terminalError = result
+                        Log.w(TAG, "Stopping intraday fetch batch early after terminal Stooq failure for $ticker")
+                        break
+                    }
                 }
                 
                 // Random delay between 1-3 seconds to respect rate limits
@@ -183,9 +199,13 @@ class StooqRepository(private val api: StooqApi) {
             }
 
             if (successfulData.isEmpty()) {
+                val representative = terminalError ?: firstError
                 Result.Error(
-                    Exception("No intraday data could be fetched for any ticker"),
-                    "Failed to fetch intraday data for all ${tickers.size} tickers"
+                    representative?.exception ?: Exception("No intraday data could be fetched for any ticker"),
+                    buildAllFailedMessage(
+                        baseMessage = "Failed to fetch intraday data for all ${tickers.size} tickers",
+                        representative = representative?.message
+                    )
                 )
             } else {
                 Result.Success(successfulData)
@@ -574,12 +594,18 @@ class StooqRepository(private val api: StooqApi) {
     ): Result<Map<String, PremarketQuote>> {
         return try {
             val results = mutableListOf<Pair<String, Result<PremarketQuote>>>()
+            var firstError: Result.Error? = null
+            var terminalError: Result.Error? = null
             for (ticker in tickers) {
                 val result = fetchPremarketQuoteForTicker(ticker)
                 results.add(ticker to result)
-                if (result is Result.Error && isTerminalStooqFailure(result.exception)) {
-                    Log.w(TAG, "Stopping premarket quote batch early after terminal Stooq failure for $ticker")
-                    break
+                if (result is Result.Error) {
+                    if (firstError == null) firstError = result
+                    if (isTerminalStooqFailure(result.exception)) {
+                        terminalError = result
+                        Log.w(TAG, "Stopping premarket quote batch early after terminal Stooq failure for $ticker")
+                        break
+                    }
                 }
                 if (ticker != tickers.last()) {
                     val delayMs = Random.nextLong(1000, 3001)
@@ -605,9 +631,13 @@ class StooqRepository(private val api: StooqApi) {
             }
 
             if (successfulData.isEmpty()) {
+                val representative = terminalError ?: firstError
                 Result.Error(
-                    Exception("No premarket quotes fetched"),
-                    "Failed to fetch premarket quotes for ${tickers.size} tickers"
+                    representative?.exception ?: Exception("No premarket quotes fetched"),
+                    buildAllFailedMessage(
+                        baseMessage = "Failed to fetch premarket quotes for ${tickers.size} tickers",
+                        representative = representative?.message
+                    )
                 )
             } else {
                 Result.Success(successfulData)
@@ -648,5 +678,10 @@ class StooqRepository(private val api: StooqApi) {
             current = current.cause
         }
         return false
+    }
+
+    private fun buildAllFailedMessage(baseMessage: String, representative: String?): String {
+        val detail = representative?.takeIf { it.isNotBlank() } ?: return baseMessage
+        return "$baseMessage: $detail"
     }
 }

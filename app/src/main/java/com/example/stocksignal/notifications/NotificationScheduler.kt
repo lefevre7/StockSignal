@@ -240,6 +240,10 @@ class NotificationScheduler @Inject constructor(
         if (runAt.toInstant().isBefore(Instant.now(clock))) {
             runAt = runAt.plus(interval)
         }
+        // Skip weekends - if runAt falls on Saturday or Sunday, move to next Monday
+        if (runAt.dayOfWeek == DayOfWeek.SATURDAY || runAt.dayOfWeek == DayOfWeek.SUNDAY) {
+            runAt = runAt.with(TemporalAdjusters.next(DayOfWeek.MONDAY))
+        }
         return runAt
     }
 
@@ -383,7 +387,8 @@ class NotificationScheduler @Inject constructor(
             PRE_NOTIFY_MINUTES
         }
         val preNotifyAtMillis = triggerAtMillis - Duration.ofMinutes(leadMinutes).toMillis()
-        if (preNotifyAtMillis <= System.currentTimeMillis() + MIN_DELAY_MILLIS) {
+        val currentMillis = clock.millis()
+        if (preNotifyAtMillis <= currentMillis + MIN_DELAY_MILLIS) {
             diagnosticsRepository.setWindowPreNotifyNextRun(window.id, null)
             return
         }
@@ -418,7 +423,8 @@ class NotificationScheduler @Inject constructor(
         pendingIntent: android.app.PendingIntent,
         exactAllowed: Boolean
     ) {
-        val safeTriggerAt = maxOf(triggerAtMillis, System.currentTimeMillis() + MIN_DELAY_MILLIS)
+        val currentMillis = clock.millis()
+        val safeTriggerAt = maxOf(triggerAtMillis, currentMillis + MIN_DELAY_MILLIS)
         if (exactAllowed) {
             alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, safeTriggerAt, pendingIntent)
         } else {
@@ -565,7 +571,7 @@ class NotificationScheduler @Inject constructor(
             return true
         }
 
-        val nowMillis = System.currentTimeMillis()
+        val currentMillis = clock.millis()
         val windowIds = windows.map { it.id }.toSet()
         val scheduledIds = diagnosticsRepository.getScheduledWindowIds()
         if (scheduledIds != windowIds) {
@@ -573,7 +579,7 @@ class NotificationScheduler @Inject constructor(
             return true
         }
         val nextRuns = diagnosticsRepository.getNextWindowRunTimes(windowIds)
-        if (windowIds.any { nextRuns[it] == null || nextRuns[it]!! <= nowMillis }) {
+        if (windowIds.any { nextRuns[it] == null || nextRuns[it]!! <= currentMillis }) {
             Log.d(TAG, "Missing or stale next run times; rescheduling")
             return true
         }
@@ -587,7 +593,7 @@ class NotificationScheduler @Inject constructor(
             }
             val expectedPre = nextRun - Duration.ofMinutes(lead).toMillis()
             val preNotify = preNotifyRuns[windowId]
-            expectedPre > nowMillis + MIN_DELAY_MILLIS &&
+            expectedPre > currentMillis + MIN_DELAY_MILLIS &&
                 (preNotify == null || kotlin.math.abs(preNotify - expectedPre) > PRE_NOTIFY_DRIFT_MILLIS)
         }
         if (shouldReschedulePreNotify) {
@@ -596,7 +602,7 @@ class NotificationScheduler @Inject constructor(
         }
 
         val robotsNext = diagnosticsRepository.getRobotsNextRun()
-        if (robotsNext == null || robotsNext <= nowMillis) {
+        if (robotsNext == null || robotsNext <= currentMillis) {
             Log.d(TAG, "Robots check not scheduled or stale; rescheduling")
             return true
         }
@@ -604,7 +610,7 @@ class NotificationScheduler @Inject constructor(
         val premarketKeys = diagnosticsRepository.getScheduledPremarketKeys()
         if (premarketKeys.isNotEmpty()) {
             val nextPremarket = diagnosticsRepository.getPremarketNextRuns(premarketKeys)
-            if (premarketKeys.any { nextPremarket[it] == null || nextPremarket[it]!! <= nowMillis }) {
+            if (premarketKeys.any { nextPremarket[it] == null || nextPremarket[it]!! <= currentMillis }) {
                 Log.d(TAG, "Premarket alarms not scheduled or stale; rescheduling")
                 return true
             }

@@ -310,6 +310,8 @@ class StooqRepositoryTest {
         val result = repository.getIntradayData(tickers = listOf("A", "B", "C"))
 
         assertTrue(result.isError)
+        val error = result as Result.Error
+        assertTrue(error.exception is SocketTimeoutException)
         coVerify(exactly = 1) { api.getIntradayData("a", 10) }
         coVerify(exactly = 0) { api.getIntradayData("b", 10) }
         coVerify(exactly = 0) { api.getIntradayData("c", 10) }
@@ -333,7 +335,28 @@ class StooqRepositoryTest {
         val result = repository.getPremarketQuotes(listOf("A", "B"))
 
         assertTrue(result.isError)
+        val error = result as Result.Error
+        assertTrue(error.exception is SocketTimeoutException)
         coVerify(exactly = 1) { api.getQuotePage("a") }
         coVerify(exactly = 0) { api.getQuotePage("b") }
+    }
+
+    @Test
+    fun `getData stops batch after timeout failure and preserves exception`() = runTest {
+        coEvery {
+            api.getStockData("A", "20240101", "20240105", "d")
+        } throws SocketTimeoutException("timeout")
+
+        val result = repository.getData(
+            tickers = listOf("A", "B"),
+            startDate = LocalDate.of(2024, 1, 1),
+            endDate = LocalDate.of(2024, 1, 5)
+        )
+
+        assertTrue(result.isError)
+        val error = result as Result.Error
+        assertTrue(error.exception is SocketTimeoutException)
+        coVerify(exactly = 1) { api.getStockData("A", "20240101", "20240105", "d") }
+        coVerify(exactly = 0) { api.getStockData("B", any(), any(), any()) }
     }
 }
