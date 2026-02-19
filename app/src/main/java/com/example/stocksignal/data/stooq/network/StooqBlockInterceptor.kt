@@ -1,5 +1,6 @@
 package com.example.stocksignal.data.stooq.network
 
+import androidx.annotation.VisibleForTesting
 import com.example.stocksignal.core.ExternalExecutionGate
 import okhttp3.Interceptor
 import okhttp3.Response
@@ -24,6 +25,8 @@ class StooqBlockInterceptor @Inject constructor(
 ) : Interceptor {
 
     @Volatile private var nextRequestAtMillis: Long = 0L
+    @Volatile private var baseRequestGapMs: Long = BASE_REQUEST_GAP_MS
+    @Volatile private var jitterMs: Long = JITTER_MS
     private val requestLock = Any()
     private val consecutiveTimeouts = AtomicInteger(0)
     private val diagnosticsScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -48,7 +51,9 @@ class StooqBlockInterceptor @Inject constructor(
             diagnosticsRepository.recordStooqRequest(path, method, waitMs)
         }
 
+        var requestAttempted = false
         return try {
+            requestAttempted = true
             val response = chain.proceed(chain.request())
             val blockReason = blockReasonFor(response, path)
             if (blockReason != null) {
@@ -81,6 +86,10 @@ class StooqBlockInterceptor @Inject constructor(
             val message = blocker.buildBlockedMessage()
             blockReporter.reportBlocked(message, blocker.blockedUntilMillis())
             throw StooqBlockedException(message, e)
+        } finally {
+            if (requestAttempted) {
+                reserveNextGap()
+            }
         }
     }
 
@@ -95,9 +104,33 @@ class StooqBlockInterceptor @Inject constructor(
                     Thread.currentThread().interrupt()
                 }
             }
-            val targetGap = BASE_REQUEST_GAP_MS + Random.nextLong(JITTER_MS + 1)
-            nextRequestAtMillis = System.currentTimeMillis() + targetGap
             waitMs
+        }
+    }
+
+    private fun reserveNextGap() {
+        synchronized(requestLock) {
+            val jitter = if (jitterMs <= 0L) {
+                0L
+            } else {
+                Random.nextLong(jitterMs + 1L)
+            }
+            val nextGap = baseRequestGapMs + jitter
+            nextRequestAtMillis = System.currentTimeMillis() + nextGap
+        }
+    }
+
+    @VisibleForTesting
+    internal fun configurePacingForTest(
+        baseRequestGapMs: Long,
+        jitterMs: Long
+    ) {
+        require(baseRequestGapMs >= 0L) { "baseRequestGapMs must be >= 0" }
+        require(jitterMs >= 0L) { "jitterMs must be >= 0" }
+        this.baseRequestGapMs = baseRequestGapMs
+        this.jitterMs = jitterMs
+        synchronized(requestLock) {
+            nextRequestAtMillis = 0L
         }
     }
 

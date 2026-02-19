@@ -11,7 +11,6 @@ import com.example.stocksignal.data.stooq.model.StockDataMap
 import com.example.stocksignal.data.stooq.network.StooqApi
 import com.example.stocksignal.data.stooq.network.StooqBlockedException
 import com.example.stocksignal.data.stooq.parser.PremarketQuoteParser
-import kotlinx.coroutines.delay
 import org.apache.commons.csv.CSVFormat
 import org.apache.commons.csv.CSVParser
 import java.io.StringReader
@@ -20,7 +19,6 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
-import kotlin.random.Random
 
 /**
  * Repository for fetching stock data from Stooq.
@@ -71,12 +69,6 @@ class StooqRepository(private val api: StooqApi) {
                     }
                 }
                 
-                // Random delay between 1-3 seconds to respect rate limits
-                if (ticker != tickers.last()) {
-                    val delayMs = Random.nextLong(1000, 3001)
-                    Log.d(TAG, "Rate limit delay: ${delayMs}ms before next ticker")
-                    delay(delayMs)
-                }
             }
 
             // Separate successful and failed fetches
@@ -166,12 +158,6 @@ class StooqRepository(private val api: StooqApi) {
                     }
                 }
                 
-                // Random delay between 1-3 seconds to respect rate limits
-                if (ticker != tickers.last()) {
-                    val delayMs = Random.nextLong(1000, 3001)
-                    Log.d(TAG, "Rate limit delay: ${delayMs}ms before next ticker")
-                    delay(delayMs)
-                }
             }
 
             val successfulData = mutableMapOf<String, Map<LocalDateTime, IntradayStockData>>()
@@ -606,11 +592,6 @@ class StooqRepository(private val api: StooqApi) {
                         Log.w(TAG, "Stopping premarket quote batch early after terminal Stooq failure for $ticker")
                         break
                     }
-                }
-                if (ticker != tickers.last()) {
-                    val delayMs = Random.nextLong(1000, 3001)
-                    Log.d(TAG, "Rate limit delay: ${delayMs}ms before next ticker")
-                    delay(delayMs)
                 }
             }
 

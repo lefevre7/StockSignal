@@ -1,5 +1,6 @@
 package com.example.stocksignal.data.stooq.network
 
+import android.util.Log
 import com.example.stocksignal.core.ExternalExecutionGate
 import okhttp3.Interceptor
 import okhttp3.Protocol
@@ -11,14 +12,24 @@ import com.example.stocksignal.notifications.NotificationDiagnosticsRepository
 import io.mockk.every
 import io.mockk.coEvery
 import io.mockk.mockk
+import io.mockk.mockkStatic
 import io.mockk.verify
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
+import org.junit.Before
 import org.junit.Test
 import java.net.SocketTimeoutException
 
 class StooqBlockInterceptorTest {
+
+    @Before
+    fun setup() {
+        mockkStatic(Log::class)
+        every { Log.w(any(), any<String>()) } returns 0
+        every { Log.i(any(), any<String>()) } returns 0
+        every { Log.e(any(), any<String>(), any()) } returns 0
+    }
 
     @Test
     fun blocksAndReportsOnHttp429() {
@@ -38,6 +49,7 @@ class StooqBlockInterceptorTest {
             diagnosticsRepository = diagnostics,
             executionGate = ExternalExecutionGate()
         )
+        interceptor.configurePacingForTest(baseRequestGapMs = 0L, jitterMs = 0L)
 
         val request = Request.Builder()
             .url("https://stooq.com/q/d/l/")
@@ -83,6 +95,7 @@ class StooqBlockInterceptorTest {
             diagnosticsRepository = diagnostics,
             executionGate = ExternalExecutionGate()
         )
+        interceptor.configurePacingForTest(baseRequestGapMs = 0L, jitterMs = 0L)
 
         val request = Request.Builder()
             .url("https://stooq.com/cmp/")
@@ -124,6 +137,7 @@ class StooqBlockInterceptorTest {
             diagnosticsRepository = diagnostics,
             executionGate = ExternalExecutionGate()
         )
+        interceptor.configurePacingForTest(baseRequestGapMs = 0L, jitterMs = 0L)
 
         val request = Request.Builder()
             .url("https://stooq.com/q/d/l/")
@@ -169,6 +183,7 @@ class StooqBlockInterceptorTest {
             diagnosticsRepository = diagnostics,
             executionGate = ExternalExecutionGate()
         )
+        interceptor.configurePacingForTest(baseRequestGapMs = 0L, jitterMs = 0L)
 
         val request = Request.Builder()
             .url("https://stooq.com/q/d/l/")
@@ -210,5 +225,88 @@ class StooqBlockInterceptorTest {
             interceptor.intercept(timeoutChain)
         }
         assertTrue(blocker.isBlocked())
+    }
+
+    @Test
+    fun enforcesConfiguredGapAfterSuccessfulRequest() {
+        val diagnostics = mockk<NotificationDiagnosticsRepository>(relaxed = true) {
+            coEvery { getStooqBlockedInfo() } returns NotificationDiagnosticsRepository.StooqBlockedInfo(
+                blockedAtMillis = null,
+                blockedUntilMillis = null,
+                message = null
+            )
+            coEvery { clearStooqBlocked() } returns Unit
+        }
+        val blocker = StooqRequestBlocker(diagnostics)
+        val reporter = mockk<StooqBlockReporter>(relaxed = true)
+        val interceptor = StooqBlockInterceptor(
+            blocker = blocker,
+            blockReporter = reporter,
+            diagnosticsRepository = diagnostics,
+            executionGate = ExternalExecutionGate()
+        )
+        interceptor.configurePacingForTest(baseRequestGapMs = 40L, jitterMs = 0L)
+
+        val request = Request.Builder()
+            .url("https://stooq.com/q/a2/d/")
+            .build()
+        val response = Response.Builder()
+            .request(request)
+            .protocol(Protocol.HTTP_1_1)
+            .code(200)
+            .message("OK")
+            .body("ticker,price".toResponseBody("text/plain".toMediaType()))
+            .build()
+        val chain = mockk<Interceptor.Chain> {
+            every { request() } returns request
+            every { proceed(any()) } returns response
+        }
+
+        interceptor.intercept(chain).close()
+        val secondStartNs = System.nanoTime()
+        interceptor.intercept(chain).close()
+        val secondDurationMs = (System.nanoTime() - secondStartNs) / 1_000_000
+
+        assertTrue("Expected >=35ms gap, got ${secondDurationMs}ms", secondDurationMs >= 35L)
+    }
+
+    @Test
+    fun enforcesConfiguredGapAfterTimeout() {
+        val diagnostics = mockk<NotificationDiagnosticsRepository>(relaxed = true) {
+            coEvery { getStooqBlockedInfo() } returns NotificationDiagnosticsRepository.StooqBlockedInfo(
+                blockedAtMillis = null,
+                blockedUntilMillis = null,
+                message = null
+            )
+            coEvery { clearStooqBlocked() } returns Unit
+        }
+        val blocker = StooqRequestBlocker(diagnostics)
+        val reporter = mockk<StooqBlockReporter>(relaxed = true)
+        val interceptor = StooqBlockInterceptor(
+            blocker = blocker,
+            blockReporter = reporter,
+            diagnosticsRepository = diagnostics,
+            executionGate = ExternalExecutionGate()
+        )
+        interceptor.configurePacingForTest(baseRequestGapMs = 30L, jitterMs = 0L)
+
+        val request = Request.Builder()
+            .url("https://stooq.com/q/a2/d/")
+            .build()
+        val timeoutChain = mockk<Interceptor.Chain> {
+            every { request() } returns request
+            every { proceed(any()) } throws SocketTimeoutException("timeout")
+        }
+
+        assertThrows(SocketTimeoutException::class.java) {
+            interceptor.intercept(timeoutChain)
+        }
+        val secondStartNs = System.nanoTime()
+        assertThrows(SocketTimeoutException::class.java) {
+            interceptor.intercept(timeoutChain)
+        }
+        val secondDurationMs = (System.nanoTime() - secondStartNs) / 1_000_000
+
+        assertTrue("Expected >=25ms gap, got ${secondDurationMs}ms", secondDurationMs >= 25L)
     }
 }

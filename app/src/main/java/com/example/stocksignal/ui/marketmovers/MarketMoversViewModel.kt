@@ -14,7 +14,6 @@ import com.example.stocksignal.data.stooq.repository.MarketMoversRepository
 import com.example.stocksignal.data.stooq.repository.StooqRepository
 import com.example.stocksignal.domain.model.ChartRange
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -23,7 +22,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.LocalDateTime
 import javax.inject.Inject
-import kotlin.random.Random
 
 @HiltViewModel
 class MarketMoversViewModel @Inject constructor(
@@ -59,10 +57,6 @@ class MarketMoversViewModel @Inject constructor(
                 }
 
                 try {
-                    // Random delay between 1-3 seconds
-                    val delayMs = Random.nextLong(1000, 3001)
-                    delay(delayMs)
-                    
                     Log.d(TAG, "Fetching stock data for ${item.ticker}")
                     
                     // Fetch enriched intraday data with exchange

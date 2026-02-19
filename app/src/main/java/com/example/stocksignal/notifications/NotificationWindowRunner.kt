@@ -43,7 +43,6 @@ import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.net.SocketTimeoutException
-import kotlin.random.Random
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -150,9 +149,8 @@ class NotificationWindowRunner @Inject constructor(
 
     private class RequestPacer {
         suspend fun awaitGap(): Long {
-            val targetGap = REQUEST_GAP_BASE_MS + Random.nextLong(REQUEST_GAP_JITTER_MS + 1)
-            delay(targetGap)
-            return targetGap
+            // Stooq pacing is centrally enforced by StooqBlockInterceptor.
+            return 0L
         }
     }
 
@@ -1425,8 +1423,6 @@ class NotificationWindowRunner @Inject constructor(
         private const val LIVE_RETRY_COUNT = 1
         private const val LIVE_RETRY_DELAY_MS = 250L
         private const val TICKER_ERROR_MAX = 40
-        private const val REQUEST_GAP_BASE_MS = 3000L
-        private const val REQUEST_GAP_JITTER_MS = 2000L
         private val CANDLE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
         private val FETCH_TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss.SSS")
     }
