@@ -12,6 +12,7 @@ import com.example.stocksignal.domain.model.ChartRange
 import java.time.DayOfWeek
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
@@ -24,6 +25,7 @@ class SettingsRepository @Inject constructor(
 
     val settingsFlow: Flow<AppSettings> = dataStore.data
         .map { prefs -> prefs.toAppSettings() }
+        .distinctUntilChanged()
         .catch { e ->
             Log.e(TAG, "Error reading settings from DataStore", e)
             emit(createDefaultSettings())

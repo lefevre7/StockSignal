@@ -2,7 +2,6 @@ package com.example.stocksignal.notifications
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import com.example.stocksignal.data.settings.settingsDataStore
 import com.example.stocksignal.data.settings.AppSettings
 import com.example.stocksignal.data.settings.HoldingPeriod
 import com.example.stocksignal.data.settings.NotificationFrequency
@@ -26,7 +25,7 @@ class NotificationSchedulerTest {
     @Test
     fun scheduleStoresWindowAndRobotsAlarms() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        val diagnosticsRepository = NotificationDiagnosticsRepository(context.settingsDataStore)
+        val diagnosticsRepository = NotificationDiagnosticsRepository(context.notificationDiagnosticsDataStore)
         val scheduler = NotificationScheduler(context, diagnosticsRepository)
         val settings = AppSettings(
             frequency = NotificationFrequency.THREE_PER_DAY,
@@ -93,7 +92,7 @@ class NotificationSchedulerTest {
     @Test
     fun scheduleStoresPremarketAlarms() = runBlocking {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        val diagnosticsRepository = NotificationDiagnosticsRepository(context.settingsDataStore)
+        val diagnosticsRepository = NotificationDiagnosticsRepository(context.notificationDiagnosticsDataStore)
         val scheduler = NotificationScheduler(context, diagnosticsRepository)
         val settings = AppSettings(
             frequency = NotificationFrequency.THREE_PER_DAY,

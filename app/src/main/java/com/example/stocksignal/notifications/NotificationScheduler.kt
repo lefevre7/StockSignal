@@ -237,7 +237,7 @@ class NotificationScheduler @Inject constructor(
         } else {
             Duration.ofDays(1)
         }
-        if (runAt.toInstant().isBefore(Instant.now(clock))) {
+        if (!runAt.toInstant().isAfter(Instant.now(clock))) {
             runAt = runAt.plus(interval)
         }
         // Skip weekends - if runAt falls on Saturday or Sunday, move to next Monday

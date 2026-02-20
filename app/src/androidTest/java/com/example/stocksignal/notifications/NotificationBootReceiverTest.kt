@@ -32,7 +32,7 @@ class NotificationBootReceiverTest {
     fun setup() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         settingsRepository = SettingsRepository(context.settingsDataStore)
-        diagnosticsRepository = NotificationDiagnosticsRepository(context.settingsDataStore)
+        diagnosticsRepository = NotificationDiagnosticsRepository(context.notificationDiagnosticsDataStore)
         receiver = NotificationBootReceiver()
     }
 

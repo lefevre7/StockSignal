@@ -12,7 +12,6 @@ import com.example.stocksignal.data.settings.ScheduleWindow
 import com.example.stocksignal.data.settings.ScheduleWindowType
 import com.example.stocksignal.data.settings.SignalSensitivity
 import com.example.stocksignal.data.settings.SnoozeDurationOption
-import com.example.stocksignal.data.settings.settingsDataStore
 import com.example.stocksignal.domain.model.ChartRange
 import java.time.DayOfWeek
 import java.time.Clock
@@ -22,6 +21,7 @@ import java.time.ZoneId
 import java.time.ZonedDateTime
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -40,7 +40,7 @@ class NotificationAlarmSchedulerTest {
     @Test
     fun scheduleEnqueuesWindowAndRobotsAlarms() = runBlocking {
         val context: Context = RuntimeEnvironment.getApplication()
-        val diagnostics = NotificationDiagnosticsRepository(context.settingsDataStore)
+        val diagnostics = NotificationDiagnosticsRepository(context.notificationDiagnosticsDataStore)
         val scheduler = NotificationScheduler(context, diagnostics)
         clearScheduledAlarms()
         
@@ -92,7 +92,7 @@ class NotificationAlarmSchedulerTest {
     @Test
     fun scheduleEnqueuesPremarketAlarmsWhenMarketWindowPresent() = runBlocking {
         val context: Context = RuntimeEnvironment.getApplication()
-        val diagnostics = NotificationDiagnosticsRepository(context.settingsDataStore)
+        val diagnostics = NotificationDiagnosticsRepository(context.notificationDiagnosticsDataStore)
         val scheduler = NotificationScheduler(context, diagnostics)
         clearScheduledAlarms()
         val settings = baseSettings(
@@ -130,7 +130,7 @@ class NotificationAlarmSchedulerTest {
     @Test
     fun premarketAlarmsNotScheduledOnSaturday() = runBlocking {
         val context: Context = RuntimeEnvironment.getApplication()
-        val diagnostics = NotificationDiagnosticsRepository(context.settingsDataStore)
+        val diagnostics = NotificationDiagnosticsRepository(context.notificationDiagnosticsDataStore)
         
         // Set clock to Friday 2025-01-03 14:00 ET - next market open would be Saturday if not skipped
         val friday = ZonedDateTime.of(2025, 1, 3, 14, 0, 0, 0, ZoneId.of("America/New_York"))
@@ -188,7 +188,7 @@ class NotificationAlarmSchedulerTest {
     @Test
     fun premarketAlarmsNotScheduledOnSunday() = runBlocking {
         val context: Context = RuntimeEnvironment.getApplication()
-        val diagnostics = NotificationDiagnosticsRepository(context.settingsDataStore)
+        val diagnostics = NotificationDiagnosticsRepository(context.notificationDiagnosticsDataStore)
         
         // Set clock to Saturday 2025-01-04 10:00 ET - next market open would be Sunday if not skipped
         val saturday = ZonedDateTime.of(2025, 1, 4, 10, 0, 0, 0, ZoneId.of("America/New_York"))
@@ -245,7 +245,7 @@ class NotificationAlarmSchedulerTest {
     @Test
     fun premarketAlarmsScheduledNormallyOnWeekdays() = runBlocking {
         val context: Context = RuntimeEnvironment.getApplication()
-        val diagnostics = NotificationDiagnosticsRepository(context.settingsDataStore)
+        val diagnostics = NotificationDiagnosticsRepository(context.notificationDiagnosticsDataStore)
         
         // Set clock to Tuesday 2025-01-07 10:00 ET
         val tuesday = ZonedDateTime.of(2025, 1, 7, 10, 0, 0, 0, ZoneId.of("America/New_York"))
@@ -293,6 +293,48 @@ class NotificationAlarmSchedulerTest {
                 scheduledTime.dayOfWeek != DayOfWeek.SUNDAY
             )
         }
+    }
+
+    @Test
+    fun schedulePremarketSampleAtExactBoundaryRollsToNextTradingDay() = runBlocking {
+        val context: Context = RuntimeEnvironment.getApplication()
+        val diagnostics = NotificationDiagnosticsRepository(context.notificationDiagnosticsDataStore)
+        // market_open_minus_10 window -> 09:20 ET, sample index 4 -> 09:00 ET.
+        val now = ZonedDateTime.of(2025, 1, 7, 9, 0, 0, 0, ZoneId.of("America/New_York"))
+        val fixedClock = Clock.fixed(now.toInstant(), ZoneId.of("America/New_York"))
+        val scheduler = NotificationScheduler(context, diagnostics, fixedClock)
+        val settings = baseSettings(
+            frequency = NotificationFrequency.ONE_PER_DAY,
+            windows = listOf(
+                ScheduleWindow(
+                    id = "market_open_minus_10",
+                    type = ScheduleWindowType.MARKET_OPEN_MINUS,
+                    hour = null,
+                    minute = null,
+                    zoneId = "America/New_York",
+                    offsetMinutes = -10
+                )
+            )
+        )
+        val key = NotificationAlarmIntentFactory.premarketKey("market_open_minus_10", 4)
+        diagnostics.setPremarketNextRun(key, null)
+
+        scheduler.schedulePremarketSample(settings, "market_open_minus_10", 4)
+
+        val nextRun = diagnostics.getPremarketNextRuns(setOf(key))[key]
+        assertNotNull("Premarket next run should be scheduled", nextRun)
+        val scheduledTime = ZonedDateTime.ofInstant(
+            Instant.ofEpochMilli(nextRun!!),
+            ZoneId.of("America/New_York")
+        )
+        assertTrue("Scheduled time should be after now", scheduledTime.isAfter(now))
+        assertEquals(
+            "Exact-boundary sample should roll to next trading day",
+            DayOfWeek.WEDNESDAY,
+            scheduledTime.dayOfWeek
+        )
+        assertEquals(9, scheduledTime.hour)
+        assertEquals(0, scheduledTime.minute)
     }
 
     private fun baseSettings(

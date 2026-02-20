@@ -2,7 +2,6 @@ package com.example.stocksignal.notifications
 
 import android.content.Context
 import androidx.datastore.preferences.core.edit
-import com.example.stocksignal.data.settings.settingsDataStore
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -16,12 +15,12 @@ import org.robolectric.RuntimeEnvironment
 class NotificationDiagnosticsRepositoryLogTest {
 
     private val context: Context = RuntimeEnvironment.getApplication()
-    private val repository = NotificationDiagnosticsRepository(context.settingsDataStore)
+    private val repository = NotificationDiagnosticsRepository(context.notificationDiagnosticsDataStore)
 
     @Before
     fun setUp() {
         runBlocking {
-            context.settingsDataStore.edit { it.clear() }
+            context.notificationDiagnosticsDataStore.edit { it.clear() }
         }
     }
 

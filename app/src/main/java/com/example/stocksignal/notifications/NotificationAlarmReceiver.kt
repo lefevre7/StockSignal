@@ -111,7 +111,7 @@ class NotificationAlarmReceiver : BroadcastReceiver() {
         val request = OneTimeWorkRequestBuilder<RobotsTxtCheckWorker>().build()
         try {
             WorkManager.getInstance(context)
-                .enqueueUniqueWork(ROBOTS_WORK_NAME, ExistingWorkPolicy.REPLACE, request)
+                .enqueueUniqueWork(ROBOTS_WORK_NAME, ExistingWorkPolicy.KEEP, request)
             diagnosticsRepository.recordBackgroundWorkerEvent(
                 worker = "robots_txt",
                 phase = "enqueued",
@@ -149,7 +149,7 @@ class NotificationAlarmReceiver : BroadcastReceiver() {
         try {
             WorkManager.getInstance(context).enqueueUniqueWork(
                 uniqueWorkName,
-                ExistingWorkPolicy.REPLACE,
+                ExistingWorkPolicy.KEEP,
                 request
             )
             diagnosticsRepository.recordBackgroundWorkerEvent(
