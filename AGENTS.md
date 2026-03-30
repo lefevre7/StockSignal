@@ -2,14 +2,21 @@
 
 Purpose: Architecture and workflow reference for contributors.
 
+## Documentation
+- **Current Design (comprehensive):** `docs/CURRENT_DESIGN.md` — full architecture, 8 Mermaid diagrams (signal pipeline, scheduling, evaluation engine, AI scoring, data fetch, queuing state machine, user interaction, boot recovery), Room schema, settings reference, class index, test coverage, and delta from initial design.
+- **Initial Design Spec:** `docs/INITIAL_DESIGN.md` — original product requirements and UI/UX specifications.
+
 ## Architecture Overview
 - UI: Jetpack Compose screens with ViewModels and Compose Navigation (single-activity).
 - DI: Hilt modules provide repositories, DAOs, and network clients.
-- Data: Room caches for market data + DataStore for settings.
-- Networking: Retrofit Stooq API + HTML/CSV parsers.
-- Signals: Indicator engine in the domain layer computes scores and reasons.
+- Data: Room (v7, 9 entities) caches for market data + DataStore for settings + DataStore for diagnostics.
+- Networking: Retrofit Stooq API + HTML/CSV/JS parsers + OkHttp interceptor chain (rate limiting, blocking, browser spoofing).
+- Signals: 7-metric rule-based scoring engine (IndicatorCalculator → RuleBasedSignalModel → SignalEngine) with optional on-device AI enrichment (Gemma3-1B-IT via LiteRT).
 - Charts: Vico (Compose) for sparkline and detail charts.
-- Notifications: WorkManager scheduled windows + NotificationManager publishing; stale signals (>7 days) are suppressed.
+- Notifications: AlarmManager-scheduled windows → foreground services (WindowRunService, WindowPreNotifyService) → signal evaluation → NotificationQueueProcessor (caps, quiet hours, active-notification blocking) → NotificationPublisher → Android system notifications. Stale signals (>10 min data age) and cooldown duplicates (same ticker+tier within 24h) are suppressed.
+- Premarket: 5-sample premarket quote pipeline (bid/ask data, 10-min intervals before market open).
+- Compliance: Daily robots.txt check + request blocking (50ms gaps, 3-timeout threshold, 24h blocks).
+- Diagnostics: 100+ counters tracking scheduling, API calls, AI generation, execution gate metrics.
 
 ## Data Flow
 - Stooq API -> parsers -> repositories -> Room cache -> ViewModels/Workers -> Compose UI.
@@ -492,6 +499,36 @@ Fields: ticker~name~exchange~price~percentChange~other
 ## Original Open TODOs
 - Stock detail follow action placeholder in `app/src/main/java/com/example/stocksignal/ui/stockdetail/StockDetailScreen.kt`.
 - Intraday API upgrade/backfill note in `app/src/main/java/com/example/stocksignal/data/repository/StockRepository.kt`.
+
+## Key Class Reference (Quick Lookup)
+
+### Notification Pipeline
+- `NotificationScheduler` — AlarmManager alarm orchestration based on settings/frequency.
+- `NotificationAlarmReceiver` → `WindowRunService` → `NotificationWindowRunner` — alarm → foreground service → signal evaluation.
+- `NotificationQueueProcessor` — caps, quiet hours, active-notification blocking, queue management.
+- `NotificationPublisher` — renders and posts Android system notifications.
+- `NotificationActionReceiver` — handles dismiss + add-to-watchlist user actions.
+- `NotificationBootReceiver` / `NotificationBootstrapWorker` / `NotificationReconcileWorker` — boot recovery + periodic state cleanup.
+
+### Signal Evaluation
+- `IndicatorCalculator` — RSI, MACD, SMA, Bollinger, ATR, Z-scores.
+- `IndicatorConfig` — adaptive indicator windows per HoldingPeriod.
+- `RuleBasedSignalModel` (SignalModels.kt) — 7-metric composite scoring.
+- `SignalEngine` — orchestrates scoring + confidence calculation.
+- `IndicatorAlertEvaluator` — 8-metric threshold crossover detection.
+- `AiSignalScorer` — Gemma3-1B-IT prompt building, caching, response parsing.
+
+### Data
+- `StockRepository` — data fetch, caching, intraday accumulation, premarket candles.
+- `SignalsRepository` — signal computation, AI integration, cooldown, event management.
+- `StooqRepository` / `StooqSearchRepository` / `MarketMoversRepository` — Stooq API data fetching.
+- `StooqBlockInterceptor` / `StooqRequestBlocker` — rate limiting and 24h blocking.
+- `ExternalExecutionGate` — mutex serializing HTTP + LLM operations.
+- `SettingsRepository` — DataStore preferences (holdingPeriod, frequency, sensitivity, etc.).
+
+### Room Database (v7)
+- 9 entities: WatchlistItem, GlobalSignalEvent, IntradayDataCache, StockDetailCache, StockOverviewCache, MarketMoversCache, NotificationState, Note, SearchHistory.
+- Migrations 1→7 documented in `docs/CURRENT_DESIGN.md` §12.2.
 
 ## Workflow
 - Make sure the project builds and passes tests after each todo item is done.
