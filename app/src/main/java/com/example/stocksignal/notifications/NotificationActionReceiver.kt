@@ -30,7 +30,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
                 ACTION_DISMISS -> handleDismiss(context, intent)
                 ACTION_ADD_WATCHLIST -> handleAddToWatchlist(context, intent)
             }
-            pendingResult.finish()
+            pendingResult?.finish()
         }
     }
 

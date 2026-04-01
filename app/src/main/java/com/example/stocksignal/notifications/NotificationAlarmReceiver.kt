@@ -119,7 +119,7 @@ class NotificationAlarmReceiver : BroadcastReceiver() {
             } catch (e: Exception) {
                 Log.e(TAG, "Alarm receiver failed", e)
             } finally {
-                pendingResult.finish()
+                pendingResult?.finish()
             }
         }
     }
