@@ -235,15 +235,22 @@ class SettingsRepository @Inject constructor(
             strongBuyThreshold = this[SettingsKeys.strongBuyThreshold] ?: 60,
             strongSellThreshold = this[SettingsKeys.strongSellThreshold] ?: -60
         )
-        val selectedChartRange = runCatching {
-            ChartRange.valueOf(this[SettingsKeys.selectedChartRange] ?: ChartRange.ONE_DAY.name)
-        }.getOrDefault(ChartRange.ONE_DAY)
-        val immediatePostsEnabled = this[SettingsKeys.immediatePostsEnabled] ?: false
-        val offlineTranslationEnabled = this[SettingsKeys.offlineTranslationEnabled] ?: true
-        val onboardingCompleted = this[SettingsKeys.onboardingCompleted] ?: false
         val holdingPeriod = runCatching {
             HoldingPeriod.valueOf(this[SettingsKeys.holdingPeriod] ?: HoldingPeriod.MONTHS.name)
         }.getOrDefault(HoldingPeriod.MONTHS)
+        val holdingPeriodDefaultChartRange = when (holdingPeriod) {
+            HoldingPeriod.HOURS -> ChartRange.ONE_DAY
+            HoldingPeriod.DAYS -> ChartRange.FIVE_DAY
+            HoldingPeriod.WEEKS -> ChartRange.ONE_MONTH
+            HoldingPeriod.MONTHS -> ChartRange.SIX_MONTH
+            HoldingPeriod.YEARS -> ChartRange.FIVE_YEAR
+        }
+        val selectedChartRange = runCatching {
+            ChartRange.valueOf(this[SettingsKeys.selectedChartRange] ?: holdingPeriodDefaultChartRange.name)
+        }.getOrDefault(holdingPeriodDefaultChartRange)
+        val immediatePostsEnabled = this[SettingsKeys.immediatePostsEnabled] ?: false
+        val offlineTranslationEnabled = this[SettingsKeys.offlineTranslationEnabled] ?: true
+        val onboardingCompleted = this[SettingsKeys.onboardingCompleted] ?: false
 
         return AppSettings(
             frequency = frequency,

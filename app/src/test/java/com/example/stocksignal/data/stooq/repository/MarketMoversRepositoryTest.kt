@@ -42,8 +42,37 @@ class MarketMoversRepositoryTest {
         assertEquals(3, cached?.items?.size)
     }
 
+    @Test
+    fun `getMarketMoversBatch fetches homepage once for multiple directions`() = runTest {
+        val cacheDao = InMemoryMarketMoversCacheDao()
+        val cacheRepository = MarketMoversCacheRepository(cacheDao)
+        val api = FakeStooqApi(sampleHomePageHtml())
+        val repository = MarketMoversRepository(api, cacheRepository)
+
+        val result = repository.getMarketMoversBatch(
+            range = MarketMoverRange.ONE_DAY,
+            directions = setOf(
+                MarketMoverDirection.INCREASERS,
+                MarketMoverDirection.DECREASERS
+            ),
+            forceRefresh = true
+        )
+
+        assertTrue(result is Result.Success)
+        val data = (result as Result.Success).data
+        assertEquals(1, api.homePageCalls)
+        assertEquals(1, data.snapshots[MarketMoverDirection.INCREASERS]?.items?.size)
+        assertEquals(1, data.snapshots[MarketMoverDirection.DECREASERS]?.items?.size)
+    }
+
     private class FakeStooqApi(private val html: String) : StooqApi {
-        override suspend fun getHomePage(): String = html
+        var homePageCalls: Int = 0
+            private set
+
+        override suspend fun getHomePage(): String {
+            homePageCalls += 1
+            return html
+        }
 
         override suspend fun getStockData(
             ticker: String,

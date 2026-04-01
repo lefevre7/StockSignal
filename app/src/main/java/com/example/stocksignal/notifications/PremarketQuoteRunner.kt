@@ -28,7 +28,8 @@ class PremarketQuoteRunner @Inject constructor(
     private val stooqRepository: StooqRepository,
     private val marketMoversRepository: MarketMoversRepository,
     private val stockRepository: StockRepository,
-    private val diagnosticsRepository: NotificationDiagnosticsRepository
+    private val diagnosticsRepository: NotificationDiagnosticsRepository,
+    private val backgroundRunPolicy: BackgroundStooqRunPolicy
 ) {
 
     enum class RunOutcome {
@@ -78,6 +79,11 @@ class PremarketQuoteRunner @Inject constructor(
                 recordResult("skipped", "frequency only when open")
                 return RunOutcome.SUCCESS
             }
+            backgroundRunPolicy.premarketSkipReason(settings, windowId)?.let { reason ->
+                Log.d(TAG, "Premarket sample skipped: $reason.")
+                recordResult("skipped", reason)
+                return RunOutcome.SUCCESS
+            }
 
             val now = ZonedDateTime.now()
             val window = PremarketWindowUtils.resolvePremarketWindow(settings, windowId, now)
@@ -87,11 +93,6 @@ class PremarketQuoteRunner @Inject constructor(
                 }
             val marketZone = PremarketWindowUtils.marketZone(window)
             val nowInZone = ZonedDateTime.now(marketZone)
-            if (nowInZone.dayOfWeek == DayOfWeek.SATURDAY || nowInZone.dayOfWeek == DayOfWeek.SUNDAY) {
-                Log.d(TAG, "Premarket sample skipped on weekend.")
-                recordResult("skipped", "weekend")
-                return RunOutcome.SUCCESS
-            }
             if (PremarketWindowUtils.isDuringMarketHours(nowInZone)) {
                 Log.d(TAG, "Premarket sample skipped during market hours.")
                 recordResult("skipped", "during market hours")
@@ -196,23 +197,18 @@ class PremarketQuoteRunner @Inject constructor(
     }
 
     private suspend fun fetchMoverTickers(): List<String> {
-        val increasers = when (val result = marketMoversRepository.getMarketMovers(
+        val movers = when (val result = marketMoversRepository.getMarketMoversBatch(
             range = MarketMoverRange.ONE_DAY,
-            direction = MarketMoverDirection.INCREASERS,
+            directions = setOf(
+                MarketMoverDirection.INCREASERS,
+                MarketMoverDirection.DECREASERS
+            ),
             forceRefresh = true
         )) {
-            is StooqResult.Success -> result.data.items
+            is StooqResult.Success -> result.data.snapshots.values.flatMap { it.items }
             is StooqResult.Error -> emptyList()
         }
-        val decreasers = when (val result = marketMoversRepository.getMarketMovers(
-            range = MarketMoverRange.ONE_DAY,
-            direction = MarketMoverDirection.DECREASERS,
-            forceRefresh = true
-        )) {
-            is StooqResult.Success -> result.data.items
-            is StooqResult.Error -> emptyList()
-        }
-        return (increasers + decreasers).map { it.ticker }.distinct()
+        return movers.map { it.ticker }.distinct()
     }
 
     private fun floorToTenMinutes(time: LocalDateTime): LocalDateTime {

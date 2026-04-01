@@ -16,16 +16,21 @@ import com.example.stocksignal.data.settings.SettingsRepository
 import com.example.stocksignal.domain.model.AiScoreReason
 import com.example.stocksignal.domain.model.ChartRange
 import com.example.stocksignal.domain.model.PriceCandle
+import android.util.Log
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.mockkStatic
+import io.mockk.unmockkStatic
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.flow.flowOf
+import org.junit.After
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import java.time.LocalDateTime
 import java.time.DayOfWeek
@@ -36,6 +41,20 @@ class SignalsRepositoryTest {
     private val settingsRepository = mockk<SettingsRepository>(relaxed = true)
     private val aiSignalScorer = mockk<AiSignalScorer>(relaxed = true)
     private val repository = SignalsRepository(signalEventsRepository, settingsRepository, aiSignalScorer)
+
+    @Before
+    fun setUp() {
+        mockkStatic(Log::class)
+        every { Log.d(any(), any()) } returns 0
+        every { Log.e(any(), any()) } returns 0
+        every { Log.e(any(), any(), any()) } returns 0
+        every { Log.w(any(), any<String>()) } returns 0
+    }
+
+    @After
+    fun tearDown() {
+        unmockkStatic(Log::class)
+    }
 
     @Test
     fun `cooldown returns true when recent event exists`() = runTest {

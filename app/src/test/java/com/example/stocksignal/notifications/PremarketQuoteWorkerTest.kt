@@ -35,6 +35,7 @@ class PremarketQuoteWorkerTest {
     private val settingsRepository = mockk<SettingsRepository>()
     private val scheduler = mockk<NotificationScheduler>(relaxed = true)
     private val diagnosticsRepository = mockk<NotificationDiagnosticsRepository>(relaxed = true)
+    private val backgroundGate = BackgroundStooqExecutionGate()
 
     @Test
     fun `returns success and schedules next sample when runner succeeds`() = runTest {
@@ -90,7 +91,8 @@ class PremarketQuoteWorkerTest {
                     runner,
                     settingsRepository,
                     scheduler,
-                    diagnosticsRepository
+                    diagnosticsRepository,
+                    backgroundGate
                 )
             }
         }

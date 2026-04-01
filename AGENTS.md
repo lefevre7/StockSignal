@@ -4,6 +4,7 @@ Purpose: Architecture and workflow reference for contributors.
 
 ## Documentation
 - **Current Design (comprehensive):** `docs/CURRENT_DESIGN.md` — full architecture, 8 Mermaid diagrams (signal pipeline, scheduling, evaluation engine, AI scoring, data fetch, queuing state machine, user interaction, boot recovery), Room schema, settings reference, class index, test coverage, and delta from initial design.
+- **Stooq pacing investigation + fix:** `docs/CURRENT_DESIGN.md` §14.4-14.5 — March 31, 2026 findings on background Stooq blocking, duplicated traffic sources, and the implemented queueing/blocking fix.
 - **Initial Design Spec:** `docs/INITIAL_DESIGN.md` — original product requirements and UI/UX specifications.
 
 ## Architecture Overview
@@ -13,9 +14,9 @@ Purpose: Architecture and workflow reference for contributors.
 - Networking: Retrofit Stooq API + HTML/CSV/JS parsers + OkHttp interceptor chain (rate limiting, blocking, browser spoofing).
 - Signals: 7-metric rule-based scoring engine (IndicatorCalculator → RuleBasedSignalModel → SignalEngine) with optional on-device AI enrichment (Gemma3-1B-IT via LiteRT).
 - Charts: Vico (Compose) for sparkline and detail charts.
-- Notifications: AlarmManager-scheduled windows → foreground services (WindowRunService, WindowPreNotifyService) → signal evaluation → NotificationQueueProcessor (caps, quiet hours, active-notification blocking) → NotificationPublisher → Android system notifications. Stale signals (>10 min data age) and cooldown duplicates (same ticker+tier within 24h) are suppressed.
+- Notifications: AlarmManager-scheduled windows → `NotificationAlarmReceiver` (cache-only pre-notify bookkeeping, blocked/weekend skips) → `WindowRunService` / WorkManager workers → `BackgroundStooqExecutionGate` FIFO → signal evaluation → `NotificationQueueProcessor` (caps, quiet hours, active-notification blocking) → `NotificationPublisher` → Android system notifications. Stale signals (>10 min data age) and cooldown duplicates (same ticker+tier within 24h) are suppressed.
 - Premarket: 5-sample premarket quote pipeline (bid/ask data, 10-min intervals before market open).
-- Compliance: Daily robots.txt check + request blocking (50ms gaps, 3-timeout threshold, 24h blocks).
+- Compliance: Daily robots.txt check + request blocking (3-5s gaps, 5-timeout threshold on all Stooq endpoints, 24h blocks) plus blocked/weekend background skip policy. See `docs/CURRENT_DESIGN.md` §14.4-14.5 for the regression analysis and implemented fix.
 - Diagnostics: 100+ counters tracking scheduling, API calls, AI generation, execution gate metrics.
 
 ## Data Flow
@@ -27,6 +28,26 @@ Purpose: Architecture and workflow reference for contributors.
 - Price series: intraday TTL 10 minutes, daily TTL 24 hours; intraday history retained 1 year.
 - Market movers: TTL 10 minutes.
 - Overview/fundamentals: TTL 24 hours.
+
+## Test Coverage Status (as of current session)
+
+- **Unit tests:** 585 tests across 78 test files, **0 failures** — run with `./gradlew testDebugUnitTest`
+- **Instrumented tests:** 18 androidTest files covering all navigable screens + Android-bound features
+- **Bug fixed:** `SettingsRepository.toAppSettings()` — `selectedChartRange` now correctly defaults to holding-period-appropriate range (was always defaulting to `ONE_DAY`)
+- **Key new test files added this session:**
+  - `StockRepositoryTest` — cache hit/stale/forceRefresh, intraday vs. daily routing, accumulateIntradayData branches
+  - `PremarketQuoteRunnerTest` — all 8+ skip paths + 10 outcome scenarios
+  - `NotificationWindowRunnerTest` — 3 early-exit skip paths + market movers + allowAiGeneration flag
+  - `NotificationAlarmReceiverTest` (instrumented) — null/unknown type, blank windowId, skip-reason path
+  - `NotificationActionReceiverTest` (instrumented) — dismiss, add-to-watchlist (new + duplicate), blank ticker
+  - Thin repository tests: `IntradayDataCacheRepositoryTest`, `MarketMoversCacheRepositoryTest`, `StockDetailCacheRepositoryTest`
+  - + 11 other new unit test files from previous session (WatchlistRepository, SearchHistoryRepository, etc.)
+
+**Known testing patterns:**
+- Flow property initializers: Repositories that call `dao.observeXxx()` in property initializers require a `repoWith()/repoWithFlowError()` factory helper that creates fresh DAO+repo combos per test.
+- Static object mocking: Use `mockkObject(PremarketWindowUtils)` for singleton objects.
+- Robolectric + Log: Always `mockkStatic(Log::class)` in `@Before` / unmock in `@After` for tests touching code that calls `Log.*`.
+
 
 ## TODO List - Feature Enhancements
 
@@ -504,7 +525,8 @@ Fields: ticker~name~exchange~price~percentChange~other
 
 ### Notification Pipeline
 - `NotificationScheduler` — AlarmManager alarm orchestration based on settings/frequency.
-- `NotificationAlarmReceiver` → `WindowRunService` → `NotificationWindowRunner` — alarm → foreground service → signal evaluation.
+- `NotificationAlarmReceiver` → `WindowRunService` → `NotificationWindowRunner` — alarm → receiver-side skip/pre-notify handling → foreground service → signal evaluation.
+- `BackgroundStooqExecutionGate` / `BackgroundStooqRunPolicy` — FIFO serialization and skip policy for background Stooq work.
 - `NotificationQueueProcessor` — caps, quiet hours, active-notification blocking, queue management.
 - `NotificationPublisher` — renders and posts Android system notifications.
 - `NotificationActionReceiver` — handles dismiss + add-to-watchlist user actions.
@@ -523,7 +545,8 @@ Fields: ticker~name~exchange~price~percentChange~other
 - `SignalsRepository` — signal computation, AI integration, cooldown, event management.
 - `StooqRepository` / `StooqSearchRepository` / `MarketMoversRepository` — Stooq API data fetching.
 - `StooqBlockInterceptor` / `StooqRequestBlocker` — rate limiting and 24h blocking.
-- `ExternalExecutionGate` — mutex serializing HTTP + LLM operations.
+- `StooqExecutionGate` — mutex serializing Stooq HTTP.
+- `ExternalExecutionGate` — mutex serializing on-device LLM inference.
 - `SettingsRepository` — DataStore preferences (holdingPeriod, frequency, sensitivity, etc.).
 
 ### Room Database (v7)

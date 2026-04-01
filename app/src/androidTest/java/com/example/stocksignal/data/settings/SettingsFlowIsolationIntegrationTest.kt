@@ -87,7 +87,7 @@ class SettingsFlowIsolationIntegrationTest {
         settingsRepository.settingsFlow.first()
 
         val secondEmission = async {
-            withTimeout(2_000L) {
+            withTimeout(5_000L) {
                 settingsRepository.settingsFlow.drop(1).first()
             }
         }

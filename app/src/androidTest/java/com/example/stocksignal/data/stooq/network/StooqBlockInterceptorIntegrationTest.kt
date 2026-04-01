@@ -1,7 +1,7 @@
 package com.example.stocksignal.data.stooq.network
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.example.stocksignal.core.ExternalExecutionGate
+import com.example.stocksignal.core.StooqExecutionGate
 import com.example.stocksignal.notifications.NotificationDiagnosticsRepository
 import io.mockk.coEvery
 import io.mockk.mockk
@@ -166,7 +166,7 @@ class StooqBlockInterceptorIntegrationTest {
             blocker = blocker,
             blockReporter = reporter,
             diagnosticsRepository = diagnostics,
-            executionGate = ExternalExecutionGate()
+            executionGate = StooqExecutionGate()
         )
         interceptor.configurePacingForTest(baseRequestGapMs = FIXED_GAP_MS, jitterMs = 0L)
         val client = buildClient(interceptor)
@@ -204,7 +204,7 @@ class StooqBlockInterceptorIntegrationTest {
             blocker = blocker,
             blockReporter = reporter,
             diagnosticsRepository = diagnostics,
-            executionGate = ExternalExecutionGate()
+            executionGate = StooqExecutionGate()
         ).also {
             it.configurePacingForTest(baseRequestGapMs = baseGapMs, jitterMs = jitterMs)
         }

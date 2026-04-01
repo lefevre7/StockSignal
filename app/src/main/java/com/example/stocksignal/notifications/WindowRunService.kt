@@ -29,6 +29,7 @@ class WindowRunService : Service() {
     @Inject lateinit var settingsRepository: SettingsRepository
     @Inject lateinit var scheduler: NotificationScheduler
     @Inject lateinit var diagnosticsRepository: NotificationDiagnosticsRepository
+    @Inject lateinit var backgroundGate: BackgroundStooqExecutionGate
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var currentJobActive = false
@@ -55,7 +56,9 @@ class WindowRunService : Service() {
                         Log.d(TAG, "Skipping window run for $windowId; already ran")
                     } else {
                         val settings = settingsRepository.settingsFlow.first()
-                        windowRunner.run(windowId, allowAiGeneration = false)
+                        backgroundGate.withPermit {
+                            windowRunner.run(windowId, allowAiGeneration = false)
+                        }
                         scheduler.scheduleNextWindow(settings, windowId)
                     }
                 } catch (e: Exception) {

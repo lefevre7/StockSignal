@@ -21,14 +21,68 @@ class MarketMoversRepository @Inject constructor(
     private val cacheRepository: MarketMoversCacheRepository
 ) {
 
+    data class BatchSnapshots(
+        val snapshots: Map<MarketMoverDirection, MarketMoversSnapshot>,
+        val liveErrorMessage: String?,
+        val liveException: Throwable?
+    )
+
     suspend fun getMarketMovers(
         range: MarketMoverRange,
         direction: MarketMoverDirection,
         forceRefresh: Boolean = false
     ): Result<MarketMoversSnapshot> {
-        val cached = cacheRepository.getCache(range.label, direction.name)
-        if (!forceRefresh && cached != null && !isStale(cached)) {
-            return Result.Success(snapshotFromCache(cached, isFallback = false))
+        return when (
+            val batch = getMarketMoversBatch(
+                range = range,
+                directions = setOf(direction),
+                forceRefresh = forceRefresh
+            )
+        ) {
+            is Result.Error -> batch
+            is Result.Success -> {
+                val snapshot = batch.data.snapshots[direction]
+                if (snapshot != null) {
+                    Result.Success(snapshot)
+                } else {
+                    Result.Error(
+                        Exception("No market movers snapshot for $direction"),
+                        "No market movers snapshot for $direction"
+                    )
+                }
+            }
+        }
+    }
+
+    suspend fun getMarketMoversBatch(
+        range: MarketMoverRange,
+        directions: Set<MarketMoverDirection>,
+        forceRefresh: Boolean = false
+    ): Result<BatchSnapshots> {
+        if (directions.isEmpty()) {
+            return Result.Success(
+                BatchSnapshots(
+                    snapshots = emptyMap(),
+                    liveErrorMessage = null,
+                    liveException = null
+                )
+            )
+        }
+
+        val cachedByDirection = mutableMapOf<MarketMoverDirection, MarketMoversCacheEntity?>()
+        directions.forEach { direction ->
+            cachedByDirection[direction] = cacheRepository.getCache(range.label, direction.name)
+        }
+        if (!forceRefresh && cachedByDirection.values.all { it != null && !isStale(it) }) {
+            return Result.Success(
+                BatchSnapshots(
+                    snapshots = cachedByDirection.mapNotNull { (direction, entity) ->
+                        entity?.let { direction to snapshotFromCache(it, isFallback = false) }
+                    }.toMap(),
+                    liveErrorMessage = null,
+                    liveException = null
+                )
+            )
         }
 
         return try {
@@ -36,38 +90,47 @@ class MarketMoversRepository @Inject constructor(
             logLarge("Raw homepage response (length=${html.length}):", html)
             val sections = MarketMoversHtmlParser.parse(html)
             storeSections(sections)
-
-            val match = findBestMatch(sections, range, direction)
-            if (match != null) {
-                val entity = MarketMoversCacheEntity(
-                    range = range.label,
-                    direction = direction.name,
-                    fetchedAt = LocalDateTime.now(),
-                    items = match.items
-                )
-                cacheRepository.upsert(entity)
-                Result.Success(snapshotFromCache(entity, isFallback = false))
-            } else {
-                val fallback = cached?.let { snapshotFromCache(it, isFallback = true) }
-                if (fallback != null) {
-                    Result.Success(fallback)
-                } else {
-                    Log.w(TAG, "No market movers parsed for range=$range direction=$direction")
-                    Result.Success(
-                        MarketMoversSnapshot(
-                            items = emptyList(),
-                            fetchedAt = LocalDateTime.now(),
-                            isStale = true,
-                            isFallback = true
-                        )
+            val now = LocalDateTime.now()
+            val snapshots = mutableMapOf<MarketMoverDirection, MarketMoversSnapshot>()
+            directions.forEach { direction ->
+                val match = findBestMatch(sections, range, direction)
+                snapshots[direction] = if (match != null) {
+                    val entity = MarketMoversCacheEntity(
+                        range = range.label,
+                        direction = direction.name,
+                        fetchedAt = now,
+                        items = match.items
                     )
+                    cacheRepository.upsert(entity)
+                    snapshotFromCache(entity, isFallback = false)
+                } else {
+                    cachedByDirection[direction]?.let { snapshotFromCache(it, isFallback = true) }
+                        ?: emptyFallbackSnapshot(now)
                 }
             }
+            Result.Success(
+                BatchSnapshots(
+                    snapshots = snapshots,
+                    liveErrorMessage = null,
+                    liveException = null
+                )
+            )
         } catch (e: Exception) {
             Log.e(TAG, "Failed to fetch market movers", e)
-            val fallback = cached?.let { snapshotFromCache(it, isFallback = true) }
-            fallback?.let { Result.Success(it) }
-                ?: Result.Error(e, "Failed to fetch market movers: ${e.message}")
+            val fallbackSnapshots = cachedByDirection.mapNotNull { (direction, entity) ->
+                entity?.let { direction to snapshotFromCache(it, isFallback = true) }
+            }.toMap()
+            if (fallbackSnapshots.isNotEmpty()) {
+                Result.Success(
+                    BatchSnapshots(
+                        snapshots = fallbackSnapshots,
+                        liveErrorMessage = "Failed to fetch market movers: ${e.message}",
+                        liveException = e
+                    )
+                )
+            } else {
+                Result.Error(e, "Failed to fetch market movers: ${e.message}")
+            }
         }
     }
 
@@ -104,6 +167,15 @@ class MarketMoversRepository @Inject constructor(
             fetchedAt = cache.fetchedAt,
             isStale = isStale(cache),
             isFallback = isFallback
+        )
+    }
+
+    private fun emptyFallbackSnapshot(now: LocalDateTime): MarketMoversSnapshot {
+        return MarketMoversSnapshot(
+            items = emptyList(),
+            fetchedAt = now,
+            isStale = true,
+            isFallback = true
         )
     }
 

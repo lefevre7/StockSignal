@@ -52,11 +52,13 @@ class NotificationWindowWorkerTest {
     private val signalsRepository = mockk<SignalsRepository>()
     private val notificationQueueProcessor = mockk<NotificationQueueProcessor>()
     private val diagnosticsRepository = mockk<NotificationDiagnosticsRepository>(relaxed = true)
+    private val backgroundRunPolicy = mockk<BackgroundStooqRunPolicy>(relaxed = true)
 
     @Test
     fun `processes watchlist candidates`() = runTest {
         val now = LocalDateTime.now()
         every { settingsRepository.settingsFlow } returns flowOf(defaultSettings())
+        every { backgroundRunPolicy.windowSkipReason(any(), any()) } returns null
         coEvery { watchlistRepository.getAll() } returns listOf(sampleWatchlistItem("AAPL", now))
         coEvery { stockRepository.getSeries(any(), any(), any(), any()) } returns StooqResult.Success(
             sampleCandles(now, 25) // Need at least 20 candles for signal computation
@@ -80,6 +82,7 @@ class NotificationWindowWorkerTest {
     fun `processes multiple watchlist candidates`() = runTest {
         val now = LocalDateTime.now()
         every { settingsRepository.settingsFlow } returns flowOf(defaultSettings())
+        every { backgroundRunPolicy.windowSkipReason(any(), any()) } returns null
         coEvery { watchlistRepository.getAll() } returns listOf(
             sampleWatchlistItem("AAPL", now),
             sampleWatchlistItem("MSFT", now)
@@ -106,6 +109,7 @@ class NotificationWindowWorkerTest {
     fun `skips ai generation in background runs`() = runTest {
         val now = LocalDateTime.now()
         every { settingsRepository.settingsFlow } returns flowOf(defaultSettings())
+        every { backgroundRunPolicy.windowSkipReason(any(), any()) } returns null
         coEvery { watchlistRepository.getAll() } returns listOf(sampleWatchlistItem("AAPL", now))
         coEvery { stockRepository.getSeries(any(), any(), any(), any()) } returns StooqResult.Success(
             sampleCandles(now, 25)
@@ -140,6 +144,7 @@ class NotificationWindowWorkerTest {
     fun `falls back to cached series when live fetch fails`() = runTest {
         val now = LocalDateTime.now()
         every { settingsRepository.settingsFlow } returns flowOf(defaultSettings())
+        every { backgroundRunPolicy.windowSkipReason(any(), any()) } returns null
         coEvery { watchlistRepository.getAll() } returns listOf(sampleWatchlistItem("AAPL", now))
         coEvery { stockRepository.getSeries(any(), any(), eq(true), any()) } returns StooqResult.Error(
             Exception("network"),
@@ -166,6 +171,7 @@ class NotificationWindowWorkerTest {
     fun `stops live watchlist fetches after timeout to avoid request storm`() = runTest {
         val now = LocalDateTime.now()
         every { settingsRepository.settingsFlow } returns flowOf(defaultSettings())
+        every { backgroundRunPolicy.windowSkipReason(any(), any()) } returns null
         coEvery { watchlistRepository.getAll() } returns listOf(
             sampleWatchlistItem("AAPL", now),
             sampleWatchlistItem("MSFT", now)
@@ -199,7 +205,8 @@ class NotificationWindowWorkerTest {
             stockRepository,
             signalsRepository,
             notificationQueueProcessor,
-            diagnosticsRepository
+            diagnosticsRepository,
+            backgroundRunPolicy
         )
         val factory = object : WorkerFactory() {
             override fun createWorker(

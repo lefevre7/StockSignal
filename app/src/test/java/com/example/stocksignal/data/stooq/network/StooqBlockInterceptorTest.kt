@@ -1,7 +1,7 @@
 package com.example.stocksignal.data.stooq.network
 
 import android.util.Log
-import com.example.stocksignal.core.ExternalExecutionGate
+import com.example.stocksignal.core.StooqExecutionGate
 import okhttp3.Interceptor
 import okhttp3.Protocol
 import okhttp3.Request
@@ -47,7 +47,7 @@ class StooqBlockInterceptorTest {
             blocker = blocker,
             blockReporter = reporter,
             diagnosticsRepository = diagnostics,
-            executionGate = ExternalExecutionGate()
+            executionGate = StooqExecutionGate()
         )
         interceptor.configurePacingForTest(baseRequestGapMs = 0L, jitterMs = 0L)
 
@@ -78,7 +78,7 @@ class StooqBlockInterceptorTest {
     }
 
     @Test
-    fun doesNotBlockOnHttp429ForNonBlockingPath() {
+    fun blocksOnHttp429ForSearchPath() {
         val diagnostics = mockk<NotificationDiagnosticsRepository>(relaxed = true) {
             coEvery { getStooqBlockedInfo() } returns NotificationDiagnosticsRepository.StooqBlockedInfo(
                 blockedAtMillis = null,
@@ -93,7 +93,7 @@ class StooqBlockInterceptorTest {
             blocker = blocker,
             blockReporter = reporter,
             diagnosticsRepository = diagnostics,
-            executionGate = ExternalExecutionGate()
+            executionGate = StooqExecutionGate()
         )
         interceptor.configurePacingForTest(baseRequestGapMs = 0L, jitterMs = 0L)
 
@@ -113,10 +113,14 @@ class StooqBlockInterceptorTest {
             every { proceed(any()) } returns response
         }
 
-        val result = interceptor.intercept(chain)
-        assertFalse(blocker.isBlocked())
-        verify(exactly = 0) { reporter.reportBlocked(any(), any()) }
-        result.close()
+        assertThrows(StooqBlockedException::class.java) {
+            interceptor.intercept(chain)
+        }
+
+        assertTrue(blocker.isBlocked())
+        verify {
+            reporter.reportBlocked(match { it.contains("HTTP 429") }, any())
+        }
     }
 
     @Test
@@ -135,7 +139,7 @@ class StooqBlockInterceptorTest {
             blocker = blocker,
             blockReporter = reporter,
             diagnosticsRepository = diagnostics,
-            executionGate = ExternalExecutionGate()
+            executionGate = StooqExecutionGate()
         )
         interceptor.configurePacingForTest(baseRequestGapMs = 0L, jitterMs = 0L)
 
@@ -181,7 +185,7 @@ class StooqBlockInterceptorTest {
             blocker = blocker,
             blockReporter = reporter,
             diagnosticsRepository = diagnostics,
-            executionGate = ExternalExecutionGate()
+            executionGate = StooqExecutionGate()
         )
         interceptor.configurePacingForTest(baseRequestGapMs = 0L, jitterMs = 0L)
 
@@ -243,7 +247,7 @@ class StooqBlockInterceptorTest {
             blocker = blocker,
             blockReporter = reporter,
             diagnosticsRepository = diagnostics,
-            executionGate = ExternalExecutionGate()
+            executionGate = StooqExecutionGate()
         )
         interceptor.configurePacingForTest(baseRequestGapMs = 40L, jitterMs = 0L)
 
@@ -286,7 +290,7 @@ class StooqBlockInterceptorTest {
             blocker = blocker,
             blockReporter = reporter,
             diagnosticsRepository = diagnostics,
-            executionGate = ExternalExecutionGate()
+            executionGate = StooqExecutionGate()
         )
         interceptor.configurePacingForTest(baseRequestGapMs = 30L, jitterMs = 0L)
 

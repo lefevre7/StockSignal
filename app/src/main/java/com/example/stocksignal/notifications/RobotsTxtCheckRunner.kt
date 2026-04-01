@@ -20,7 +20,8 @@ class RobotsTxtCheckRunner @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val stooqApi: StooqApi,
     private val settingsRepository: SettingsRepository,
-    private val diagnosticsRepository: NotificationDiagnosticsRepository
+    private val diagnosticsRepository: NotificationDiagnosticsRepository,
+    private val backgroundRunPolicy: BackgroundStooqRunPolicy
 ) {
 
     enum class RunOutcome {
@@ -30,6 +31,13 @@ class RobotsTxtCheckRunner @Inject constructor(
 
     suspend fun run(): RunOutcome {
         return try {
+            backgroundRunPolicy.robotsSkipReason()?.let { reason ->
+                Log.d(TAG, "Robots.txt check skipped: $reason")
+                runCatching {
+                    diagnosticsRepository.recordRobotsRun("skipped", reason)
+                }
+                return RunOutcome.SUCCESS
+            }
             // Check if we already successfully checked today
             val lastCheckDate = settingsRepository.getLastRobotsTxtCheckDate()
             val today = LocalDate.now()

@@ -67,6 +67,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
@@ -183,13 +184,16 @@ fun StockDetailScreen(
     onDownloadOfflineModel: () -> Unit,
     onDismissTranslationPrompt: () -> Unit,
     onExportData: () -> Unit,
+    selectedTab: StockDetailTab? = null,
+    onSelectedTabChange: ((StockDetailTab) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
-    var selectedTab by rememberSaveable(state.highlightEventId) {
+    var localSelectedTab by rememberSaveable(state.highlightEventId) {
         mutableStateOf(
             if (state.highlightEventId != null) StockDetailTab.HISTORY else StockDetailTab.OVERVIEW
         )
     }
+    val activeTab = selectedTab ?: localSelectedTab
     val scrollState = rememberScrollState()
     var showAlertSheet by rememberSaveable { mutableStateOf(false) }
     var showTagSheet by rememberSaveable { mutableStateOf(false) }
@@ -267,20 +271,27 @@ fun StockDetailScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
             ScrollableTabRow(
-                selectedTabIndex = selectedTab.ordinal,
+                selectedTabIndex = activeTab.ordinal,
                 edgePadding = 8.dp
             ) {
                 StockDetailTab.values().forEach { tab ->
                     Tab(
-                        selected = tab == selectedTab,
-                        onClick = { selectedTab = tab },
+                        modifier = Modifier.testTag("stock_tab_${tab.name.lowercase()}"),
+                        selected = tab == activeTab,
+                        onClick = {
+                            if (selectedTab != null) {
+                                onSelectedTabChange?.invoke(tab)
+                            } else {
+                                localSelectedTab = tab
+                            }
+                        },
                         text = { Text(text = tab.label) }
                     )
                 }
             }
 
             Spacer(modifier = Modifier.height(12.dp))
-            when (selectedTab) {
+            when (activeTab) {
                 StockDetailTab.OVERVIEW -> OverviewTab(state = state)
                 StockDetailTab.METRICS -> MetricsTab(indicators = state.indicators, range = state.range)
                 StockDetailTab.NEWS -> NewsTab(
@@ -380,7 +391,7 @@ fun StockDetailScreen(
     }
 }
 
-private enum class StockDetailTab(val label: String) {
+enum class StockDetailTab(val label: String) {
     OVERVIEW("Overview"),
     METRICS("Metrics"),
     NEWS("News"),
@@ -581,6 +592,7 @@ private fun RangeChips(
     ) {
         ChartRange.values().forEach { range ->
             FilterChip(
+                modifier = Modifier.testTag("stock_range_${range.label.lowercase(Locale.US)}"),
                 selected = range == selected,
                 onClick = { onSelectRange(range) },
                 label = { Text(range.label) }
@@ -592,7 +604,7 @@ private fun RangeChips(
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun OverviewTab(state: StockDetailUiState) {
-    StockCard {
+    StockCard(modifier = Modifier.testTag("stock_content_overview")) {
         Text(text = "Overview", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(8.dp))
         if (!state.companyName.isNullOrBlank()) {
@@ -674,7 +686,7 @@ private fun formatOverviewPrice(value: Double?): String {
 
 @Composable
 private fun MetricsTab(indicators: TechnicalIndicators?, range: ChartRange) {
-    StockCard {
+    StockCard(modifier = Modifier.testTag("stock_content_metrics")) {
         Text(text = "Metrics", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(8.dp))
         Text(
@@ -731,7 +743,7 @@ private fun NewsTab(
     onDownloadOfflineModel: () -> Unit
 ) {
     val uriHandler = LocalUriHandler.current
-    StockCard {
+    StockCard(modifier = Modifier.testTag("stock_content_news")) {
         Text(text = "News", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(8.dp))
         
@@ -828,7 +840,7 @@ private fun buildGoogleSearchUrl(title: String): String {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SignalsTab(signal: SignalResult?, range: ChartRange) {
-    StockCard {
+    StockCard(modifier = Modifier.testTag("stock_content_signals")) {
         Text(text = "Signal Details", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(8.dp))
         Text(
@@ -894,14 +906,17 @@ private fun HistoryTab(
     highlightEventId: String?
 ) {
     if (history.isEmpty()) {
-        StockCard {
+        StockCard(modifier = Modifier.testTag("stock_content_history")) {
             Text(text = "History", style = MaterialTheme.typography.headlineMedium)
             Spacer(modifier = Modifier.height(8.dp))
             Text(text = "No prior signals recorded.", style = MaterialTheme.typography.bodySmall)
         }
         return
     }
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(
+        modifier = Modifier.testTag("stock_content_history"),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
         history.forEach { event ->
             StockCard(highlight = event.id == highlightEventId) {
                 Row(
@@ -937,9 +952,18 @@ private fun CTASection(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceEvenly
     ) {
-        TextButton(onClick = onSetAlert) { Text("Set Alert") }
-        TextButton(onClick = onAddNote) { Text("Add Note") }
-        TextButton(onClick = onShare) { Text("Share") }
+        TextButton(
+            onClick = onSetAlert,
+            modifier = Modifier.testTag("stock_cta_set_alert")
+        ) { Text("Set Alert") }
+        TextButton(
+            onClick = onAddNote,
+            modifier = Modifier.testTag("stock_cta_add_note")
+        ) { Text("Add Note") }
+        TextButton(
+            onClick = onShare,
+            modifier = Modifier.testTag("stock_cta_share")
+        ) { Text("Share") }
     }
 }
 

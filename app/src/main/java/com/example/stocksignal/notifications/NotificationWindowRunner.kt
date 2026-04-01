@@ -55,7 +55,8 @@ class NotificationWindowRunner @Inject constructor(
     private val stockRepository: StockRepository,
     private val signalsRepository: SignalsRepository,
     private val notificationQueueProcessor: NotificationQueueProcessor,
-    private val diagnosticsRepository: NotificationDiagnosticsRepository
+    private val diagnosticsRepository: NotificationDiagnosticsRepository,
+    private val backgroundRunPolicy: BackgroundStooqRunPolicy
 ) {
     private val overviewCache = mutableMapOf<String, StockOverview?>()
 
@@ -121,8 +122,8 @@ class NotificationWindowRunner @Inject constructor(
         val liveException: Throwable?
     )
 
-    private data class MoversSnapshotOutcome(
-        val snapshot: MarketMoversSnapshot?,
+    private data class MoversBatchOutcome(
+        val snapshots: Map<MarketMoverDirection, MarketMoversSnapshot>,
         val usedFallback: Boolean,
         val liveErrorMessage: String?,
         val liveException: Throwable?
@@ -176,13 +177,6 @@ class NotificationWindowRunner @Inject constructor(
 
         return try {
             val settings = settingsRepository.settingsFlow.first()
-            maybeShowDebugStartNotification(windowId, settings)
-            val devMode = isDevMode(settings)
-            Log.d(TAG, "📋 Settings loaded:")
-            Log.d(TAG, "   Frequency: ${settings.frequency}")
-            Log.d(TAG, "   NotificationTypes: ${settings.notificationTypes}")
-            Log.d(TAG, "   MinScoreForNotify: ${settings.signalSensitivity.minScoreForNotify}")
-            
             val watchlistEnabled = settings.notificationTypes.contains(NotificationType.WATCHLIST)
             val moversEnabled = settings.notificationTypes.contains(NotificationType.MARKET_MOVERS)
             if (!watchlistEnabled && !moversEnabled) {
@@ -195,6 +189,18 @@ class NotificationWindowRunner @Inject constructor(
                 recordRun("skipped", "frequency only when open")
                 return RunOutcome.SUCCESS
             }
+            backgroundRunPolicy.windowSkipReason(settings, windowId)?.let { reason ->
+                Log.w(TAG, "⏭️ Skipping window $windowId - $reason")
+                recordRun("skipped", reason)
+                return RunOutcome.SUCCESS
+            }
+
+            maybeShowDebugStartNotification(windowId, settings)
+            val devMode = isDevMode(settings)
+            Log.d(TAG, "📋 Settings loaded:")
+            Log.d(TAG, "   Frequency: ${settings.frequency}")
+            Log.d(TAG, "   NotificationTypes: ${settings.notificationTypes}")
+            Log.d(TAG, "   MinScoreForNotify: ${settings.signalSensitivity.minScoreForNotify}")
 
             Log.i(TAG, "▶️ Processing notification window $windowId")
             Log.i(TAG, "   Watchlist: $watchlistEnabled, MarketMovers: $moversEnabled")
@@ -455,49 +461,32 @@ class NotificationWindowRunner @Inject constructor(
                     Log.w(TAG, "Window $windowId timed out; skipping market movers list")
                 } else {
                     val watchlistSymbols = watchlist.map { it.symbol }.toSet()
-                    val increasersOutcome = fetchMarketMoversSnapshot(
+                    val moversOutcome = fetchMarketMoversBatch(
                         range = moversRange,
-                        direction = MarketMoverDirection.INCREASERS,
+                        directions = setOf(
+                            MarketMoverDirection.INCREASERS,
+                            MarketMoverDirection.DECREASERS
+                        ),
                         timingTracker = timingTracker,
                         requestPacer = requestPacer,
-                        logList = diagnostics.moversListFetchTimes,
-                        labelPrefix = "increasers"
+                        logList = diagnostics.moversListFetchTimes
                     )
-                    val decreasersOutcome = fetchMarketMoversSnapshot(
-                        range = moversRange,
-                        direction = MarketMoverDirection.DECREASERS,
-                        timingTracker = timingTracker,
-                        requestPacer = requestPacer,
-                        logList = diagnostics.moversListFetchTimes,
-                        labelPrefix = "decreasers"
-                    )
-                    val stopLiveMoverFetches = isTerminalStooqFailure(increasersOutcome.liveException) ||
-                        isTerminalStooqFailure(decreasersOutcome.liveException)
+                    val stopLiveMoverFetches = isTerminalStooqFailure(moversOutcome.liveException)
 
-                    if (increasersOutcome.liveErrorMessage != null) {
+                    if (moversOutcome.liveErrorMessage != null) {
                         diagnostics.moversListFetchFailures += 1
                         diagnostics.moversListLastError = diagnostics.moversListLastError
-                            ?: truncateError(increasersOutcome.liveErrorMessage)
+                            ?: truncateError(moversOutcome.liveErrorMessage)
                         recordTicker(
                             diagnostics.moversListErrors,
-                            "increasers:${truncateError(increasersOutcome.liveErrorMessage, TICKER_ERROR_MAX)}"
-                        )
-                    }
-                    if (decreasersOutcome.liveErrorMessage != null) {
-                        diagnostics.moversListFetchFailures += 1
-                        diagnostics.moversListLastError = diagnostics.moversListLastError
-                            ?: truncateError(decreasersOutcome.liveErrorMessage)
-                        recordTicker(
-                            diagnostics.moversListErrors,
-                            "decreasers:${truncateError(decreasersOutcome.liveErrorMessage, TICKER_ERROR_MAX)}"
+                            "shared:${truncateError(moversOutcome.liveErrorMessage, TICKER_ERROR_MAX)}"
                         )
                     }
 
-                    if (increasersOutcome.usedFallback) diagnostics.moversListFallbacks += 1
-                    if (decreasersOutcome.usedFallback) diagnostics.moversListFallbacks += 1
+                    if (moversOutcome.usedFallback) diagnostics.moversListFallbacks += 1
 
-                    val increasersSnapshot = increasersOutcome.snapshot
-                    val decreasersSnapshot = decreasersOutcome.snapshot
+                    val increasersSnapshot = moversOutcome.snapshots[MarketMoverDirection.INCREASERS]
+                    val decreasersSnapshot = moversOutcome.snapshots[MarketMoverDirection.DECREASERS]
                     if (increasersSnapshot?.isStale == true) {
                         Log.d(TAG, "Market movers increasers snapshot stale; using cached list")
                         diagnostics.moversListStale += 1
@@ -898,69 +887,39 @@ class NotificationWindowRunner @Inject constructor(
         )
     }
 
-    private suspend fun fetchMarketMoversSnapshot(
+    private suspend fun fetchMarketMoversBatch(
         range: MarketMoverRange,
-        direction: MarketMoverDirection,
+        directions: Set<MarketMoverDirection>,
         timingTracker: FetchTimingTracker,
         requestPacer: RequestPacer,
-        logList: MutableList<String>,
-        labelPrefix: String
-    ): MoversSnapshotOutcome {
+        logList: MutableList<String>
+    ): MoversBatchOutcome {
         val liveResult = recordNetworkFetch(
             timingTracker = timingTracker,
             requestPacer = requestPacer,
             logList = logList,
-            label = "${labelPrefix}#live"
+            label = "shared#live"
         ) {
-            marketMoversRepository.getMarketMovers(
+            marketMoversRepository.getMarketMoversBatch(
                 range = range,
-                direction = direction,
+                directions = directions,
                 forceRefresh = true
             )
         }
-        if (liveResult is StooqResult.Success && !liveResult.data.isStale) {
-            return MoversSnapshotOutcome(
-                snapshot = liveResult.data,
+        return when (liveResult) {
+            is StooqResult.Error -> MoversBatchOutcome(
+                snapshots = emptyMap(),
                 usedFallback = false,
-                liveErrorMessage = null,
-                liveException = null
+                liveErrorMessage = liveResult.message,
+                liveException = liveResult.exception
+            )
+            is StooqResult.Success -> MoversBatchOutcome(
+                snapshots = liveResult.data.snapshots,
+                usedFallback = liveResult.data.snapshots.values.any { it.isFallback },
+                liveErrorMessage = liveResult.data.liveErrorMessage,
+                liveException = liveResult.data.liveException
             )
         }
-        val liveErrorResult = liveResult as? StooqResult.Error
-        val liveError = when (liveResult) {
-            is StooqResult.Error -> liveResult.message
-            is StooqResult.Success -> "live list stale"
-        }
-
-        val cachedResult = recordFetch(
-            timingTracker = timingTracker,
-            logList = logList,
-            label = "${labelPrefix}#cache"
-        ) {
-            marketMoversRepository.getFreshCachedMovers(range, direction)
-        }
-        if (cachedResult is StooqResult.Success) {
-            return MoversSnapshotOutcome(
-                snapshot = cachedResult.data,
-                usedFallback = true,
-                liveErrorMessage = liveError,
-                liveException = liveErrorResult?.exception
-            )
-        }
-
-        val staleSnapshot = (liveResult as? StooqResult.Success)?.data
-        val cacheError = (cachedResult as? StooqResult.Error)?.message
-        val combinedError = listOfNotNull(
-            liveError?.let { "live=$it" },
-            cacheError?.let { "cache=$it" }
-        ).joinToString("; ")
-        val errorMessage = if (combinedError.isNotBlank()) combinedError else liveError ?: cacheError
-        return MoversSnapshotOutcome(
-            snapshot = staleSnapshot,
-            usedFallback = true,
-            liveErrorMessage = errorMessage,
-            liveException = liveErrorResult?.exception
-        )
     }
 
     private fun buildRunReason(

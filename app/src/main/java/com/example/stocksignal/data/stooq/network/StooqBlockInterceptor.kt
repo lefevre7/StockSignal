@@ -1,27 +1,27 @@
 package com.example.stocksignal.data.stooq.network
 
 import androidx.annotation.VisibleForTesting
-import com.example.stocksignal.core.ExternalExecutionGate
-import okhttp3.Interceptor
-import okhttp3.Response
+import com.example.stocksignal.core.StooqExecutionGate
+import com.example.stocksignal.notifications.NotificationDiagnosticsRepository
 import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.concurrent.atomic.AtomicInteger
-import kotlin.random.Random
 import javax.inject.Inject
 import javax.inject.Singleton
-import com.example.stocksignal.notifications.NotificationDiagnosticsRepository
+import kotlin.random.Random
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import okhttp3.Interceptor
+import okhttp3.Response
 
 @Singleton
 class StooqBlockInterceptor @Inject constructor(
     private val blocker: StooqRequestBlocker,
     private val blockReporter: StooqBlockReporter,
     private val diagnosticsRepository: NotificationDiagnosticsRepository,
-    private val executionGate: ExternalExecutionGate
+    private val executionGate: StooqExecutionGate
 ) : Interceptor {
 
     @Volatile private var nextRequestAtMillis: Long = 0L
@@ -70,9 +70,6 @@ class StooqBlockInterceptor @Inject constructor(
             clearTimeoutStreakIfNeeded()
             response
         } catch (e: SocketTimeoutException) {
-            if (!isBlockingPath(path)) {
-                throw e
-            }
             val count = consecutiveTimeouts.incrementAndGet()
             recordTimeoutStreak(count)
             if (count < TIMEOUT_BLOCK_THRESHOLD) {
@@ -135,15 +132,10 @@ class StooqBlockInterceptor @Inject constructor(
     }
 
     private fun blockReasonFor(response: Response, path: String): String? {
-        if (!isBlockingPath(path)) return null
         if (response.code in BLOCK_HTTP_CODES) {
             return "Stooq blocked (HTTP ${response.code} at $path)."
         }
         return null
-    }
-
-    private fun isBlockingPath(path: String): Boolean {
-        return BLOCKING_PATHS.any { path.startsWith(it) }
     }
 
     private fun clearTimeoutStreakIfNeeded() {
@@ -163,7 +155,6 @@ class StooqBlockInterceptor @Inject constructor(
         private const val BASE_REQUEST_GAP_MS = 3000L
         private const val JITTER_MS = 2000L
         private val BLOCK_HTTP_CODES = setOf(403, 429, 503)
-        private val BLOCKING_PATHS = listOf("/q/a2/d/", "/q/d/l/")
         private const val TIMEOUT_BLOCK_THRESHOLD = 5
     }
 }

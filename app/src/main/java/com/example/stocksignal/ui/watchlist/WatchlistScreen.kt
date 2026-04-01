@@ -52,6 +52,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -534,14 +535,23 @@ private fun WatchlistCard(
 
         Spacer(modifier = Modifier.height(6.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            TextButton(onClick = onAddNote) { Text("Add note") }
+            TextButton(
+                onClick = onAddNote,
+                modifier = Modifier.testTag("watchlist_add_note_${item.item.symbol}")
+            ) { Text("Add note") }
             TextButton(onClick = onSetAlert) { Text("Set alert") }
-            TextButton(onClick = onRemove) { Text("Remove") }
+            TextButton(
+                onClick = onRemove,
+                modifier = Modifier.testTag("watchlist_remove_${item.item.symbol}")
+            ) { Text("Remove") }
         }
 
         Spacer(modifier = Modifier.height(4.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            TextButton(onClick = onSnooze) { Text("Snooze") }
+            TextButton(
+                onClick = onSnooze,
+                modifier = Modifier.testTag("watchlist_snooze_${item.item.symbol}")
+            ) { Text("Snooze") }
         }
     }
 }

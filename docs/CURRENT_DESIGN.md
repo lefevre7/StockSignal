@@ -1,6 +1,6 @@
 # StockSignal — Current Design Document
 
-> **Generated:** 2026-03-30  
+> **Generated:** 2026-03-31  
 > **App Version:** Room DB v7  
 > **Based on:** Exhaustive codebase analysis + [INITIAL_DESIGN.md](INITIAL_DESIGN.md) + git history
 
@@ -94,7 +94,7 @@ flowchart TD
         SApi[StooqApi Retrofit]
         SBI[StooqBlockInterceptor]
         SRB[StooqRequestBlocker]
-        EEG[ExternalExecutionGate Mutex]
+        SEG[StooqExecutionGate Mutex]
     end
 
     subgraph Persistence["Persistence Layer"]
@@ -281,7 +281,7 @@ flowchart TD
 | Type | Intent Extra | Handler | Purpose |
 |------|-------------|---------|---------|
 | `TYPE_WINDOW` | `window` | `WindowRunService` | Main signal evaluation + notification posting |
-| `TYPE_PRE_NOTIFY` | `pre_notify` | `WindowPreNotifyService` | Pre-fetch data ~1h before main window |
+| `TYPE_PRE_NOTIFY` | `pre_notify` | `NotificationAlarmReceiver` | Cache-only pre-notify bookkeeping; no live Stooq call and no signal evaluation. |
 | `TYPE_ROBOTS` | `robots` | `RobotsTxtCheckWorker` | Daily Stooq robots.txt compliance check |
 | `TYPE_PREMARKET` | `premarket` | `PremarketQuoteWorker` | Pre-market bid/ask data (5 samples, 10-min intervals) |
 
@@ -442,10 +442,10 @@ flowchart TD
     subgraph Fetch["Data Fetch"]
         UI_REQ[ViewModel requests data] --> CACHE_CHECK{Cache fresh? TTL check}
         CACHE_CHECK -- Yes --> RETURN_CACHE[Return cached data]
-        CACHE_CHECK -- No --> GATE[ExternalExecutionGate mutex acquire]
+        CACHE_CHECK -- No --> GATE[StooqExecutionGate mutex acquire]
         GATE --> BLOCK_CHECK{Stooq blocked? 429/439/timeouts}
         BLOCK_CHECK -- Yes 24h block --> ERR[Return Error or stale cache fallback]
-        BLOCK_CHECK -- No --> THROTTLE[50ms min gap + jitter]
+        BLOCK_CHECK -- No --> THROTTLE[3000ms gap + 0..2000ms jitter]
         THROTTLE --> API[StooqApi HTTP request]
     end
 
@@ -850,12 +850,12 @@ enum class IndicatorMetric {
 
 ```mermaid
 flowchart LR
-    REQ[API Request] --> EEG[ExternalExecutionGate Mutex serialization]
-    EEG --> SBI[StooqBlockInterceptor]
+    REQ[API Request] --> SEG[StooqExecutionGate Mutex serialization]
+    SEG --> SBI[StooqBlockInterceptor]
 
-    SBI --> BC{Blocked? 429/439/timeouts}
+    SBI --> BC{Blocked? 403/429/503 or 5 timeouts on any endpoint}
     BC -- Yes --> EXC[StooqBlockedException]
-    BC -- No --> GAP[Enforce 50ms gap + random jitter]
+    BC -- No --> GAP[Enforce 3000ms gap + 0..2000ms jitter]
 
     GAP --> HDR[Header Interceptor Chrome 120 Android User-Agent + headers]
     HDR --> LOG[HttpLoggingInterceptor BASIC level]
@@ -863,8 +863,8 @@ flowchart LR
 
     NET --> RESP{Response?}
     RESP -- Success --> PARSE[Parser layer]
-    RESP -- 429/439 --> BLOCK[Block 24 hours]
-    RESP -- Timeout --> STREAK{3 consecutive timeouts?}
+    RESP -- 403/429/503 --> BLOCK[Block 24 hours]
+    RESP -- Timeout --> STREAK{5 consecutive timeouts?}
     STREAK -- Yes --> BLOCK
     STREAK -- No --> RETRY[Increment streak]
 
@@ -876,18 +876,53 @@ flowchart LR
 
 | Mechanism | Value | Purpose |
 |-----------|-------|---------|
-| Minimum request gap | 50ms + jitter | Prevent Stooq rate limiting |
-| Consecutive timeout threshold | 3 | Trigger 24h block |
-| Block duration | 24 hours | HTTP 429/439 or 3 timeouts |
+| Minimum request gap | 3000ms + 0..2000ms jitter | Slow global pacing for Stooq HTTP |
+| Consecutive timeout threshold | 5 | Trigger 24h block on repeated Stooq timeout |
+| Block duration | 24 hours | HTTP 403/429/503 or 5 timeouts |
 | Block notification throttle | 60 seconds | Avoid notification spam |
 | Request timeout | 120 seconds | OkHttp connect/read/write |
-| Execution gate | Single mutex | Serialize all HTTP + LLM operations |
+| Stooq execution gate | `StooqExecutionGate` mutex | Serialize Stooq HTTP separately from on-device LLM inference |
+| Background execution gate | `BackgroundStooqExecutionGate` mutex | FIFO queue for background windows, premarket, and robots workers |
+| Blocking-path scope | All Stooq endpoints | Any endpoint can trigger the local 24h block on `403`, `429`, `503`, or timeout streak |
 
 ### 14.3 — Compliance
 
 - **robots.txt check:** Daily verification that Stooq's robots.txt hasn't changed from the expected `User-agent: *\r\nDisallow:\r\n`. Alert notification on mismatch.
 - **Browser spoofing:** Full Chrome 120 Android (Pixel 7) headers to mimic mobile browser.
 - **Disclaimer:** App shows "Powered by Stooq.com data" and "Not affiliated with Stooq."
+
+### 14.4 — Background Pacing Investigation (2026-03-31)
+
+This section records the March 31, 2026 review of the Stooq blocking regression around commits `d803197`, `69ca06c`, and `833a8e6`, plus live diagnostics captured after repeated blocks.
+
+**What worked**
+
+- Before the fix landed, raw Stooq HTTP pacing was already present at the interceptor layer. All Stooq requests went through one `OkHttpClient`, `StooqBlockInterceptor`, and the then-shared execution gate, so actual HTTP calls were serialized and normally spaced by 3-5 seconds.
+- The `Stooq request pacing (recent)` diagnostics from March 31, 2026 showed real `GET /`, `GET /q/`, and `GET /q/a2/d/` requests with `wait=3065ms` to `4991ms`, which is consistent with the current interceptor gap.
+- Normal daily and three-times-daily next-run calculators still skip weekends in the current scheduler code for `FIXED_LOCAL` and `MARKET_OPEN_MINUS` windows.
+
+**What did not work**
+
+- Commit `69ca06c` removed the extra runner-side and repository-side delays. `NotificationWindowRunner.RequestPacer` became a no-op, and `StooqRepository` dropped the old inter-ticker `delay(1000..3000)`. After that change, only the interceptor still enforced pacing.
+- `WindowPreNotifyService` was not lightweight prefetch. It waited until the scheduled main window time and then executed `windowRunner.run(...)`, which duplicated the live Stooq load of a normal background window.
+- Background work is not a single FIFO today. `NotificationAlarmReceiver` enqueues separate unique WorkManager chains for `robots_txt` and for each premarket sample key (`market_open_minus_10:0` through `:4`), so multiple background jobs can overlap in time and compete for the same Stooq HTTP gate.
+- The March 31, 2026 background worker log showed this overlap directly. Example: `06:40:01.850 premarket_quote start key=market_open_minus_10:0`, `06:40:01.914 ...:1`, and `06:40:01.937 ...:2` all started within the same second.
+- Premarket sample `0` is expensive by design. It bulk-fetches intraday data for `watchlist + movers`, and then all five samples fetch per-ticker quote pages. With the reported `12` watchlist tickers and `5` movers, that can produce dozens of live Stooq calls before the main window begins.
+- Movers homepage fetches are duplicated. The main window fetches increasers and decreasers separately, and premarket sample `0` fetches movers again to build the bulk intraday prefetch list.
+- Once the app is already locally blocked, `StooqBlockInterceptor` short-circuits before `enforceMinGap()`. That is why diagnostics can show `0-1ms` local `stooq_http` entries after the block has already been triggered. Those entries do not prove live parallel network hits; they mostly reflect immediate blocked/fallback code paths.
+- The documented values in this file and in `AGENTS.md` had drifted out of sync with code. The old `50ms gap` and `3 timeout strikes` description was no longer accurate.
+
+### 14.5 — Implemented Fix (2026-03-31)
+
+The March 31, 2026 implementation made the following changes:
+
+- `TYPE_PRE_NOTIFY` no longer starts a foreground service or runs a second hidden window. The alarm is handled directly in `NotificationAlarmReceiver` and only records cache-only pre-notify diagnostics.
+- Stooq HTTP now uses `StooqExecutionGate`, so Stooq pacing is no longer serialized through the same mutex as on-device LLM inference.
+- Background Stooq work now uses `BackgroundStooqExecutionGate`, which serializes `WindowRunService`, `PremarketQuoteWorker`, and `RobotsTxtCheckWorker` behind one FIFO queue.
+- `NotificationAlarmReceiver` short-circuits window, premarket, and robots background starts while the local Stooq block is active. Daily window and premarket starts are also guarded against stray weekend execution; `ONE_PER_WEEK` weekend scheduling remains allowed.
+- `StooqBlockInterceptor` now treats all Stooq endpoints as block-eligible for `403`, `429`, `503`, and five consecutive timeouts.
+- Movers homepage fetches are shared per run through `MarketMoversRepository.getMarketMoversBatch(...)`, so the main window and premarket sample `0` do not fetch increasers and decreasers in separate live homepage calls.
+- Premarket sample `0` still keeps the watchlist-plus-movers intraday prefetch, and live overview / indicator-alert range fetches remain enabled.
 
 ---
 
@@ -935,31 +970,48 @@ flowchart LR
 
 ## 16 — Test Coverage
 
-### 16.1 — Test Suite (46 files)
+### 16.1 — Test Suite (78 files, 585 unit tests, 0 failures)
 
 | Area | Test Files | Coverage |
 |------|-----------|----------|
 | **Domain/Signal** | `IndicatorCalculatorTest`, `IndicatorCalculatorParameterizedTest`, `IndicatorConfigTest`, `SignalEngineTest`, `IndicatorAlertEvaluatorTest`, `IndicatorAlertIntegrationTest`, `TestDataBuilders` | Indicator math, scoring, alert evaluation |
 | **AI Scoring** | `AiSignalScorerTest`, `AiSignalScorerNanoTimeTest`, `AiScoreReasonJsonTest` | Prompt building, response parsing, caching |
 | **Parsers** | `CmpParserTest`, `MarketMoversHtmlParserTest`, `PremarketQuoteParserTest`, `StockOverviewParserTest`, `StockOverviewParserTimezoneTest` | HTML/CSV/JS parsing correctness |
-| **Network** | `StooqApiTest`, `StooqApiLiveTest`, `StooqBlockInterceptorTest`, `StooqRequestBlockerTest`, `StooqRepositoryTest`, `StooqRepositoryLiveTest`, `StooqPremarketLiveTest`, `TestRateLimiter` | API calls, blocking, throttling |
-| **Notifications** | `NotificationAlarmSchedulerTest`, `NotificationBootstrapWorkerUnitTest`, `NotificationDiagnosticsRepositoryLogTest`, `NotificationIntentFactoryTest`, `NotificationPublisherTest`, `NotificationQueueProcessorTest`, `NotificationWindowWorkerTest`, `PremarketQuoteWorkerTest` | Scheduling, queue processing, publishing |
-| **Data/Repository** | `SignalsRepositoryTest`, `MarketMoversRepositoryTest`, `SignalEventDaoTest`, `IntradayDataCacheDaoTest`, `StockNewsJsonTest` | Signal persistence, cooldown, caching |
-| **Compliance** | `RobotsTxtCheckWorkerTest`, `RobotsTxtCheckWorkerUnitTest`, `RobotsTxtCheckWorkerLiveTest` | robots.txt validation |
+| **Network** | `StooqApiTest`, `StooqApiLiveTest`, `StooqBlockInterceptorTest`, `StooqBlockInterceptorIntegrationTest`, `StooqRequestBlockerTest`, `StooqRepositoryTest`, `StooqRepositoryLiveTest`, `StooqPremarketLiveTest`, `TestRateLimiter` | API calls, blocking, throttling |
+| **Notifications** | `BackgroundStooqRunPolicyTest`, `NotificationAlarmSchedulerTest`, `NotificationBootstrapWorkerUnitTest`, `NotificationDiagnosticsRepositoryLogTest`, `NotificationIntentFactoryTest`, `NotificationPublisherTest`, `NotificationQueueProcessorTest`, `NotificationWindowWorkerTest`, `NotificationWindowRunnerTest`, `PremarketQuoteRunnerTest`, `PremarketQuoteWorkerTest`, `PremarketWindowUtilsTest`, `RobotsTxtCheckRunnerTest`, `RobotsTxtCheckWorkerTest`, `RobotsTxtCheckWorkerUnitTest`, `RobotsTxtCheckWorkerLiveTest` | Scheduling, queue processing, publishing, skip-paths, premarket |
+| **Data/Repository** | `SignalsRepositoryTest`, `MarketMoversRepositoryTest`, `SignalEventDaoTest`, `IntradayDataCacheDaoTest`, `StockNewsJsonTest`, `StockRepositoryTest`, `WatchlistRepositoryTest`, `SearchHistoryRepositoryTest`, `SignalEventsRepositoryTest`, `NotesRepositoryTest`, `NotificationStateRepositoryTest`, `StockOverviewCacheRepositoryTest`, `IntradayDataCacheRepositoryTest`, `MarketMoversCacheRepositoryTest`, `StockDetailCacheRepositoryTest` | Signal persistence, cooldown, caching, all repository delegates |
+| **Compliance** | `RobotsTxtCheckWorkerTest`, `RobotsTxtCheckWorkerUnitTest`, `RobotsTxtCheckWorkerLiveTest`, `StooqBlockReporterTest` | robots.txt validation, block notifications |
 | **Translation** | `NewsTranslationServiceTest` | Model detection, download |
 | **Integration** | `DataAccumulationIntegrationTest` | End-to-end intraday accumulation |
 | **UI** | `SearchFormattingTest` | Price/percent formatting |
 | **Export** | `IntradayDataExporterTest` | CSV export |
-| **Core** | `ExternalExecutionGateTest` | Mutex serialization |
+| **Core** | `ExternalExecutionGateTest`, `StooqExecutionGateTest`, `BackgroundStooqExecutionGateTest` | Mutex serialization, gate metrics |
+| **Settings** | `SettingsRepositoryTest`, `SettingsJsonTest` | Settings persistence, JSON codec |
+| **JSON Models** | `PriceCandleJsonTest` | Price candle JSON roundtrip |
 | **Util** | `HtmlUtilsTest` | HTML stripping |
 
-### 16.2 — Testing Patterns
+### 16.2 — Instrumented Tests (18 files)
 
-- **Unit tests:** JUnit + Mockk (mock repositories, DAOs)
-- **Robolectric:** For tests needing Android context (Room, DataStore)
+| Area | Test Files |
+|------|-----------|
+| **Notifications** | `NotificationBootReceiverTest`, `NotificationBootstrapWorkerTest`, `NotificationPublisherInstrumentedTest`, `NotificationReconcileWorkerTest`, `NotificationSchedulerTest`, `NotificationAlarmReceiverTest`, `NotificationActionReceiverTest` |
+| **Database** | `SignalEventMigrationTest` |
+| **AI** | `AiScoreReasonJsonInstrumentedTest` |
+| **Settings** | `SettingsFlowIsolationIntegrationTest` |
+| **Domain** | `IndicatorAlertJsonTest` |
+| **UI** | `UiScreenCoverageTest`, `DeepLinkNavigationTest` |
+| **Translation** | `NewsTranslationServiceLiveTest` |
+
+### 16.3 — Testing Patterns
+
+- **Unit tests:** JUnit + Mockk (mock repositories, DAOs); 585 tests, 0 failures
+- **Robolectric:** For tests needing Android context (Room, DataStore, BroadcastReceiver)
+- **Instrumented (androidTest):** Real Hilt component tree via `StockSignalApplication (@HiltAndroidApp)`; 18 test files covering every navigable screen and Android-bound feature
 - **Live tests:** Marked with `@Ignore` or `@Tag("live")` — hit real Stooq API
 - **Test data builders:** `TestDataBuilders.kt` provides PriceCandle generators
 - **Parameterized tests:** `IndicatorCalculatorParameterizedTest` covers edge cases
+- **Object mocking:** `mockkObject(PremarketWindowUtils)` used for static-like object mocks
+- **Flow factory pattern:** Repositories with flow property initializers use factory helpers to recreate DAO+repo pairs per test to avoid `MockKException`
 
 ---
 
@@ -967,14 +1019,14 @@ flowchart LR
 
 | Area | Initial Design | Current Implementation |
 |------|---------------|----------------------|
-| **Background Scheduling** | WorkManager for periodic background fetches | **AlarmManager + foreground services** (`WindowRunService`, `WindowPreNotifyService`) for precise timing |
+| **Background Scheduling** | WorkManager for periodic background fetches | **AlarmManager + `WindowRunService` + WorkManager workers**, with receiver-side cache-only pre-notify bookkeeping and a dedicated background Stooq FIFO |
 | **AI Scoring** | Not in initial spec | **Gemma3-1B-IT local LLM** with prompt engineering, 10-min cache, memory-aware prompt sizing |
 | **Onboarding** | Permission + disclaimers | **LLM download flow** (584MB) + holding period selection |
 | **Signal Model** | Unspecified algorithm | **7-metric rule-based model** with volatility scaling + optional AI enrichment |
 | **Holding Period** | Not in initial spec | **Adaptive indicator windows** (HOURS→YEARS) affecting all technical analysis |
 | **Premarket Data** | Not in initial spec | **Premarket quote sampling** (5 samples, 10-min intervals before market open) |
 | **Intraday Accumulation** | Not in initial spec | **1-year passive accumulation** of 10-min candles with CSV export |
-| **Stooq Rate Limiting** | Not in initial spec | **Sophisticated blocking system** (50ms gaps, 3-timeout threshold, 24h blocks, diagnostics) |
+| **Stooq Rate Limiting** | Not in initial spec | **Serialized Stooq HTTP + background FIFO + local block system** (3-5s gaps, 5-timeout threshold on all Stooq endpoints, 24h blocks, diagnostics) |
 | **robots.txt Compliance** | Not in initial spec | **Daily automated check** with notification on policy change |
 | **Signal Dismissal** | Not explicitly specified | **Swipe-to-dismiss** with soft-delete flag (dismissed=0/1) + undo Snackbar |
 | **Notification Channel** | Grouped by type | Single channel `stock_signal_alerts_v2` with InboxStyle grouping |
@@ -1015,9 +1067,8 @@ Based on comparison with the initial design document:
 |-------|------|------|
 | `NotificationScheduler` | @Singleton | Orchestrates AlarmManager alarm scheduling based on settings |
 | `NotificationAlarmIntentFactory` | Object | Creates PendingIntents for alarm types (window, pre-notify, robots, premarket) |
-| `NotificationAlarmReceiver` | BroadcastReceiver | Routes alarm intents to appropriate handlers (services/workers) |
+| `NotificationAlarmReceiver` | BroadcastReceiver | Routes alarm intents, handles cache-only pre-notify, and skips blocked/weekend background starts |
 | `WindowRunService` | Service (foreground) | Runs main signal evaluation window with duplicate protection |
-| `WindowPreNotifyService` | Service (foreground) | Pre-fetches data before main window with wake lock |
 | `NotificationWindowRunner` | @Singleton | **Core engine** — evaluates watchlist + market movers, collects candidates |
 | `NotificationWindowWorker` | HiltWorker | WorkManager wrapper for WindowRunner (legacy, `allowAiGeneration=false`) |
 | `NotificationQueueProcessor` | @Singleton | Event queuing, quiet hours filtering, rate limiting, cap enforcement |
@@ -1033,6 +1084,8 @@ Based on comparison with the initial design document:
 | `PremarketWindowUtils` | Object | Market hours + premarket window calculations |
 | `RobotsTxtCheckRunner` | @Singleton | Daily Stooq robots.txt compliance verification |
 | `RobotsTxtCheckWorker` | HiltWorker | WorkManager wrapper for robots.txt check |
+| `BackgroundStooqExecutionGate` | @Singleton | FIFO gate serializing background Stooq-capable work |
+| `BackgroundStooqRunPolicy` | @Singleton | Central blocked/weekend skip policy for background Stooq runs |
 | `NotificationDiagnosticsRepository` | @Singleton | 100+ diagnostic counters in DataStore |
 | `DiagnosticsDataStore` | DataStore config | DataStore setup for diagnostics preferences |
 | `ExecutionGateDiagnosticsRecorderImpl` | @Singleton | Records mutex wait/hold times |
@@ -1104,7 +1157,8 @@ Based on comparison with the initial design document:
 
 | Class | Role |
 |-------|------|
-| `ExternalExecutionGate` | Singleton Mutex serializing HTTP + LLM operations |
+| `StooqExecutionGate` | Singleton mutex serializing Stooq HTTP |
+| `ExternalExecutionGate` | Singleton mutex serializing on-device LLM inference |
 | `ExecutionGateDiagnosticsRecorder` | Interface for recording wait/hold metrics |
 
 ### 19.7 — Util (`util/`)
@@ -1121,10 +1175,9 @@ Based on comparison with the initial design document:
 |-----------|------|---------|
 | `MainActivity` | Activity | Single entry point; handles deep links (`stocksignal://stock/*`) |
 | `NotificationActionReceiver` | Receiver | Dismiss + add-to-watchlist actions |
-| `NotificationAlarmReceiver` | Receiver | Routes alarm intents to services/workers |
+| `NotificationAlarmReceiver` | Receiver | Routes alarm intents, cache-only pre-notify, blocked/weekend skips |
 | `NotificationBootReceiver` | Receiver | Boot recovery (`BOOT_COMPLETED`) |
-| `WindowPreNotifyService` | Service (foreground, dataSync) | Pre-window data fetching |
 | `WindowRunService` | Service (foreground, dataSync) | Main signal evaluation window |
 
 **Permissions:**
-`INTERNET`, `ACCESS_NETWORK_STATE`, `POST_NOTIFICATIONS`, `RECEIVE_BOOT_COMPLETED`, `SCHEDULE_EXACT_ALARM`, `VIBRATE`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_DATA_SYNC`, `WAKE_LOCK`
+`INTERNET`, `ACCESS_NETWORK_STATE`, `POST_NOTIFICATIONS`, `RECEIVE_BOOT_COMPLETED`, `SCHEDULE_EXACT_ALARM`, `VIBRATE`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_DATA_SYNC`

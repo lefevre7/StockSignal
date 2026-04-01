@@ -13,10 +13,10 @@ import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
 import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.components.SingletonComponent
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.flow.first
 
 class NotificationAlarmReceiver : BroadcastReceiver() {
 
@@ -30,6 +30,7 @@ class NotificationAlarmReceiver : BroadcastReceiver() {
         val settingsRepository = entryPoint.settingsRepository()
         val scheduler = entryPoint.notificationScheduler()
         val diagnosticsRepository = entryPoint.notificationDiagnosticsRepository()
+        val backgroundRunPolicy = entryPoint.backgroundRunPolicy()
 
         CoroutineScope(Dispatchers.IO).launch {
             try {
@@ -40,6 +41,13 @@ class NotificationAlarmReceiver : BroadcastReceiver() {
                         if (windowId.isNullOrBlank()) {
                             Log.w(TAG, "Alarm missing window ID")
                         } else {
+                            val settings = settingsRepository.settingsFlow.first()
+                            val skipReason = backgroundRunPolicy.windowSkipReason(settings, windowId)
+                            if (skipReason != null) {
+                                diagnosticsRepository.recordWindowRun(windowId, "skipped", skipReason)
+                                scheduler.scheduleNextWindow(settings, windowId)
+                                return@launch
+                            }
                             val serviceIntent = Intent(appContext, WindowRunService::class.java).apply {
                                 putExtra(NotificationAlarmIntentFactory.EXTRA_WINDOW_ID, windowId)
                                 putExtra(NotificationAlarmIntentFactory.EXTRA_RUN_AT_MILLIS, System.currentTimeMillis())
@@ -53,7 +61,6 @@ class NotificationAlarmReceiver : BroadcastReceiver() {
                                     "start_failed",
                                     "fgs_start_failed:${e::class.java.simpleName}:${e.message}"
                                 )
-                                val settings = settingsRepository.settingsFlow.first()
                                 scheduler.scheduleNextWindow(settings, windowId)
                             }
                         }
@@ -64,25 +71,26 @@ class NotificationAlarmReceiver : BroadcastReceiver() {
                         if (windowId.isNullOrBlank() || runAtMillis <= 0L) {
                             Log.w(TAG, "Pre-notify alarm missing window/run time")
                         } else {
-                            val serviceIntent = Intent(appContext, WindowPreNotifyService::class.java).apply {
-                                putExtra(NotificationAlarmIntentFactory.EXTRA_WINDOW_ID, windowId)
-                                putExtra(NotificationAlarmIntentFactory.EXTRA_RUN_AT_MILLIS, runAtMillis)
-                            }
-                            try {
-                                ContextCompat.startForegroundService(appContext, serviceIntent)
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Failed to start pre-notify service for $windowId", e)
-                                diagnosticsRepository.recordWindowPreNotifyRun(
-                                    windowId,
-                                    "start_failed",
-                                    "fgs_start_failed:${e::class.java.simpleName}:${e.message}"
-                                )
-                                val settings = settingsRepository.settingsFlow.first()
-                                scheduler.scheduleNextWindow(settings, windowId)
-                            }
+                            diagnosticsRepository.recordWindowPreNotifyRun(
+                                windowId,
+                                "ran",
+                                "cache-only pre-notify for ${formatRunTime(runAtMillis)}"
+                            )
                         }
                     }
                     NotificationAlarmIntentFactory.TYPE_ROBOTS -> {
+                        val skipReason = backgroundRunPolicy.robotsSkipReason()
+                        if (skipReason != null) {
+                            val settings = settingsRepository.settingsFlow.first()
+                            diagnosticsRepository.recordBackgroundWorkerEvent(
+                                worker = "robots_txt",
+                                phase = "skipped",
+                                key = ROBOTS_WORK_NAME,
+                                note = skipReason
+                            )
+                            scheduler.scheduleRobotsTxtCheck(settings)
+                            return@launch
+                        }
                         enqueueRobotsWork(appContext, diagnosticsRepository)
                     }
                     NotificationAlarmIntentFactory.TYPE_PREMARKET -> {
@@ -91,6 +99,18 @@ class NotificationAlarmReceiver : BroadcastReceiver() {
                         if (windowId.isNullOrBlank() || sampleIndex < 0) {
                             Log.w(TAG, "Premarket alarm missing window/sample info")
                         } else {
+                            val settings = settingsRepository.settingsFlow.first()
+                            val skipReason = backgroundRunPolicy.premarketSkipReason(settings, windowId)
+                            if (skipReason != null) {
+                                diagnosticsRepository.recordBackgroundWorkerEvent(
+                                    worker = "premarket_quote",
+                                    phase = "skipped",
+                                    key = NotificationAlarmIntentFactory.premarketKey(windowId, sampleIndex),
+                                    note = skipReason
+                                )
+                                scheduler.schedulePremarketSample(settings, windowId, sampleIndex)
+                                return@launch
+                            }
                             enqueuePremarketWork(appContext, diagnosticsRepository, windowId, sampleIndex)
                         }
                     }
@@ -175,11 +195,20 @@ class NotificationAlarmReceiver : BroadcastReceiver() {
         fun settingsRepository(): com.example.stocksignal.data.settings.SettingsRepository
         fun notificationScheduler(): NotificationScheduler
         fun notificationDiagnosticsRepository(): NotificationDiagnosticsRepository
+        fun backgroundRunPolicy(): BackgroundStooqRunPolicy
     }
 
     companion object {
         private const val TAG = "NotificationAlarmReceiver"
         private const val ROBOTS_WORK_NAME = "alarm_robots_check"
         private const val PREMARKET_WORK_PREFIX = "alarm_premarket_quote"
+
+        private fun formatRunTime(runAtMillis: Long): String {
+            return runCatching {
+                java.time.Instant.ofEpochMilli(runAtMillis)
+                    .atZone(java.time.ZoneId.systemDefault())
+                    .format(java.time.format.DateTimeFormatter.ofPattern("h:mm a"))
+            }.getOrDefault(runAtMillis.toString())
+        }
     }
 }

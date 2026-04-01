@@ -1,6 +1,9 @@
 import java.io.ByteArrayOutputStream
 import java.util.Properties
 import org.gradle.api.GradleException
+import org.gradle.testing.jacoco.plugins.JacocoTaskExtension
+import org.gradle.testing.jacoco.tasks.JacocoCoverageVerification
+import org.gradle.testing.jacoco.tasks.JacocoReport
 
 plugins {
     alias(libs.plugins.android.application)
@@ -8,6 +11,7 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.hilt.android)
     id("org.jetbrains.kotlin.kapt")
+    jacoco
 }
 
 android {
@@ -27,6 +31,10 @@ android {
     }
 
     buildTypes {
+        debug {
+            enableUnitTestCoverage = true
+            enableAndroidTestCoverage = true
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
@@ -152,6 +160,112 @@ dependencies {
 
 kapt {
     correctErrorTypes = true
+}
+
+jacoco {
+    toolVersion = "0.8.13"
+}
+
+tasks.withType<Test>().configureEach {
+    extensions.configure(JacocoTaskExtension::class.java) {
+        isIncludeNoLocationClasses = true
+        excludes = listOf("jdk.internal.*")
+    }
+}
+
+val coverageClassExcludes = listOf(
+    "**/R.class",
+    "**/R$*.class",
+    "**/BuildConfig.*",
+    "**/Manifest*.*",
+    "**/BR.*",
+    "**/databinding/**",
+    "dagger/**",
+    "hilt_aggregated_deps/**",
+    "**/*_Factory.class",
+    "**/*_Factory$*.class",
+    "**/*_Provide*Factory*.class",
+    "**/*_MembersInjector.class",
+    "**/*_MembersInjector$*.class",
+    "**/*_HiltModules*.*",
+    "**/*_ComponentTreeDeps.*",
+    "**/Hilt_*.*",
+    "**/*Hilt*.*",
+    "**/*_GeneratedInjector*.*",
+    "**/*Dao_Impl*.*",
+    "**/*Database_Impl*.*",
+    // Kotlin/Compose compiler artifacts that are not app-authored logic.
+    "**/ComposableSingletons${'$'}*.class",
+    "**/*${'$'}WhenMappings.class",
+    "**/*${'$'}${'$'}inlined${'$'}map${'$'}*.class",
+    "**/*${'$'}DefaultImpls.class",
+    "**/data/stooq/examples/**"
+)
+
+fun filteredCoverageClassTrees() = files(
+    fileTree("${layout.buildDirectory.asFile.get()}/intermediates/classes/debug/transformDebugClassesWithAsm/dirs") {
+        exclude(coverageClassExcludes)
+    }
+)
+
+fun mergedCoverageData() = fileTree(layout.buildDirectory.asFile.get()) {
+    include(
+        "jacoco/testDebugUnitTest.exec",
+        "outputs/unit_test_code_coverage/debugUnitTest/testDebugUnitTest.exec",
+        "outputs/code_coverage/debugAndroidTest/connected/**/*.ec",
+        "outputs/code_coverage/debugAndroidTest/connected/*coverage.ec",
+        "outputs/managed_device_code_coverage/debugAndroidTest/**/*.ec"
+    )
+}
+
+val mergedDebugCoverageReport = tasks.register<JacocoReport>("mergedDebugCoverageReport") {
+    group = "verification"
+    description = "Generates a merged JaCoCo report for debug unit and instrumentation tests."
+    dependsOn("testDebugUnitTest", "connectedDebugAndroidTest")
+
+    reports {
+        xml.required.set(true)
+        html.required.set(true)
+        csv.required.set(false)
+    }
+
+    sourceDirectories.setFrom(files("src/main/java"))
+    classDirectories.setFrom(filteredCoverageClassTrees())
+    executionData.setFrom(mergedCoverageData())
+}
+
+val mergedDebugCoverageVerification = tasks.register<JacocoCoverageVerification>("mergedDebugCoverageVerification") {
+    group = "verification"
+    description = "Verifies merged debug coverage is 100% for the supported production denominator."
+    dependsOn(mergedDebugCoverageReport)
+
+    sourceDirectories.setFrom(files("src/main/java"))
+    classDirectories.setFrom(filteredCoverageClassTrees())
+    executionData.setFrom(mergedCoverageData())
+
+    violationRules {
+        rule {
+            limit {
+                counter = "LINE"
+                value = "COVEREDRATIO"
+                minimum = "1.0".toBigDecimal()
+            }
+            limit {
+                counter = "BRANCH"
+                value = "COVEREDRATIO"
+                minimum = "1.0".toBigDecimal()
+            }
+            limit {
+                counter = "CLASS"
+                value = "MISSEDCOUNT"
+                maximum = "0".toBigDecimal()
+            }
+        }
+    }
+}
+
+tasks.named("check") {
+    dependsOn(mergedDebugCoverageVerification)
 }
 
 // Updated to Gemma-3 1B for better translation quality

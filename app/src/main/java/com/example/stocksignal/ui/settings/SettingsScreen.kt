@@ -49,6 +49,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
@@ -196,7 +197,8 @@ fun SettingsScreen(
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
-            .padding(StockSignalDimens.cardPadding),
+            .padding(StockSignalDimens.cardPadding)
+            .testTag("settings_list"),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         item {
@@ -377,7 +379,10 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(modifier = Modifier.height(8.dp))
-                TextButton(onClick = onSendTestNotification) { Text("Send test notification") }
+                TextButton(
+                    onClick = onSendTestNotification,
+                    modifier = Modifier.testTag("settings_send_test_notification")
+                ) { Text("Send test notification") }
             }
         }
 
@@ -401,10 +406,16 @@ fun SettingsScreen(
                 }
                 Spacer(modifier = Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = onCheckWorkerStatus) { 
+                    TextButton(
+                        onClick = onCheckWorkerStatus,
+                        modifier = Modifier.testTag("settings_check_status")
+                    ) {
                         Text("Check status") 
                     }
-                    TextButton(onClick = onForceScheduleWorkers) { 
+                    TextButton(
+                        onClick = onForceScheduleWorkers,
+                        modifier = Modifier.testTag("settings_force_schedule")
+                    ) {
                         Text("Force schedule") 
                     }
                 }
@@ -1126,7 +1137,8 @@ private fun ModelManagementCard(
         } else {
             TextButton(
                 onClick = { showConfirmDialog = true },
-                enabled = !isDownloadingModel
+                enabled = !isDownloadingModel,
+                modifier = Modifier.testTag("settings_model_download")
             ) {
                 Text(if (isModelDownloaded) "Re-download Model" else "Download Model")
             }

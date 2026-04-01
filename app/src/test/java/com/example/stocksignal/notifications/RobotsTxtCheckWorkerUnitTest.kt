@@ -34,6 +34,7 @@ class RobotsTxtCheckWorkerUnitTest {
     private val settingsRepository = mockk<SettingsRepository>()
     private val scheduler = mockk<NotificationScheduler>(relaxed = true)
     private val diagnosticsRepository = mockk<NotificationDiagnosticsRepository>(relaxed = true)
+    private val backgroundGate = BackgroundStooqExecutionGate()
 
     @Test
     fun `returns success and schedules next check when runner succeeds`() = runTest {
@@ -89,7 +90,8 @@ class RobotsTxtCheckWorkerUnitTest {
                     runner,
                     settingsRepository,
                     scheduler,
-                    diagnosticsRepository
+                    diagnosticsRepository,
+                    backgroundGate
                 )
             }
         }

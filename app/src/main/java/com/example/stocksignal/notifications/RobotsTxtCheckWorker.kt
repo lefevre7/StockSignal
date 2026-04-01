@@ -17,47 +17,50 @@ class RobotsTxtCheckWorker @AssistedInject constructor(
     private val runner: RobotsTxtCheckRunner,
     private val settingsRepository: SettingsRepository,
     private val scheduler: NotificationScheduler,
-    private val diagnosticsRepository: NotificationDiagnosticsRepository
+    private val diagnosticsRepository: NotificationDiagnosticsRepository,
+    private val backgroundGate: BackgroundStooqExecutionGate
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
-        diagnosticsRepository.recordBackgroundWorkerEvent(
-            worker = "robots_txt",
-            phase = "start",
-            key = WORK_NAME
-        )
-        val runOutcome = runner.run()
-        var scheduleFailure: String? = null
-        runCatching {
-            val settings = settingsRepository.settingsFlow.first()
-            scheduler.scheduleRobotsTxtCheck(settings)
-        }.onFailure { error ->
-            scheduleFailure = "${error::class.java.simpleName}:${error.message}"
-            Log.e(TAG, "Failed to schedule next robots.txt check", error)
-        }
-        return when (runOutcome) {
-            RobotsTxtCheckRunner.RunOutcome.SUCCESS -> Result.success()
-            RobotsTxtCheckRunner.RunOutcome.FAILURE -> Result.failure()
-        }.also { result ->
-            val resultLabel = when (result) {
-                is Result.Success -> "success"
-                is Result.Failure -> "failure"
-                is Result.Retry -> "retry"
-                else -> "unknown"
-            }
+        return backgroundGate.withPermit {
             diagnosticsRepository.recordBackgroundWorkerEvent(
                 worker = "robots_txt",
-                phase = "finish",
-                key = WORK_NAME,
-                note = buildString {
-                    append("result=")
-                    append(resultLabel)
-                    if (!scheduleFailure.isNullOrBlank()) {
-                        append(" schedule=")
-                        append(scheduleFailure)
-                    }
-                }
+                phase = "start",
+                key = WORK_NAME
             )
+            val runOutcome = runner.run()
+            var scheduleFailure: String? = null
+            runCatching {
+                val settings = settingsRepository.settingsFlow.first()
+                scheduler.scheduleRobotsTxtCheck(settings)
+            }.onFailure { error ->
+                scheduleFailure = "${error::class.java.simpleName}:${error.message}"
+                Log.e(TAG, "Failed to schedule next robots.txt check", error)
+            }
+            when (runOutcome) {
+                RobotsTxtCheckRunner.RunOutcome.SUCCESS -> Result.success()
+                RobotsTxtCheckRunner.RunOutcome.FAILURE -> Result.failure()
+            }.also { result ->
+                val resultLabel = when (result) {
+                    is Result.Success -> "success"
+                    is Result.Failure -> "failure"
+                    is Result.Retry -> "retry"
+                    else -> "unknown"
+                }
+                diagnosticsRepository.recordBackgroundWorkerEvent(
+                    worker = "robots_txt",
+                    phase = "finish",
+                    key = WORK_NAME,
+                    note = buildString {
+                        append("result=")
+                        append(resultLabel)
+                        if (!scheduleFailure.isNullOrBlank()) {
+                            append(" schedule=")
+                            append(scheduleFailure)
+                        }
+                    }
+                )
+            }
         }
     }
 
