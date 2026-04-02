@@ -51,7 +51,8 @@ Purpose: Architecture and workflow reference for contributors.
 
 **Known issues fixed:**
 - Pre-notify notification: Commit `0a0632b` deleted `WindowPreNotifyService` and removed the visible "window scheduled" notification. The `TYPE_PRE_NOTIFY` alarm handler was reduced to diagnostics-only logging. Fixed by posting a notification directly from `NotificationAlarmReceiver` (no foreground service needed) and auto-dismissing it when the `TYPE_WINDOW` alarm fires.
-- Premarket gzip errors: `fetchPremarketQuoteForTicker` in `StooqRepository` had no retry logic for transient network errors. "gzip finished without exhausting source" (truncated HTTP response) and `UnknownHostException` (DNS failures) would fail the first ticker and cascade to fail the entire batch. Fixed by adding per-ticker retry (3 attempts with backoff) for transient network errors.
+- Premarket retry amplification (commit `d115bfc`): The per-ticker retry logic (3 attempts) for transient network errors caused a 3x request amplification when Stooq was throttling (gzip truncation, EOF errors). Additionally, `UnknownHostException` was incorrectly classified as transient/retryable. Fix: (1) reduced retry count to 2 (1 retry max), (2) moved `UnknownHostException` to terminal failures (DNS failure = stop batch immediately), (3) added `BatchErrorTracker` inner class that stops any batch after 2 consecutive tickers fail with transient errors (indicating Stooq throttling, not random glitches), (4) applied tracker to all three batch methods (`getData`, `getIntradayData`, `getPremarketQuotes`) for consistent protection.
+- Stooq throttling signals: gzip truncation (`IOException` with "gzip") and `EOFException` from Stooq are now recognized as server-side throttling when they occur on consecutive tickers. A single occurrence is retried once; a pattern across tickers stops the batch.
 
 
 ## TODO List - Feature Enhancements

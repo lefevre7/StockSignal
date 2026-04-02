@@ -33,11 +33,51 @@ class StooqRepository(private val api: StooqApi) {
 
     companion object {
         private const val TAG = "StooqRepository"
-        private const val PREMARKET_RETRY_COUNT = 3
+        private const val PREMARKET_RETRY_COUNT = 2
         private const val PREMARKET_RETRY_DELAY_MS = 2_000L
+        private const val CONSECUTIVE_TRANSIENT_THRESHOLD = 2
         private val DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd")
         private val CSV_DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd")
         private val INTRADAY_TIME_FORMATTER = DateTimeFormatter.ofPattern("HHmmss")
+    }
+
+    /**
+     * Tracks consecutive transient errors across a sequential ticker batch.
+     * Stops the batch early when [CONSECUTIVE_TRANSIENT_THRESHOLD] consecutive
+     * tickers fail with retryable transient errors (e.g. gzip truncation, EOF),
+     * which indicates Stooq server-side throttling rather than random glitches.
+     */
+    private inner class BatchErrorTracker(private val batchLabel: String) {
+        var firstError: Result.Error? = null; private set
+        var terminalError: Result.Error? = null; private set
+        private var consecutiveTransientCount = 0
+
+        /** Returns true when the batch should stop. */
+        fun onResult(result: Result<*>, ticker: String): Boolean {
+            if (result is Result.Success) {
+                consecutiveTransientCount = 0
+                return false
+            }
+            val error = (result as? Result.Error) ?: return false
+            if (firstError == null) firstError = error
+
+            if (isTerminalStooqFailure(error.exception)) {
+                terminalError = error
+                Log.w(TAG, "Stopping $batchLabel batch early after terminal Stooq failure for $ticker")
+                return true
+            }
+            if (isRetryableTransientError(error.exception)) {
+                consecutiveTransientCount++
+                if (consecutiveTransientCount >= CONSECUTIVE_TRANSIENT_THRESHOLD) {
+                    terminalError = error
+                    Log.w(TAG, "Stopping $batchLabel batch: $consecutiveTransientCount consecutive transient errors indicate Stooq throttling")
+                    return true
+                }
+            } else {
+                consecutiveTransientCount = 0
+            }
+            return false
+        }
     }
 
     /**
@@ -60,20 +100,11 @@ class StooqRepository(private val api: StooqApi) {
 
             // Fetch data for all tickers sequentially to avoid rate limiting
             val results = mutableListOf<Pair<String, Result<Map<LocalDate, StockData>>>>()
-            var firstError: Result.Error? = null
-            var terminalError: Result.Error? = null
+            val tracker = BatchErrorTracker("daily")
             for (ticker in tickers) {
                 val result = fetchDataForTicker(ticker, startDateStr, endDateStr)
                 results.add(ticker to result)
-                if (result is Result.Error) {
-                    if (firstError == null) firstError = result
-                    if (isTerminalStooqFailure(result.exception)) {
-                        terminalError = result
-                        Log.w(TAG, "Stopping daily fetch batch early after terminal Stooq failure for $ticker")
-                        break
-                    }
-                }
-                
+                if (tracker.onResult(result, ticker)) break
             }
 
             // Separate successful and failed fetches
@@ -104,7 +135,7 @@ class StooqRepository(private val api: StooqApi) {
             }
 
             if (successfulData.isEmpty()) {
-                val representative = terminalError ?: firstError
+                val representative = tracker.terminalError ?: tracker.firstError
                 Result.Error(
                     representative?.exception ?: Exception("No data could be fetched for any ticker"),
                     buildAllFailedMessage(
@@ -149,20 +180,11 @@ class StooqRepository(private val api: StooqApi) {
 
             // Fetch data for all tickers sequentially to avoid rate limiting
             val results = mutableListOf<Pair<String, Result<Map<LocalDateTime, IntradayStockData>>>>()
-            var firstError: Result.Error? = null
-            var terminalError: Result.Error? = null
+            val tracker = BatchErrorTracker("intraday")
             for (ticker in tickers) {
                 val result = fetchIntradayDataForTicker(ticker, intervalMinutes, start, end)
                 results.add(ticker to result)
-                if (result is Result.Error) {
-                    if (firstError == null) firstError = result
-                    if (isTerminalStooqFailure(result.exception)) {
-                        terminalError = result
-                        Log.w(TAG, "Stopping intraday fetch batch early after terminal Stooq failure for $ticker")
-                        break
-                    }
-                }
-                
+                if (tracker.onResult(result, ticker)) break
             }
 
             val successfulData = mutableMapOf<String, Map<LocalDateTime, IntradayStockData>>()
@@ -190,7 +212,7 @@ class StooqRepository(private val api: StooqApi) {
             }
 
             if (successfulData.isEmpty()) {
-                val representative = terminalError ?: firstError
+                val representative = tracker.terminalError ?: tracker.firstError
                 Result.Error(
                     representative?.exception ?: Exception("No intraday data could be fetched for any ticker"),
                     buildAllFailedMessage(
@@ -585,19 +607,11 @@ class StooqRepository(private val api: StooqApi) {
     ): Result<Map<String, PremarketQuote>> {
         return try {
             val results = mutableListOf<Pair<String, Result<PremarketQuote>>>()
-            var firstError: Result.Error? = null
-            var terminalError: Result.Error? = null
+            val tracker = BatchErrorTracker("premarket quote")
             for (ticker in tickers) {
                 val result = fetchPremarketQuoteForTicker(ticker)
                 results.add(ticker to result)
-                if (result is Result.Error) {
-                    if (firstError == null) firstError = result
-                    if (isTerminalStooqFailure(result.exception)) {
-                        terminalError = result
-                        Log.w(TAG, "Stopping premarket quote batch early after terminal Stooq failure for $ticker")
-                        break
-                    }
-                }
+                if (tracker.onResult(result, ticker)) break
             }
 
             val successfulData = mutableMapOf<String, PremarketQuote>()
@@ -617,7 +631,7 @@ class StooqRepository(private val api: StooqApi) {
             }
 
             if (successfulData.isEmpty()) {
-                val representative = terminalError ?: firstError
+                val representative = tracker.terminalError ?: tracker.firstError
                 Result.Error(
                     representative?.exception ?: Exception("No premarket quotes fetched"),
                     buildAllFailedMessage(
@@ -653,7 +667,7 @@ class StooqRepository(private val api: StooqApi) {
                 }
             } catch (e: Exception) {
                 lastException = e
-                if (isTransientNetworkError(e) && attempt < PREMARKET_RETRY_COUNT) {
+                if (isRetryableTransientError(e) && attempt < PREMARKET_RETRY_COUNT) {
                     Log.w(TAG, "Transient error fetching premarket quote for $ticker (attempt $attempt), retrying", e)
                     kotlinx.coroutines.delay(PREMARKET_RETRY_DELAY_MS * attempt)
                     continue
@@ -669,7 +683,10 @@ class StooqRepository(private val api: StooqApi) {
     private fun isTerminalStooqFailure(error: Throwable): Boolean {
         var current: Throwable? = error
         while (current != null) {
-            if (current is SocketTimeoutException || current is StooqBlockedException) {
+            if (current is SocketTimeoutException ||
+                current is StooqBlockedException ||
+                current is UnknownHostException
+            ) {
                 return true
             }
             current = current.cause
@@ -677,11 +694,17 @@ class StooqRepository(private val api: StooqApi) {
         return false
     }
 
-    private fun isTransientNetworkError(error: Throwable): Boolean {
+    /**
+     * Errors that may be retried once for a single ticker, but indicate
+     * Stooq server-side throttling when they occur on consecutive tickers.
+     * EOFException and gzip truncation happen when Stooq cuts the response
+     * short — retrying once is reasonable, but a pattern across tickers
+     * means we should stop the batch.
+     */
+    private fun isRetryableTransientError(error: Throwable): Boolean {
         var current: Throwable? = error
         while (current != null) {
-            if (current is UnknownHostException ||
-                current is EOFException ||
+            if (current is EOFException ||
                 (current is IOException && current.message?.contains("gzip", ignoreCase = true) == true)
             ) {
                 return true

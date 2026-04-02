@@ -385,23 +385,25 @@ class StooqRepositoryTest {
     }
 
     @Test
-    fun `getPremarketQuotes retries on UnknownHostException and fails after max attempts`() = runTest {
+    fun `getPremarketQuotes treats UnknownHostException as terminal - no retry`() = runTest {
         coEvery { api.getQuotePage("a") } throws UnknownHostException("Unable to resolve host")
 
         val result = repository.getPremarketQuotes(listOf("A"))
 
         assertTrue(result.isError)
-        coVerify(exactly = 3) { api.getQuotePage("a") }
+        // UnknownHostException is terminal (DNS failure), not transient — no retry
+        coVerify(exactly = 1) { api.getQuotePage("a") }
     }
 
     @Test
-    fun `getPremarketQuotes retries on EOFException`() = runTest {
+    fun `getPremarketQuotes retries on EOFException once then fails`() = runTest {
         coEvery { api.getQuotePage("a") } throws EOFException("unexpected end of stream")
 
         val result = repository.getPremarketQuotes(listOf("A"))
 
         assertTrue(result.isError)
-        coVerify(exactly = 3) { api.getQuotePage("a") }
+        // Retry count is 2 (1 retry), not 3
+        coVerify(exactly = 2) { api.getQuotePage("a") }
     }
 
     @Test
@@ -413,5 +415,116 @@ class StooqRepositoryTest {
         assertTrue(result.isError)
         // SocketTimeoutException is terminal, not transient — no retry
         coVerify(exactly = 1) { api.getQuotePage("a") }
+    }
+
+    // ============== Batch-level consecutive transient error tracking ==============
+
+    @Test
+    fun `getPremarketQuotes stops batch after consecutive transient errors`() = runTest {
+        // Both tickers fail with gzip error → batch should stop at 2nd ticker
+        coEvery { api.getQuotePage("a") } throws IOException("gzip finished without exhausting source")
+        coEvery { api.getQuotePage("b") } throws EOFException("unexpected end of stream")
+
+        val result = repository.getPremarketQuotes(listOf("A", "B", "C"))
+
+        assertTrue(result.isError)
+        // A retries once (2 calls), B retries once (2 calls), C never called
+        coVerify(exactly = 2) { api.getQuotePage("a") }
+        coVerify(exactly = 2) { api.getQuotePage("b") }
+        coVerify(exactly = 0) { api.getQuotePage("c") }
+    }
+
+    @Test
+    fun `getPremarketQuotes consecutive transient counter resets on success`() = runTest {
+        val validHtml = "<html><table><tr><td>Bid <span>10.50</span></td></tr><tr><td>Ask <span>10.60</span></td></tr></table></html>"
+        // A fails with gzip (transient count=1), B succeeds (reset to 0), C fails with EOF (count=1) → no batch stop
+        coEvery { api.getQuotePage("a") } throws IOException("gzip finished without exhausting source")
+        coEvery { api.getQuotePage("b") } returns validHtml
+        coEvery { api.getQuotePage("c") } throws EOFException("unexpected end of stream")
+
+        val result = repository.getPremarketQuotes(listOf("A", "B", "C"))
+
+        // B succeeds, so result is success (partial data)
+        assertTrue(result.isSuccess)
+        // A called 2x (1 retry), B called 1x, C called 2x (1 retry)
+        coVerify(exactly = 2) { api.getQuotePage("a") }
+        coVerify(exactly = 1) { api.getQuotePage("b") }
+        coVerify(exactly = 2) { api.getQuotePage("c") }
+    }
+
+    @Test
+    fun `getPremarketQuotes stops batch after UnknownHostException - terminal`() = runTest {
+        coEvery { api.getQuotePage("a") } throws UnknownHostException("Unable to resolve host")
+
+        val result = repository.getPremarketQuotes(listOf("A", "B", "C"))
+
+        assertTrue(result.isError)
+        coVerify(exactly = 1) { api.getQuotePage("a") }
+        coVerify(exactly = 0) { api.getQuotePage("b") }
+        coVerify(exactly = 0) { api.getQuotePage("c") }
+    }
+
+    @Test
+    fun `getIntradayData stops batch after consecutive transient errors`() = runTest {
+        coEvery { api.getIntradayData("a", 10) } throws EOFException("unexpected end of stream")
+        coEvery { api.getIntradayData("b", 10) } throws IOException("gzip finished without exhausting source")
+
+        val result = repository.getIntradayData(tickers = listOf("A", "B", "C"))
+
+        assertTrue(result.isError)
+        coVerify(exactly = 1) { api.getIntradayData("a", 10) }
+        coVerify(exactly = 1) { api.getIntradayData("b", 10) }
+        coVerify(exactly = 0) { api.getIntradayData("c", 10) }
+    }
+
+    @Test
+    fun `getIntradayData stops batch on UnknownHostException`() = runTest {
+        coEvery { api.getIntradayData("a", 10) } throws UnknownHostException("Unable to resolve host")
+
+        val result = repository.getIntradayData(tickers = listOf("A", "B"))
+
+        assertTrue(result.isError)
+        coVerify(exactly = 1) { api.getIntradayData("a", 10) }
+        coVerify(exactly = 0) { api.getIntradayData("b", 10) }
+    }
+
+    @Test
+    fun `getData stops batch after consecutive transient errors`() = runTest {
+        coEvery { api.getStockData("A", any(), any(), any()) } throws EOFException("unexpected end")
+        coEvery { api.getStockData("B", any(), any(), any()) } throws IOException("gzip finished without exhausting source")
+
+        val result = repository.getData(
+            tickers = listOf("A", "B", "C"),
+            startDate = LocalDate.of(2024, 1, 1),
+            endDate = LocalDate.of(2024, 1, 5)
+        )
+
+        assertTrue(result.isError)
+        coVerify(exactly = 1) { api.getStockData("A", any(), any(), any()) }
+        coVerify(exactly = 1) { api.getStockData("B", any(), any(), any()) }
+        coVerify(exactly = 0) { api.getStockData("C", any(), any(), any()) }
+    }
+
+    @Test
+    fun `getData consecutive transient counter resets on success`() = runTest {
+        val csvData = "Date,Open,High,Low,Close,Volume\n2024-01-01,10.0,11.0,9.0,10.5,1000"
+        coEvery { api.getStockData("A", any(), any(), any()) } throws EOFException("eof")
+        coEvery { api.getStockData("B", any(), any(), any()) } returns csvData
+        coEvery { api.getStockData("C", any(), any(), any()) } throws IOException("gzip finished without exhausting source")
+        coEvery { api.getStockData("D", any(), any(), any()) } returns csvData
+
+        val result = repository.getData(
+            tickers = listOf("A", "B", "C", "D"),
+            startDate = LocalDate.of(2024, 1, 1),
+            endDate = LocalDate.of(2024, 1, 1)
+        )
+
+        // B and D succeed, so result is success
+        assertTrue(result.isSuccess)
+        // All tickers processed — counter reset by successes between failures
+        coVerify(exactly = 1) { api.getStockData("A", any(), any(), any()) }
+        coVerify(exactly = 1) { api.getStockData("B", any(), any(), any()) }
+        coVerify(exactly = 1) { api.getStockData("C", any(), any(), any()) }
+        coVerify(exactly = 1) { api.getStockData("D", any(), any(), any()) }
     }
 }

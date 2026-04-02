@@ -933,7 +933,28 @@ The March 31, 2026 implementation made the following changes:
 
 Both errors would fail on the first ticker (e.g., KGH), and since `isTerminalStooqFailure` only detects `SocketTimeoutException` and `StooqBlockedException`, the batch would continue to subsequent tickers — all of which would also fail with the same network condition — resulting in a total batch failure with 0 successful quotes.
 
-**Fix:** Added per-ticker retry (3 attempts with exponential backoff starting at 2s) for transient network errors identified by `isTransientNetworkError()`: `UnknownHostException`, `EOFException`, and `IOException` with "gzip" in the message. Terminal errors (`SocketTimeoutException`, `StooqBlockedException`) remain non-retryable.
+**Original fix:** Added per-ticker retry (3 attempts with exponential backoff starting at 2s) for transient network errors identified by `isTransientNetworkError()`: `UnknownHostException`, `EOFException`, and `IOException` with "gzip" in the message. Terminal errors (`SocketTimeoutException`, `StooqBlockedException`) remain non-retryable.
+
+### 14.7 — Retry Amplification Fix (2026-04-02)
+
+The §14.6 retry logic caused a second Stooq blocking incident. When Stooq starts throttling (truncating responses), the 3x retry per ticker amplified request volume, creating a positive feedback loop:
+
+1. Stooq truncates responses → gzip/EOF errors classified as "transient"
+2. Each ticker retried 3 times → 3x request volume
+3. More requests → more Stooq stress → more truncated responses → more retries
+4. Eventually Stooq blocks with HTTP 403/429/503
+
+Additionally, `UnknownHostException` (DNS failure) was incorrectly classified as transient. DNS failures indicate no internet or DNS blocking — retrying against Stooq is pointless and wasteful.
+
+**Fix applied:**
+
+1. **Reduced retry count:** `PREMARKET_RETRY_COUNT` 3 → 2 (at most 1 retry per ticker).
+2. **Reclassified `UnknownHostException` as terminal:** Added to `isTerminalStooqFailure()` alongside `SocketTimeoutException` and `StooqBlockedException`. DNS failures now stop the batch immediately.
+3. **Renamed `isTransientNetworkError` → `isRetryableTransientError`:** Only `EOFException` and gzip `IOException` remain retryable. These are genuine server-side truncation that may succeed on one retry.
+4. **Added `BatchErrorTracker` inner class:** Tracks consecutive transient errors across tickers within a batch. After `CONSECUTIVE_TRANSIENT_THRESHOLD` (2) consecutive tickers fail with retryable transient errors, the batch stops — this pattern indicates Stooq throttling, not random glitches. The counter resets on any successful ticker fetch.
+5. **Applied to all three batch methods:** `getData()`, `getIntradayData()`, and `getPremarketQuotes()` all use `BatchErrorTracker` for consistent protection. Previously only `getPremarketQuotes` had the per-ticker retry; now all batch operations have the consecutive-failure circuit breaker.
+
+**Key insight:** gzip/EOF errors from Stooq bypass `StooqBlockInterceptor` entirely — they occur during response body parsing (Retrofit layer), after the interceptor has returned the `Response` object. So the interceptor's 5-consecutive-timeout → 24h block mechanism doesn't catch them. The `BatchErrorTracker` fills this gap at the repository layer.
 
 ---
 
