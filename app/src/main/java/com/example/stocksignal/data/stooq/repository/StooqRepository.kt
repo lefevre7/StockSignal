@@ -13,8 +13,11 @@ import com.example.stocksignal.data.stooq.network.StooqBlockedException
 import com.example.stocksignal.data.stooq.parser.PremarketQuoteParser
 import org.apache.commons.csv.CSVFormat
 import org.apache.commons.csv.CSVParser
+import java.io.EOFException
+import java.io.IOException
 import java.io.StringReader
 import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
@@ -30,6 +33,8 @@ class StooqRepository(private val api: StooqApi) {
 
     companion object {
         private const val TAG = "StooqRepository"
+        private const val PREMARKET_RETRY_COUNT = 3
+        private const val PREMARKET_RETRY_DELAY_MS = 2_000L
         private val DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd")
         private val CSV_DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd")
         private val INTRADAY_TIME_FORMATTER = DateTimeFormatter.ofPattern("HHmmss")
@@ -632,28 +637,53 @@ class StooqRepository(private val api: StooqApi) {
     private suspend fun fetchPremarketQuoteForTicker(
         ticker: String
     ): Result<PremarketQuote> {
-        return try {
-            Log.d(TAG, "Fetching premarket quote for $ticker")
-            val html = api.getQuotePage(ticker.lowercase())
-            val quote = PremarketQuoteParser.parse(html, ticker)
-            if (quote == null) {
-                Result.Error(
-                    Exception("No bid/ask data for $ticker"),
-                    "No premarket quote data for $ticker"
-                )
-            } else {
-                Result.Success(quote)
+        var lastException: Exception? = null
+        for (attempt in 1..PREMARKET_RETRY_COUNT) {
+            try {
+                Log.d(TAG, "Fetching premarket quote for $ticker (attempt $attempt)")
+                val html = api.getQuotePage(ticker.lowercase())
+                val quote = PremarketQuoteParser.parse(html, ticker)
+                return if (quote == null) {
+                    Result.Error(
+                        Exception("No bid/ask data for $ticker"),
+                        "No premarket quote data for $ticker"
+                    )
+                } else {
+                    Result.Success(quote)
+                }
+            } catch (e: Exception) {
+                lastException = e
+                if (isTransientNetworkError(e) && attempt < PREMARKET_RETRY_COUNT) {
+                    Log.w(TAG, "Transient error fetching premarket quote for $ticker (attempt $attempt), retrying", e)
+                    kotlinx.coroutines.delay(PREMARKET_RETRY_DELAY_MS * attempt)
+                    continue
+                }
+                Log.e(TAG, "Error fetching premarket quote for $ticker (attempt $attempt)", e)
+                return Result.Error(e, "Failed to fetch premarket quote for $ticker: ${e.message}")
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error fetching premarket quote for $ticker", e)
-            Result.Error(e, "Failed to fetch premarket quote for $ticker: ${e.message}")
         }
+        val e = lastException ?: Exception("Failed to fetch premarket quote for $ticker")
+        return Result.Error(e, "Failed to fetch premarket quote for $ticker: ${e.message}")
     }
 
     private fun isTerminalStooqFailure(error: Throwable): Boolean {
         var current: Throwable? = error
         while (current != null) {
             if (current is SocketTimeoutException || current is StooqBlockedException) {
+                return true
+            }
+            current = current.cause
+        }
+        return false
+    }
+
+    private fun isTransientNetworkError(error: Throwable): Boolean {
+        var current: Throwable? = error
+        while (current != null) {
+            if (current is UnknownHostException ||
+                current is EOFException ||
+                (current is IOException && current.message?.contains("gzip", ignoreCase = true) == true)
+            ) {
                 return true
             }
             current = current.cause

@@ -1,14 +1,19 @@
 package com.example.stocksignal.notifications
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.workDataOf
+import com.example.stocksignal.R
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
 import dagger.hilt.android.EntryPointAccessors
@@ -41,6 +46,7 @@ class NotificationAlarmReceiver : BroadcastReceiver() {
                         if (windowId.isNullOrBlank()) {
                             Log.w(TAG, "Alarm missing window ID")
                         } else {
+                            cancelPreNotifyNotification(appContext, windowId)
                             val settings = settingsRepository.settingsFlow.first()
                             val skipReason = backgroundRunPolicy.windowSkipReason(settings, windowId)
                             if (skipReason != null) {
@@ -71,10 +77,11 @@ class NotificationAlarmReceiver : BroadcastReceiver() {
                         if (windowId.isNullOrBlank() || runAtMillis <= 0L) {
                             Log.w(TAG, "Pre-notify alarm missing window/run time")
                         } else {
+                            postPreNotifyNotification(appContext, windowId, runAtMillis)
                             diagnosticsRepository.recordWindowPreNotifyRun(
                                 windowId,
                                 "ran",
-                                "cache-only pre-notify for ${formatRunTime(runAtMillis)}"
+                                "pre-notify posted for ${formatRunTime(runAtMillis)}"
                             )
                         }
                     }
@@ -202,6 +209,8 @@ class NotificationAlarmReceiver : BroadcastReceiver() {
         private const val TAG = "NotificationAlarmReceiver"
         private const val ROBOTS_WORK_NAME = "alarm_robots_check"
         private const val PREMARKET_WORK_PREFIX = "alarm_premarket_quote"
+        private const val PRE_NOTIFY_CHANNEL_ID = "window_run"
+        private const val PRE_NOTIFY_ID_OFFSET = 9200
 
         private fun formatRunTime(runAtMillis: Long): String {
             return runCatching {
@@ -209,6 +218,47 @@ class NotificationAlarmReceiver : BroadcastReceiver() {
                     .atZone(java.time.ZoneId.systemDefault())
                     .format(java.time.format.DateTimeFormatter.ofPattern("h:mm a"))
             }.getOrDefault(runAtMillis.toString())
+        }
+
+        internal fun preNotifyNotificationId(windowId: String): Int =
+            PRE_NOTIFY_ID_OFFSET + windowId.hashCode()
+
+        internal fun postPreNotifyNotification(
+            context: Context,
+            windowId: String,
+            runAtMillis: Long
+        ) {
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val channel = NotificationChannel(
+                PRE_NOTIFY_CHANNEL_ID,
+                "Window run",
+                NotificationManager.IMPORTANCE_LOW
+            )
+            manager.createNotificationChannel(channel)
+
+            val runAt = java.time.Instant.ofEpochMilli(runAtMillis)
+                .atZone(java.time.ZoneId.systemDefault())
+            val minutes = java.time.Duration.between(
+                java.time.Instant.now(), runAt.toInstant()
+            ).toMinutes().coerceAtLeast(0)
+            val timeText = formatRunTime(runAtMillis)
+            val contentText = "Runs in ${minutes}m at $timeText"
+
+            val notification = NotificationCompat.Builder(context, PRE_NOTIFY_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle("Window $windowId scheduled")
+                .setContentText(contentText)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(contentText))
+                .setOngoing(true)
+                .setCategory(Notification.CATEGORY_STATUS)
+                .build()
+
+            manager.notify(preNotifyNotificationId(windowId), notification)
+        }
+
+        internal fun cancelPreNotifyNotification(context: Context, windowId: String) {
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.cancel(preNotifyNotificationId(windowId))
         }
     }
 }

@@ -47,6 +47,11 @@ Purpose: Architecture and workflow reference for contributors.
 - Flow property initializers: Repositories that call `dao.observeXxx()` in property initializers require a `repoWith()/repoWithFlowError()` factory helper that creates fresh DAO+repo combos per test.
 - Static object mocking: Use `mockkObject(PremarketWindowUtils)` for singleton objects.
 - Robolectric + Log: Always `mockkStatic(Log::class)` in `@Before` / unmock in `@After` for tests touching code that calls `Log.*`.
+- Log mock completeness: When mocking `Log`, ensure ALL used overloads are mocked (e.g., `Log.w(String, String)` AND `Log.w(String, String, Throwable)` are different overloads). Missing overloads cause silent failures with `mockkStatic`.
+
+**Known issues fixed:**
+- Pre-notify notification: Commit `0a0632b` deleted `WindowPreNotifyService` and removed the visible "window scheduled" notification. The `TYPE_PRE_NOTIFY` alarm handler was reduced to diagnostics-only logging. Fixed by posting a notification directly from `NotificationAlarmReceiver` (no foreground service needed) and auto-dismissing it when the `TYPE_WINDOW` alarm fires.
+- Premarket gzip errors: `fetchPremarketQuoteForTicker` in `StooqRepository` had no retry logic for transient network errors. "gzip finished without exhausting source" (truncated HTTP response) and `UnknownHostException` (DNS failures) would fail the first ticker and cascade to fail the entire batch. Fixed by adding per-ticker retry (3 attempts with backoff) for transient network errors.
 
 
 ## TODO List - Feature Enhancements

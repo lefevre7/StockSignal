@@ -13,6 +13,9 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import java.net.SocketTimeoutException
+import java.io.EOFException
+import java.io.IOException
+import java.net.UnknownHostException
 import java.time.LocalDate
 import java.time.LocalDateTime
 
@@ -30,7 +33,9 @@ class StooqRepositoryTest {
         // Mock Android Log class
         mockkStatic(Log::class)
         every { Log.e(any(), any(), any()) } returns 0
+        every { Log.e(any(), any<String>()) } returns 0
         every { Log.w(any(), any<String>()) } returns 0
+        every { Log.w(any(), any<String>(), any()) } returns 0
         every { Log.d(any(), any<String>()) } returns 0
         every { Log.i(any(), any<String>()) } returns 0
         
@@ -358,5 +363,55 @@ class StooqRepositoryTest {
         assertTrue(error.exception is SocketTimeoutException)
         coVerify(exactly = 1) { api.getStockData("A", "20240101", "20240105", "d") }
         coVerify(exactly = 0) { api.getStockData("B", any(), any(), any()) }
+    }
+
+    // ============== Premarket retry for transient errors ==============
+
+    @Test
+    fun `getPremarketQuotes retries on gzip error and succeeds`() = runTest {
+        val gzipError = IOException("gzip finished without exhausting source")
+        val validHtml = "<html><table><tr><td>Bid <span>10.50</span></td></tr><tr><td>Ask <span>10.60</span></td></tr></table></html>"
+        var callCount = 0
+        coEvery { api.getQuotePage("a") } coAnswers {
+            callCount++
+            if (callCount == 1) throw gzipError
+            validHtml
+        }
+
+        val result = repository.getPremarketQuotes(listOf("A"))
+
+        assertTrue("Expected success after gzip retry, got: $result", result.isSuccess)
+        coVerify(exactly = 2) { api.getQuotePage("a") }
+    }
+
+    @Test
+    fun `getPremarketQuotes retries on UnknownHostException and fails after max attempts`() = runTest {
+        coEvery { api.getQuotePage("a") } throws UnknownHostException("Unable to resolve host")
+
+        val result = repository.getPremarketQuotes(listOf("A"))
+
+        assertTrue(result.isError)
+        coVerify(exactly = 3) { api.getQuotePage("a") }
+    }
+
+    @Test
+    fun `getPremarketQuotes retries on EOFException`() = runTest {
+        coEvery { api.getQuotePage("a") } throws EOFException("unexpected end of stream")
+
+        val result = repository.getPremarketQuotes(listOf("A"))
+
+        assertTrue(result.isError)
+        coVerify(exactly = 3) { api.getQuotePage("a") }
+    }
+
+    @Test
+    fun `getPremarketQuotes does not retry SocketTimeoutException`() = runTest {
+        coEvery { api.getQuotePage("a") } throws SocketTimeoutException("timeout")
+
+        val result = repository.getPremarketQuotes(listOf("A"))
+
+        assertTrue(result.isError)
+        // SocketTimeoutException is terminal, not transient — no retry
+        coVerify(exactly = 1) { api.getQuotePage("a") }
     }
 }

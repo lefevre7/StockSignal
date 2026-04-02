@@ -281,7 +281,7 @@ flowchart TD
 | Type | Intent Extra | Handler | Purpose |
 |------|-------------|---------|---------|
 | `TYPE_WINDOW` | `window` | `WindowRunService` | Main signal evaluation + notification posting |
-| `TYPE_PRE_NOTIFY` | `pre_notify` | `NotificationAlarmReceiver` | Cache-only pre-notify bookkeeping; no live Stooq call and no signal evaluation. |
+| `TYPE_PRE_NOTIFY` | `pre_notify` | `NotificationAlarmReceiver` | Posts a user-visible "Window scheduled — Runs in Xm at H:MM" notification; auto-dismissed when `TYPE_WINDOW` fires. No live Stooq call. |
 | `TYPE_ROBOTS` | `robots` | `RobotsTxtCheckWorker` | Daily Stooq robots.txt compliance check |
 | `TYPE_PREMARKET` | `premarket` | `PremarketQuoteWorker` | Pre-market bid/ask data (5 samples, 10-min intervals) |
 
@@ -916,13 +916,24 @@ This section records the March 31, 2026 review of the Stooq blocking regression 
 
 The March 31, 2026 implementation made the following changes:
 
-- `TYPE_PRE_NOTIFY` no longer starts a foreground service or runs a second hidden window. The alarm is handled directly in `NotificationAlarmReceiver` and only records cache-only pre-notify diagnostics.
+- `TYPE_PRE_NOTIFY` no longer starts a foreground service or runs a second hidden window. The alarm is handled directly in `NotificationAlarmReceiver`, which posts a user-visible "Window scheduled" notification (ongoing, auto-dismissed when `TYPE_WINDOW` fires) and records pre-notify diagnostics.
 - Stooq HTTP now uses `StooqExecutionGate`, so Stooq pacing is no longer serialized through the same mutex as on-device LLM inference.
 - Background Stooq work now uses `BackgroundStooqExecutionGate`, which serializes `WindowRunService`, `PremarketQuoteWorker`, and `RobotsTxtCheckWorker` behind one FIFO queue.
 - `NotificationAlarmReceiver` short-circuits window, premarket, and robots background starts while the local Stooq block is active. Daily window and premarket starts are also guarded against stray weekend execution; `ONE_PER_WEEK` weekend scheduling remains allowed.
 - `StooqBlockInterceptor` now treats all Stooq endpoints as block-eligible for `403`, `429`, `503`, and five consecutive timeouts.
 - Movers homepage fetches are shared per run through `MarketMoversRepository.getMarketMoversBatch(...)`, so the main window and premarket sample `0` do not fetch increasers and decreasers in separate live homepage calls.
 - Premarket sample `0` still keeps the watchlist-plus-movers intraday prefetch, and live overview / indicator-alert range fetches remain enabled.
+
+### 14.6 — Premarket Retry for Transient Network Errors (2026-04-02)
+
+`fetchPremarketQuoteForTicker` in `StooqRepository` previously had no retry logic. Two classes of transient errors were cascading to fail entire premarket batches:
+
+1. **"gzip finished without exhausting source"** — OkHttp's transparent gzip decompression fails when the server sends a truncated response.
+2. **`UnknownHostException`** — transient DNS resolution failures when the device has intermittent connectivity.
+
+Both errors would fail on the first ticker (e.g., KGH), and since `isTerminalStooqFailure` only detects `SocketTimeoutException` and `StooqBlockedException`, the batch would continue to subsequent tickers — all of which would also fail with the same network condition — resulting in a total batch failure with 0 successful quotes.
+
+**Fix:** Added per-ticker retry (3 attempts with exponential backoff starting at 2s) for transient network errors identified by `isTransientNetworkError()`: `UnknownHostException`, `EOFException`, and `IOException` with "gzip" in the message. Terminal errors (`SocketTimeoutException`, `StooqBlockedException`) remain non-retryable.
 
 ---
 
@@ -1067,7 +1078,7 @@ Based on comparison with the initial design document:
 |-------|------|------|
 | `NotificationScheduler` | @Singleton | Orchestrates AlarmManager alarm scheduling based on settings |
 | `NotificationAlarmIntentFactory` | Object | Creates PendingIntents for alarm types (window, pre-notify, robots, premarket) |
-| `NotificationAlarmReceiver` | BroadcastReceiver | Routes alarm intents, handles cache-only pre-notify, and skips blocked/weekend background starts |
+| `NotificationAlarmReceiver` | BroadcastReceiver | Routes alarm intents, posts pre-notify notifications (auto-dismissed on window run), and skips blocked/weekend background starts |
 | `WindowRunService` | Service (foreground) | Runs main signal evaluation window with duplicate protection |
 | `NotificationWindowRunner` | @Singleton | **Core engine** — evaluates watchlist + market movers, collects candidates |
 | `NotificationWindowWorker` | HiltWorker | WorkManager wrapper for WindowRunner (legacy, `allowAiGeneration=false`) |
@@ -1175,7 +1186,7 @@ Based on comparison with the initial design document:
 |-----------|------|---------|
 | `MainActivity` | Activity | Single entry point; handles deep links (`stocksignal://stock/*`) |
 | `NotificationActionReceiver` | Receiver | Dismiss + add-to-watchlist actions |
-| `NotificationAlarmReceiver` | Receiver | Routes alarm intents, cache-only pre-notify, blocked/weekend skips |
+| `NotificationAlarmReceiver` | Receiver | Routes alarm intents, pre-notify notifications, blocked/weekend skips |
 | `NotificationBootReceiver` | Receiver | Boot recovery (`BOOT_COMPLETED`) |
 | `WindowRunService` | Service (foreground, dataSync) | Main signal evaluation window |
 
