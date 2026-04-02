@@ -53,10 +53,10 @@ class PremarketQuoteWorker @AssistedInject constructor(
                 PremarketQuoteRunner.RunOutcome.SUCCESS -> Result.success()
                 PremarketQuoteRunner.RunOutcome.FAILURE -> Result.failure()
             }.also { result ->
-                val resultLabel = when (result) {
-                    is Result.Success -> "success"
-                    is Result.Failure -> "failure"
-                    is Result.Retry -> "retry"
+                val resultLabel = when {
+                    result == Result.success() -> "success"
+                    result == Result.failure() -> "failure"
+                    result == Result.retry() -> "retry"
                     else -> "unknown"
                 }
                 diagnosticsRepository.recordBackgroundWorkerEvent(
