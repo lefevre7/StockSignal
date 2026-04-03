@@ -31,7 +31,7 @@ Purpose: Architecture and workflow reference for contributors.
 
 ## Test Coverage Status (as of current session)
 
-- **Unit tests:** 585 tests across 78 test files, **0 failures** — run with `./gradlew testDebugUnitTest`
+- **Unit tests:** 604 tests across 80 test files, **0 failures** — run with `./gradlew testDebugUnitTest`
 - **Instrumented tests:** 18 androidTest files covering all navigable screens + Android-bound features
 - **Bug fixed:** `SettingsRepository.toAppSettings()` — `selectedChartRange` now correctly defaults to holding-period-appropriate range (was always defaulting to `ONE_DAY`)
 - **Key new test files added this session:**
@@ -53,6 +53,15 @@ Purpose: Architecture and workflow reference for contributors.
 - Pre-notify notification: Commit `0a0632b` deleted `WindowPreNotifyService` and removed the visible "window scheduled" notification. The `TYPE_PRE_NOTIFY` alarm handler was reduced to diagnostics-only logging. Fixed by posting a notification directly from `NotificationAlarmReceiver` (no foreground service needed) and auto-dismissing it when the `TYPE_WINDOW` alarm fires.
 - Premarket retry amplification (commit `d115bfc`): The per-ticker retry logic (3 attempts) for transient network errors caused a 3x request amplification when Stooq was throttling (gzip truncation, EOF errors). Additionally, `UnknownHostException` was incorrectly classified as transient/retryable. Fix: (1) reduced retry count to 2 (1 retry max), (2) moved `UnknownHostException` to terminal failures (DNS failure = stop batch immediately), (3) added `BatchErrorTracker` inner class that stops any batch after 2 consecutive tickers fail with transient errors (indicating Stooq throttling, not random glitches), (4) applied tracker to all three batch methods (`getData`, `getIntradayData`, `getPremarketQuotes`) for consistent protection.
 - Stooq throttling signals: gzip truncation (`IOException` with "gzip") and `EOFException` from Stooq are now recognized as server-side throttling when they occur on consecutive tickers. A single occurrence is retried once; a pattern across tickers stops the batch.
+- Blocked-request pacing bypass onging issue: `StooqBlockInterceptor.interceptSerialized()` skipped `enforceMinGap()` and `reserveNextGap()` when `blocker.isBlocked()` was true, causing `wait=0ms hold=1ms` in gate diagnostics and no pacing during/after block periods. Fix: moved `enforceMinGap()` before the block check so all requests (blocked or not) sleep 3-5s, added `reserveNextGap()` on the blocked path before throwing `StooqBlockedException`, and removed the `requestAttempted` guard from the `finally` block so gap reservation is unconditional.
+  - **WARNING — wrong approaches tried first (DO NOT REPEAT):** When diagnosing `wait=0ms hold=1ms` in gate diagnostics, the following "fixes" are ALL WRONG and must not be attempted:
+    1. Do NOT reduce the timeout block duration from 24 hours — it is intentionally 24 hours.
+    2. Do NOT reduce `connectTimeout` from 120s — it is intentionally 120s.
+    3. Do NOT call `resetTimeoutStreak()` at the start of each notification window or premarket run — the streak must persist across runs.
+    4. Do NOT reset `PremarketQuoteRunner` state at the start of each run.
+    5. Do NOT add staleness decay to the timeout counter.
+    6. Do NOT modify `NotificationWindowRunner`, `PremarketQuoteRunner`, or `StooqModule` for this issue.
+  - **The actual root cause** is always in `StooqBlockInterceptor.interceptSerialized()` — the pacing (`enforceMinGap` / `reserveNextGap`) code path. When `wait=0ms hold=1ms`, it means pacing is being skipped on some code path in the interceptor, not that timeouts/blocks/streaks are misconfigured.
 
 
 ## TODO List - Feature Enhancements

@@ -313,4 +313,115 @@ class StooqBlockInterceptorTest {
 
         assertTrue("Expected >=25ms gap, got ${secondDurationMs}ms", secondDurationMs >= 25L)
     }
+
+    @Test
+    fun enforcesConfiguredGapWhenBlocked() {
+        val diagnostics = mockk<NotificationDiagnosticsRepository>(relaxed = true) {
+            coEvery { getStooqBlockedInfo() } returns NotificationDiagnosticsRepository.StooqBlockedInfo(
+                blockedAtMillis = null,
+                blockedUntilMillis = null,
+                message = null
+            )
+            coEvery { clearStooqBlocked() } returns Unit
+        }
+        val blocker = StooqRequestBlocker(diagnostics)
+        val reporter = mockk<StooqBlockReporter>(relaxed = true)
+        val interceptor = StooqBlockInterceptor(
+            blocker = blocker,
+            blockReporter = reporter,
+            diagnosticsRepository = diagnostics,
+            executionGate = StooqExecutionGate()
+        )
+        interceptor.configurePacingForTest(baseRequestGapMs = 40L, jitterMs = 0L)
+
+        // Trigger 5 timeouts to activate the block
+        val request = Request.Builder()
+            .url("https://stooq.com/q/d/l/")
+            .build()
+        val timeoutChain = mockk<Interceptor.Chain> {
+            every { request() } returns request
+            every { proceed(any()) } throws SocketTimeoutException("timeout")
+        }
+        repeat(4) {
+            assertThrows(SocketTimeoutException::class.java) {
+                interceptor.intercept(timeoutChain)
+            }
+        }
+        assertThrows(StooqBlockedException::class.java) {
+            interceptor.intercept(timeoutChain)
+        }
+        assertTrue(blocker.isBlocked())
+
+        // Now blocked requests should still enforce the configured gap
+        val blockedChain = mockk<Interceptor.Chain> {
+            every { request() } returns request
+        }
+
+        assertThrows(StooqBlockedException::class.java) {
+            interceptor.intercept(blockedChain)
+        }
+        val secondStartNs = System.nanoTime()
+        assertThrows(StooqBlockedException::class.java) {
+            interceptor.intercept(blockedChain)
+        }
+        val secondDurationMs = (System.nanoTime() - secondStartNs) / 1_000_000
+
+        assertTrue(
+            "Blocked requests should still enforce gap; expected >=35ms, got ${secondDurationMs}ms",
+            secondDurationMs >= 35L
+        )
+    }
+
+    @Test
+    fun gapIsMaintainedAcrossBlockTransition() {
+        val diagnostics = mockk<NotificationDiagnosticsRepository>(relaxed = true) {
+            coEvery { getStooqBlockedInfo() } returns NotificationDiagnosticsRepository.StooqBlockedInfo(
+                blockedAtMillis = null,
+                blockedUntilMillis = null,
+                message = null
+            )
+            coEvery { clearStooqBlocked() } returns Unit
+        }
+        val blocker = StooqRequestBlocker(diagnostics)
+        val reporter = mockk<StooqBlockReporter>(relaxed = true)
+        val interceptor = StooqBlockInterceptor(
+            blocker = blocker,
+            blockReporter = reporter,
+            diagnosticsRepository = diagnostics,
+            executionGate = StooqExecutionGate()
+        )
+        // Use a long gap so it doesn't expire during the brief block window
+        interceptor.configurePacingForTest(baseRequestGapMs = 200L, jitterMs = 0L)
+
+        // Make a successful request to set the gap timer
+        val request = Request.Builder()
+            .url("https://stooq.com/q/a2/d/")
+            .build()
+        val response = Response.Builder()
+            .request(request)
+            .protocol(Protocol.HTTP_1_1)
+            .code(200)
+            .message("OK")
+            .body("ticker,price".toResponseBody("text/plain".toMediaType()))
+            .build()
+        val successChain = mockk<Interceptor.Chain> {
+            every { request() } returns request
+            every { proceed(any()) } returns response
+        }
+        interceptor.intercept(successChain).close()
+
+        // Block manually and then clear immediately (simulating block expiry)
+        blocker.blockFor(java.time.Duration.ofMillis(1), "test block")
+        Thread.sleep(5) // let the block expire
+
+        // First request after block expiry should still enforce the gap from the last request
+        val postBlockStartNs = System.nanoTime()
+        interceptor.intercept(successChain).close()
+        val postBlockDurationMs = (System.nanoTime() - postBlockStartNs) / 1_000_000
+
+        assertTrue(
+            "First request after block expiry should enforce gap; expected >=150ms, got ${postBlockDurationMs}ms",
+            postBlockDurationMs >= 150L
+        )
+    }
 }

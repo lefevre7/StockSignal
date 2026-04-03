@@ -853,16 +853,18 @@ flowchart LR
     REQ[API Request] --> SEG[StooqExecutionGate Mutex serialization]
     SEG --> SBI[StooqBlockInterceptor]
 
-    SBI --> BC{Blocked? 403/429/503 or 5 timeouts on any endpoint}
-    BC -- Yes --> EXC[StooqBlockedException]
-    BC -- No --> GAP[Enforce 3000ms gap + 0..2000ms jitter]
+    SBI --> GAP[Enforce 3000ms gap + 0..2000ms jitter]
+    GAP --> BC{Blocked? 403/429/503 or 5 timeouts on any endpoint}
+    BC -- Yes --> RESERVE_B[Reserve next gap]
+    RESERVE_B --> EXC[StooqBlockedException]
+    BC -- No --> HDR[Header Interceptor Chrome 120 Android User-Agent + headers]
 
-    GAP --> HDR[Header Interceptor Chrome 120 Android User-Agent + headers]
     HDR --> LOG[HttpLoggingInterceptor BASIC level]
     LOG --> NET[OkHttp to Stooq.com 120s timeouts]
 
     NET --> RESP{Response?}
-    RESP -- Success --> PARSE[Parser layer]
+    RESP -- Success --> RESERVE_S[Reserve next gap]
+    RESERVE_S --> PARSE[Parser layer]
     RESP -- 403/429/503 --> BLOCK[Block 24 hours]
     RESP -- Timeout --> STREAK{5 consecutive timeouts?}
     STREAK -- Yes --> BLOCK
@@ -909,7 +911,7 @@ This section records the March 31, 2026 review of the Stooq blocking regression 
 - The March 31, 2026 background worker log showed this overlap directly. Example: `06:40:01.850 premarket_quote start key=market_open_minus_10:0`, `06:40:01.914 ...:1`, and `06:40:01.937 ...:2` all started within the same second.
 - Premarket sample `0` is expensive by design. It bulk-fetches intraday data for `watchlist + movers`, and then all five samples fetch per-ticker quote pages. With the reported `12` watchlist tickers and `5` movers, that can produce dozens of live Stooq calls before the main window begins.
 - Movers homepage fetches are duplicated. The main window fetches increasers and decreasers separately, and premarket sample `0` fetches movers again to build the bulk intraday prefetch list.
-- Once the app is already locally blocked, `StooqBlockInterceptor` short-circuits before `enforceMinGap()`. That is why diagnostics can show `0-1ms` local `stooq_http` entries after the block has already been triggered. Those entries do not prove live parallel network hits; they mostly reflect immediate blocked/fallback code paths.
+- Once the app is already locally blocked, `StooqBlockInterceptor` still enforces `enforceMinGap()` on every request (including blocked ones) — pacing runs unconditionally before the block check. The blocked path also calls `reserveNextGap()` before throwing `StooqBlockedException`, so the 3-5s cadence is maintained throughout block periods and across block/unblock transitions. Gate diagnostics show `hold=3000-5000ms` on blocked requests rather than `0-1ms`.
 - The documented values in this file and in `AGENTS.md` had drifted out of sync with code. The old `50ms gap` and `3 timeout strikes` description was no longer accurate.
 
 ### 14.5 — Implemented Fix (2026-03-31)
@@ -955,6 +957,23 @@ Additionally, `UnknownHostException` (DNS failure) was incorrectly classified as
 5. **Applied to all three batch methods:** `getData()`, `getIntradayData()`, and `getPremarketQuotes()` all use `BatchErrorTracker` for consistent protection. Previously only `getPremarketQuotes` had the per-ticker retry; now all batch operations have the consecutive-failure circuit breaker.
 
 **Key insight:** gzip/EOF errors from Stooq bypass `StooqBlockInterceptor` entirely — they occur during response body parsing (Retrofit layer), after the interceptor has returned the `Response` object. So the interceptor's 5-consecutive-timeout → 24h block mechanism doesn't catch them. The `BatchErrorTracker` fills this gap at the repository layer.
+
+### 14.8 — Blocked-Request Pacing Bypass Fix (2026-04-03)
+
+`StooqBlockInterceptor.interceptSerialized()` had a pacing bypass on the blocked-request path. When `blocker.isBlocked()` returned `true`, the code threw `StooqBlockedException` immediately — before calling `enforceMinGap()` or `reserveNextGap()`. This caused two problems:
+
+1. **Zero pacing during blocks:** Gate diagnostics showed `wait=0ms hold=1ms` for all blocked requests instead of the expected 3-5s. Background workers that checked Stooq during a block period would churn through the gate mutex instantly.
+2. **No gap reservation across block boundaries:** After a 24h block expired, `nextRequestAtMillis` was stale (set 24h ago), so the first real request after unblock had no enforced gap — it fired immediately, potentially causing another block cycle.
+
+**Root cause:** Commit `69ca06c` split `enforceMinGap` into separate enforce + reserve steps and introduced a `requestAttempted` guard in the `finally` block. The blocked path set `requestAttempted = false` and exited before the `try` block, so neither `enforceMinGap()` nor `reserveNextGap()` ever ran for blocked requests.
+
+**Fix applied:**
+
+1. **Moved `enforceMinGap()` before the block check:** All requests — blocked or not — now sleep for the configured 3-5s gap before proceeding. This ensures gate diagnostics show realistic `hold` times.
+2. **Added `reserveNextGap()` on the blocked path:** Before throwing `StooqBlockedException`, the interceptor now stamps `nextRequestAtMillis` so subsequent requests (blocked or real) will also enforce the gap.
+3. **Removed the `requestAttempted` guard from `finally`:** The `finally` block's `reserveNextGap()` call is now unconditional, so gap reservation always happens after real HTTP requests regardless of success or failure.
+
+**Result:** Gate diagnostics now show `hold=3000-5000ms` on all requests including blocked ones. After a block expires, the first real request still enforces the full 3-5s gap from the last gap reservation.
 
 ---
 

@@ -40,20 +40,24 @@ class StooqBlockInterceptor @Inject constructor(
     private fun interceptSerialized(chain: Interceptor.Chain): Response {
         val path = chain.request().url.encodedPath
         val method = chain.request().method
+
+        // Always enforce the minimum gap between requests, even when blocked.
+        // This ensures Stooq never sees a burst of requests after a block expires
+        // and keeps the pacing timer current at all times.
+        val waitMs = enforceMinGap()
+
         if (blocker.isBlocked()) {
+            reserveNextGap()
             val message = blocker.buildBlockedMessage()
             blockReporter.reportBlocked(message, blocker.blockedUntilMillis())
             throw StooqBlockedException(message)
         }
 
-        val waitMs = enforceMinGap()
         diagnosticsScope.launch {
             diagnosticsRepository.recordStooqRequest(path, method, waitMs)
         }
 
-        var requestAttempted = false
         return try {
-            requestAttempted = true
             val response = chain.proceed(chain.request())
             val blockReason = blockReasonFor(response, path)
             if (blockReason != null) {
@@ -84,9 +88,7 @@ class StooqBlockInterceptor @Inject constructor(
             blockReporter.reportBlocked(message, blocker.blockedUntilMillis())
             throw StooqBlockedException(message, e)
         } finally {
-            if (requestAttempted) {
-                reserveNextGap()
-            }
+            reserveNextGap()
         }
     }
 
