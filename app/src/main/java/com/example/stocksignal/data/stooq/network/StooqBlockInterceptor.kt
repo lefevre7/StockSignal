@@ -1,5 +1,6 @@
 package com.example.stocksignal.data.stooq.network
 
+import android.util.Log
 import androidx.annotation.VisibleForTesting
 import com.example.stocksignal.core.StooqExecutionGate
 import com.example.stocksignal.notifications.NotificationDiagnosticsRepository
@@ -57,8 +58,10 @@ class StooqBlockInterceptor @Inject constructor(
             diagnosticsRepository.recordStooqRequest(path, method, waitMs)
         }
 
+        val requestStartMillis = System.currentTimeMillis()
         return try {
             val response = chain.proceed(chain.request())
+            warnOnAmplifiedHold(path, method, requestStartMillis)
             val blockReason = blockReasonFor(response, path)
             if (blockReason != null) {
                 clearTimeoutStreakIfNeeded()
@@ -74,6 +77,7 @@ class StooqBlockInterceptor @Inject constructor(
             clearTimeoutStreakIfNeeded()
             response
         } catch (e: SocketTimeoutException) {
+            warnOnAmplifiedHold(path, method, requestStartMillis)
             val count = consecutiveTimeouts.incrementAndGet()
             recordTimeoutStreak(count)
             if (count < TIMEOUT_BLOCK_THRESHOLD) {
@@ -89,6 +93,26 @@ class StooqBlockInterceptor @Inject constructor(
             throw StooqBlockedException(message, e)
         } finally {
             reserveNextGap()
+        }
+    }
+
+    /**
+     * Emits a warning when a single interceptor pass takes dramatically longer than
+     * a single `connectTimeout`. This is a canary for OkHttp route-retry amplification
+     * (see `docs/CURRENT_DESIGN.md` §14.9). With `retryOnConnectionFailure=false`, a
+     * single request's wall-clock time is bounded by `connectTimeout + readTimeout`
+     * plus a small amount of overhead; anything past [AMPLIFIED_HOLD_WARN_MS]
+     * indicates that the guarantee has regressed and Stooq is being hit multiple
+     * times per app-level call.
+     */
+    private fun warnOnAmplifiedHold(path: String, method: String, startMillis: Long) {
+        val elapsed = System.currentTimeMillis() - startMillis
+        if (elapsed >= AMPLIFIED_HOLD_WARN_MS) {
+            Log.w(
+                TAG,
+                "Stooq request $method $path took ${elapsed}ms (> ${AMPLIFIED_HOLD_WARN_MS}ms); " +
+                    "possible OkHttp retry amplification — verify retryOnConnectionFailure is disabled."
+            )
         }
     }
 
@@ -153,10 +177,15 @@ class StooqBlockInterceptor @Inject constructor(
     }
 
     companion object {
+        private const val TAG = "StooqBlockInterceptor"
         private val BLOCK_DURATION = Duration.ofHours(24)
         private const val BASE_REQUEST_GAP_MS = 3000L
         private const val JITTER_MS = 2000L
         private val BLOCK_HTTP_CODES = setOf(403, 429, 503)
         private const val TIMEOUT_BLOCK_THRESHOLD = 5
+
+        // 1.25 × max single-timeout wall-clock (connectTimeout 120s + readTimeout 120s ≈ 240s).
+        // Anything beyond this strongly suggests OkHttp retried at least one route under the hood.
+        private const val AMPLIFIED_HOLD_WARN_MS = 300_000L
     }
 }

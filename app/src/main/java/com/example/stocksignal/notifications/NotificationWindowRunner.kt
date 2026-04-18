@@ -42,7 +42,9 @@ import java.time.LocalTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
+import java.net.ConnectException
 import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -1124,7 +1126,11 @@ class NotificationWindowRunner @Inject constructor(
     private fun isTerminalStooqFailure(error: Throwable?): Boolean {
         var current = error
         while (current != null) {
-            if (current is SocketTimeoutException || current is StooqBlockedException) {
+            if (current is SocketTimeoutException ||
+                current is StooqBlockedException ||
+                current is UnknownHostException ||
+                current is ConnectException
+            ) {
                 return true
             }
             current = current.cause

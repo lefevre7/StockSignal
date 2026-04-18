@@ -16,6 +16,7 @@ import io.mockk.mockkStatic
 import io.mockk.verify
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Before
 import org.junit.Test
@@ -423,5 +424,61 @@ class StooqBlockInterceptorTest {
             "First request after block expiry should enforce gap; expected >=150ms, got ${postBlockDurationMs}ms",
             postBlockDurationMs >= 150L
         )
+    }
+
+    /**
+     * Guard against future regressions where the interceptor itself retries on
+     * timeout. Each `chain.proceed()` call must count as exactly one timeout —
+     * otherwise OkHttp-level retry amplification (see docs/CURRENT_DESIGN.md §14.9)
+     * returns and the 5-timeout block threshold is reached in a fraction of the
+     * expected user-visible calls.
+     */
+    @Test
+    fun incrementsTimeoutStreakExactlyOncePerChainProceedInvocation() {
+        val diagnostics = mockk<NotificationDiagnosticsRepository>(relaxed = true) {
+            coEvery { getStooqBlockedInfo() } returns NotificationDiagnosticsRepository.StooqBlockedInfo(
+                blockedAtMillis = null,
+                blockedUntilMillis = null,
+                message = null
+            )
+            coEvery { clearStooqBlocked() } returns Unit
+        }
+        val blocker = StooqRequestBlocker(diagnostics)
+        val reporter = mockk<StooqBlockReporter>(relaxed = true)
+        val interceptor = StooqBlockInterceptor(
+            blocker = blocker,
+            blockReporter = reporter,
+            diagnosticsRepository = diagnostics,
+            executionGate = StooqExecutionGate()
+        )
+        interceptor.configurePacingForTest(baseRequestGapMs = 0L, jitterMs = 0L)
+
+        val request = Request.Builder()
+            .url("https://stooq.com/q/d/l/")
+            .build()
+        var proceedCalls = 0
+        val chain = mockk<Interceptor.Chain> {
+            every { request() } returns request
+            every { proceed(any()) } answers {
+                proceedCalls += 1
+                throw SocketTimeoutException("timeout")
+            }
+        }
+
+        // Four non-blocking timeouts in a row.
+        repeat(4) {
+            assertThrows(SocketTimeoutException::class.java) { interceptor.intercept(chain) }
+        }
+        assertEquals(
+            "Interceptor must invoke chain.proceed exactly once per intercept() call",
+            4,
+            proceedCalls
+        )
+        assertFalse(blocker.isBlocked())
+
+        // The fifth invocation trips the 5-consecutive-timeout block.
+        assertThrows(StooqBlockedException::class.java) { interceptor.intercept(chain) }
+        assertEquals(5, proceedCalls)
+        assertTrue(blocker.isBlocked())
     }
 }

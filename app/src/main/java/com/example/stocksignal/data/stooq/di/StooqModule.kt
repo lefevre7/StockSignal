@@ -62,6 +62,21 @@ object StooqModule {
 
     /**
      * Singleton OkHttpClient with timeouts and logging.
+     *
+     * IMPORTANT: `retryOnConnectionFailure` is disabled intentionally. OkHttp's default
+     * behaviour silently retries connection-level failures across every DNS-resolved
+     * route (IP address) for the host. When Stooq is degraded, `stooq.com` typically
+     * resolves to multiple A records, so a single app-level call would fan out to 2-3
+     * HTTP attempts — each one consuming the full 120 s connect timeout, each one
+     * re-entering [StooqBlockInterceptor] and incrementing the consecutive-timeout
+     * counter, and each one ignoring the app's carefully controlled 3-5 s pacing.
+     * That amplification pushed us past the 5-timeout block threshold in a single
+     * user-visible request and also kept [BackgroundStooqExecutionGate] held for
+     * 6-14 minutes while one ticker burned through every route. The app has its own
+     * retry layers that operate with correct pacing, circuit breakers and terminal-
+     * failure detection (see [NotificationWindowRunner.fetchLiveSeriesWithRetries]
+     * and [StooqRepository.BatchErrorTracker]); OkHttp-level retries are redundant
+     * and harmful. See `docs/CURRENT_DESIGN.md` §14.9.
      */
     @Provides
     @Singleton
@@ -74,6 +89,7 @@ object StooqModule {
             .connectTimeout(120, TimeUnit.SECONDS)
             .readTimeout(120, TimeUnit.SECONDS)
             .writeTimeout(120, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(false)
             .addInterceptor(stooqBlockInterceptor)
             .addInterceptor(headerInterceptor)
             .addInterceptor(loggingInterceptor)

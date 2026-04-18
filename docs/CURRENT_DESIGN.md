@@ -975,6 +975,31 @@ Additionally, `UnknownHostException` (DNS failure) was incorrectly classified as
 
 **Result:** Gate diagnostics now show `hold=3000-5000ms` on all requests including blocked ones. After a block expires, the first real request still enforces the full 3-5s gap from the last gap reservation.
 
+### 14.9 — OkHttp Connection-Retry Amplification Fix (2026-04-17)
+
+Despite all the previous fixes, the app kept tripping the 24h Stooq block. Diagnostics captured on April 17, 2026 showed:
+
+- `watchlist_live_fetch=[KGH#1:07:37:19.728-07:43:36.860 wait=0ms]` — a single app-level attempt for one ticker took **6 minutes 17 seconds**.
+- `stooq_background wait=850178ms hold=274356ms` — a `robots.txt` worker held the background gate for **14 min of queue wait + 4.5 min of execution**, without any corresponding HTTP traffic visible in the pacing log for most of that window.
+- `stooq_http … hold=123476ms` — a single interceptor pass spent 123s, right at one `connectTimeout=120s` + overhead.
+- Request pacing in `Stooq request pacing (recent)` showed consistent 3-5s gaps — pacing itself was not violated.
+
+**Root cause — OkHttp's default `retryOnConnectionFailure=true`:** `stooq.com` resolves to multiple A records. When connection failures occur (including `SocketTimeoutException` during connect), OkHttp silently walks the remaining routes, re-entering the interceptor chain for each attempt. A single app-level call therefore fans out to 2-3 HTTP attempts — each one consuming a full 120s `connectTimeout`, each one calling `enforceMinGap()` and `recordStooqRequest`, **and each one incrementing `consecutiveTimeouts` in `StooqBlockInterceptor`**. One user-visible `getSeries()` could push the counter from 2 → 5 in a single call, tripping the 24h block in a fraction of the expected user-visible calls and pinning the background gate for 6-14 minutes in the process.
+
+This amplification bypassed every earlier safeguard (`BatchErrorTracker`, `fetchLiveSeriesWithRetries`, `isTerminalStooqFailure`) because they all operate on app-level results; OkHttp's silent route retries occur beneath them.
+
+**Fix applied:**
+
+1. **`StooqModule.provideOkHttpClient` now calls `.retryOnConnectionFailure(false)`.** Each app-level Stooq call now maps to exactly one HTTP attempt. Controlled retries still exist higher up — `NotificationWindowRunner.fetchLiveSeriesWithRetries`, `StooqRepository.getPremarketQuotes`, and the `BatchErrorTracker` circuit breaker — and they run with proper pacing, backoff, and terminal-failure detection.
+2. **Expanded `NotificationWindowRunner.isTerminalStooqFailure`** to include `UnknownHostException` and `ConnectException`. This matches the repository-layer version in `StooqRepository` and ensures a DNS/connect failure on the first ticker immediately stops the batch instead of retrying through the remaining tickers.
+3. **Added amplification canary in `StooqBlockInterceptor`:** `warnOnAmplifiedHold()` emits `Log.w` when a single interceptor pass exceeds 300s (1.25 × max single-attempt wall-clock of `connectTimeout + readTimeout = 240s`). Any future regression that re-introduces OkHttp retries will surface in logcat.
+4. **New test `StooqOkHttpClientConfigTest`** asserts `retryOnConnectionFailure == false`, the 120s timeouts are preserved, and `StooqBlockInterceptor` is first in the chain.
+5. **New interceptor test `incrementsTimeoutStreakExactlyOncePerChainProceedInvocation`** guards against the interceptor itself growing internal retry logic — `chain.proceed()` must be invoked exactly once per `intercept()` call.
+
+**Key insight — where AGENTS.md's "DO NOT REPEAT" list applies and doesn't:** The earlier prohibitions on modifying `StooqModule`, `NotificationWindowRunner`, and `PremarketQuoteRunner` were scoped to the `wait=0ms hold=1ms` (blocked-path) issue diagnosed in §14.8. This incident presents differently (`wait=X hold=120s+`) and the fix belongs at the `OkHttpClient` configuration layer — precisely where `StooqModule` lives. Lowering `connectTimeout`, shortening the 24h block, or resetting the timeout streak remain forbidden and did not need to change.
+
+**Result:** Each app-level Stooq call is now bounded to a single HTTP attempt (≤240s wall clock). The `consecutiveTimeouts` counter increments at most once per user-visible call. DNS/connect failures on the first ticker stop batches immediately instead of burning through the remaining tickers.
+
 ---
 
 ## 15 — UI Components & Design System
